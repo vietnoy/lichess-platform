@@ -21,7 +21,7 @@ with DAG(
 
     kafka_to_minio = BashOperator(
         task_id="flush_kafka_to_minio",
-        bash_command="python /ingestion/kafka_to_minio.py",
+        bash_command="python /git/repo/ingestion/kafka_to_minio.py",
     )
 
 # ─── DAG 2: Annotate moves (runs every 15 min) ───────────────────────────────
@@ -37,7 +37,7 @@ with DAG(
 
     annotate = BashOperator(
         task_id="run_annotate",
-        bash_command="python /processing/annotate.py --date {{ ds }}",
+        bash_command="python /git/repo/processing/annotate.py --date {{ ds }}",
     )
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris (runs every 30 min) ─
