@@ -46,7 +46,7 @@ with DAG(
     default_args=default_args,
     description="Create/refresh StarRocks external catalog tables from Polaris Iceberg catalog",
     start_date=datetime(2026, 4, 14),
-    schedule=timedelta(minutes=30),
+    schedule=None,
     catchup=False,
     tags=["chess", "starrocks", "polaris"],
 ) as dag_load:
