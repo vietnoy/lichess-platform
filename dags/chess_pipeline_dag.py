@@ -21,7 +21,7 @@ with DAG(
 
     kafka_to_minio = BashOperator(
         task_id="flush_kafka_to_minio",
-        bash_command="python /ingestion/kafka_to_minio.py --batch-seconds 270",
+        bash_command="python /ingestion/kafka_to_minio.py",
     )
 
 # ─── DAG 2: Annotate moves (runs every 15 min) ───────────────────────────────
@@ -42,7 +42,7 @@ with DAG(
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris (runs every 30 min) ─
 with DAG(
-    dag_id="load_starrocks",
+    dag_id="init_catalog_starrocks",
     default_args=default_args,
     description="Create/refresh StarRocks external catalog tables from Polaris Iceberg catalog",
     start_date=datetime(2026, 4, 14),
@@ -54,31 +54,33 @@ with DAG(
     setup_catalog = BashOperator(
         task_id="setup_polaris_catalog",
         bash_command="""
-mysql -h ${STARROCKS_HOST} -P ${STARROCKS_PORT} -u ${STARROCKS_USER} << 'EOF'
-CREATE EXTERNAL CATALOG IF NOT EXISTS polaris_catalog
-PROPERTIES (
-  "type"                        = "iceberg",
-  "iceberg.catalog.type"        = "rest",
-  "iceberg.catalog.uri"         = "http://polaris:8181/api/catalog",
-  "iceberg.catalog.warehouse"   = "chess_warehouse",
-  "iceberg.catalog.credential"  = "${STARROCKS_POLARIS_CREDENTIAL}",
-  "iceberg.catalog.scope"       = "PRINCIPAL_ROLE:ALL",
-  "aws.s3.use_instance_profile" = "false",
-  "aws.s3.access_key"           = "${MINIO_ACCESS_KEY}",
-  "aws.s3.secret_key"           = "${MINIO_SECRET_KEY}",
-  "aws.s3.endpoint"             = "http://minio:9000",
-  "aws.s3.enable_path_style_access" = "true"
-);
-EOF
-""",
+    mysql -h ${STARROCKS_HOST} -P ${STARROCKS_PORT} -u ${STARROCKS_USER} << 'EOF'
+    DROP CATALOG IF EXISTS polaris_catalog;
+    CREATE EXTERNAL CATALOG IF NOT EXISTS polaris_catalog
+    PROPERTIES (
+    "type"                        = "iceberg",
+    "iceberg.catalog.type"        = "rest",
+    "iceberg.catalog.uri"         = "http://polaris:8181/api/catalog",
+    "iceberg.catalog.warehouse"   = "chess_warehouse",
+    "iceberg.catalog.credential"  = "${STARROCKS_POLARIS_CREDENTIAL}",
+    "iceberg.catalog.scope"       = "PRINCIPAL_ROLE:ALL",
+    "aws.s3.use_instance_profile" = "false",
+    "aws.s3.access_key"           = "${MINIO_ACCESS_KEY}",
+    "aws.s3.secret_key"           = "${MINIO_SECRET_KEY}",
+    "aws.s3.endpoint"             = "http://minio:9000",
+    "aws.s3.enable_path_style_access" = "true"
+    );
+    SET CATALOG polaris_catalog;
+    EOF
+    """,
     )
 
     refresh_catalog = BashOperator(
         task_id="refresh_polaris_catalog",
         bash_command="""
-mysql -h ${STARROCKS_HOST} -P ${STARROCKS_PORT} -u ${STARROCKS_USER} \
-  -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.moves;"
-""",
+    mysql -h ${STARROCKS_HOST} -P ${STARROCKS_PORT} -u ${STARROCKS_USER} \
+    -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.moves;"
+    """,
     )
 
     setup_catalog >> refresh_catalog
