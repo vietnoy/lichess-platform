@@ -243,3 +243,6 @@ Agent reasons over tool results to give personalized coaching.
 ## Known Issues to Fix
 
 - consumer.py: player_id derived from move_number parity — fragile (low priority, consumer.py is demo-only)
+
+scp ingestion/lichess-api_to_kafka.py root@160.187.0.108:/opt/chess/ingestion/lichess-api_to_kafka.py
+ssh root@160.187.0.108 "systemctl restart chess-etl"
