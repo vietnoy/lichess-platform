@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: starrocks-cn-pvc
+  namespace: chess
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: starrocks-cn
+  namespace: chess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: starrocks-cn
+  template:
+    metadata:
+      labels:
+        app: starrocks-cn
+    spec:
+      hostname: starrocks-cn-1
+      initContainers:
+        - name: wait-for-fe
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z starrocks-fe 9030; do echo waiting for starrocks-fe; sleep 3; done"]
+      containers:
+        - name: starrocks-cn
+          image: starrocks/cn-ubuntu:4.0-latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              sleep 15
+              mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot \
+                -e "ALTER SYSTEM ADD COMPUTE NODE 'starrocks-cn-1:9050';" || true
+              /opt/starrocks/cn/bin/start_cn.sh
+          ports:
+            - containerPort: 8040
+            - containerPort: 9050
+          env:
+            - name: TZ
+              value: UTC
+            - name: HOST_TYPE
+              value: FQDN
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: storage
+              mountPath: /opt/starrocks/cn/storage
+          readinessProbe:
+            tcpSocket:
+              port: 8040
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: "1"
+            limits:
+              memory: 2Gi
+              cpu: "2"
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: starrocks-cn-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: starrocks-cn-1
+  namespace: chess
+spec:
+  selector:
+    app: starrocks-cn
+  ports:
+    - name: http
+      port: 8040
+      targetPort: 8040
+    - name: heartbeat
+      port: 9050
+      targetPort: 9050

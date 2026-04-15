@@ -25,7 +25,7 @@ HDR_NDJSON = {"Authorization": f"Bearer {LICHESS_TOKEN}", "Accept": "application
 
 # setup basic logger
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
@@ -222,11 +222,9 @@ def _stream_batch(producer: Producer, player_ids: list):
     boards      = {}
     prev_clocks = {}
 
-    # setup the number of retry time for opening a connection
-    max_retries = 5
     retry_attempt = 1
 
-    while retry_attempt < max_retries:
+    while True:
         try:
             response = requests.post(
                 url="https://lichess.org/api/stream/games-by-users",

@@ -112,18 +112,51 @@ Agent reasons over tool results to give personalized coaching.
 
 ---
 
+## Deployment Status (as of 2026-04-14)
+
+### VPS: 160.187.0.108 (chessanalytics, Vietnix VPS 5+)
+- k3s v1.34.6 installed, namespace: `chess`
+- All pods healthy, stable for 7+ hours
+- CPU: ~2% idle | RAM: 5.6GB / 10GB (56%)
+
+### Running pods
+| Pod | Status |
+|-----|--------|
+| etl | Running — streaming Lichess → Kafka 24/7 |
+| kafka-to-minio | Running — flushing to MinIO every 270s |
+| minio | Running — buckets: chess-raw, chess-enriched |
+| polaris | Running — Iceberg REST catalog |
+| starrocks-fe | Running |
+| starrocks-cn | Running |
+| postgres | Running — airflow_db + polaris_db |
+| airflow (apiserver, scheduler, triggerer, dag-processor) | Running |
+
+### Data in MinIO (chess-raw) as of 2026-04-15 ~00:00 UTC
+- game_start: 11 records
+- moves: 721 records
+- game_end: 10 records
+- Accumulating every ~4.5 min, will grow significantly overnight
+
+### Airflow UI
+- URL: http://160.187.0.108:30808
+- Login: admin / see infra/.env AIRFLOW_ADMIN_PASSWORD
+
+### Known fixes applied
+- etl.py: removed max_retries cap (was 5) → now retries forever
+- etl.py: logging level DEBUG → INFO
+- kafka_to_minio.py: removed invalid commit-on-empty-buffer call
+
 ## Next Steps (priority order)
 
-1. Buy VPS 5+ (10GB RAM, 5 vCPU, 80GB NVMe) on Vietnix — Ubuntu 22.04 LTS
-2. Install k3s on VPS (single command: `curl -sfL https://get.k3s.io | sh -`)
-3. Write k8s manifests for MinIO + StarRocks (shared-data mode, FE + CN pods)
-4. Write k8s manifest for serving/agent.py
-5. Point etl.py at VPS MinIO (update .env)
-6. ingestion/ — add Kafka → MinIO writer (raw parquet)
-7. processing/annotate.py — call Lichess Cloud Eval API per move, write eval_delta + classification back to MinIO
-8. processing/transform.py — aggregate patterns per player into StarRocks
-9. serving/agent.py — Claude API tool use agent (the AI coach)
-10. Demo by Monday 21/04/2026
+1. ~~Buy VPS + install k3s~~ ✅ Done
+2. ~~Write k8s manifests (MinIO, Polaris, StarRocks, Airflow)~~ ✅ Done
+3. ~~ingestion/ — Kafka → MinIO writer (raw parquet)~~ ✅ Done, running live
+4. Set up Polaris catalog + register Iceberg tables pointing at MinIO
+5. Configure StarRocks external catalog via Polaris
+6. processing/annotate.py — wire up Airflow DAG, run on schedule
+7. processing/transform.py — aggregate patterns per player into StarRocks
+8. serving/agent.py — Gemini 2.5 Flash (Vertex AI) tool use agent (AI coach)
+9. Demo by Monday 21/04/2026
 
 ---
 

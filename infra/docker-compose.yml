@@ -1,23 +1,221 @@
-version: "3.8"
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow_db
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution'
+    AIRFLOW__API__AUTH_RUNTIME_JWT_SECRET: ${AIRFLOW_SECRET_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET_KEY}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  env_file:
+    - .env
+  volumes:
+    - ../dags:/opt/airflow/dags
+    - ../logs:/opt/airflow/logs
+    - ../ingestion:/ingestion
+    - ../processing:/processing
+    # - ../credentials:/credentials:ro  # uncomment when Vertex AI service account is ready
 
 services:
 
-  postgres:
-    image: postgres:16
-    container_name: lichess-postgres
+  # ─── Object Storage ───────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
     environment:
-      POSTGRES_DB: lichess
-      POSTGRES_USER: lichess
-      POSTGRES_PASSWORD: lichess
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Iceberg Catalog ──────────────────────────────────────────────────────────
+  polaris:
+    image: apache/polaris:latest
+    ports:
+      - "8181:8181"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      POLARIS_PERSISTENCE_TYPE: relational-jdbc
+      QUARKUS_DATASOURCE_JDBC_URL: ${POLARIS_DB_URL}
+      QUARKUS_DATASOURCE_USERNAME: ${POLARIS_DB_USER}
+      QUARKUS_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION: update
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_S3_ENDPOINT: http://minio:9000
+      AWS_S3_USE_PATH_STYLE_ENDPOINT: "true"
+      POLARIS_BOOTSTRAP_CREDENTIALS: ${POLARIS_BOOTSTRAP_CREDENTIALS}
+    restart: unless-stopped
+
+  # ─── OLAP Query Layer ─────────────────────────────────────────────────────────
+  starrocks-fe:
+    image: starrocks/fe-ubuntu:4.0-latest
+    hostname: starrocks-fe
+    user: root
+    command:
+      - /bin/bash
+      - -c
+      - |
+        echo "cloud_native_storage_type = S3" >> /opt/starrocks/fe/conf/fe.conf
+        /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN
+    ports:
+      - "8030:8030"
+      - "9020:9020"
+      - "9030:9030"
+    healthcheck:
+      test: 'mysql -u root -h starrocks-fe -P 9030 -e "show frontends\G" |grep "Alive: true"'
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  starrocks-cn-1:
+    image: starrocks/cn-ubuntu:4.0-latest
+    hostname: starrocks-cn-1
+    user: root
+    command:
+      - /bin/bash
+      - -c
+      - |
+        sleep 15s
+        mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot -e "ALTER SYSTEM ADD COMPUTE NODE 'starrocks-cn-1:9050';"
+        /opt/starrocks/cn/bin/start_cn.sh
+    ports:
+      - "8040:8040"
+    environment:
+      - TZ=UTC
+      - HOST_TYPE=FQDN
+    volumes:
+      - starrocks_cn1_storage:/opt/starrocks/cn/storage
+      - starrocks_cn1_log:/opt/starrocks/cn/log
+    healthcheck:
+      test: 'mysql -u root -h starrocks-fe -P 9030 -e "SHOW COMPUTE NODES\G" |grep "Alive: true"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    depends_on:
+      starrocks-fe:
+        condition: service_healthy
+
+  # ─── Metadata Database ────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15
     ports:
       - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./sql/init_postgres.sql:/docker-entrypoint-initdb.d/init_postgres.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lichess"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
       timeout: 5s
       retries: 5
+    restart: always
+
+  # ─── Orchestration ────────────────────────────────────────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command: >
+      -c "
+      airflow db migrate &&
+      airflow users create --username admin --password ${AIRFLOW_ADMIN_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@chessanalytics.local || true
+      "
+    restart: on-failure
+
+  airflow-apiserver:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8080"
+    command: api-server
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  airflow-triggerer:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: dag-processor
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "DagProcessorJob", "--hostname", "$${HOSTNAME}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
 
 volumes:
+  minio_data:
+  starrocks_cn1_storage:
+  starrocks_cn1_log:
   postgres_data:

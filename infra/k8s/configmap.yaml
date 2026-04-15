@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chess-config
+  namespace: chess
+data:
+  # MinIO
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_BUCKET_RAW: chess-raw
+  MINIO_BUCKET_ENRICHED: chess-enriched
+
+  # Polaris
+  POLARIS_URI: http://polaris:8181/api/catalog
+  POLARIS_DB_USER: postgres
+  POLARIS_DB_URL: jdbc:postgresql://postgres:5432/polaris_db
+  POLARIS_NAMESPACE: prod
+
+  # StarRocks
+  STARROCKS_HOST: starrocks-fe
+  STARROCKS_PORT: "9030"
+  STARROCKS_USER: root
+  STARROCKS_PASSWORD: ""
+
+  # Airflow
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution

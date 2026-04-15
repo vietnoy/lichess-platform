@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polaris
+  namespace: chess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polaris
+  template:
+    metadata:
+      labels:
+        app: polaris
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done"]
+        - name: wait-for-minio
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z minio 9000; do echo waiting for minio; sleep 2; done"]
+      containers:
+        - name: polaris
+          image: apache/polaris:latest
+          ports:
+            - containerPort: 8181
+          env:
+            - name: POLARIS_PERSISTENCE_TYPE
+              value: relational-jdbc
+            - name: QUARKUS_DATASOURCE_JDBC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: chess-config
+                  key: POLARIS_DB_URL
+            - name: QUARKUS_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: POSTGRES_USER
+            - name: QUARKUS_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: POSTGRES_PASSWORD
+            - name: QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION
+              value: update
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: MINIO_ACCESS_KEY
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: MINIO_SECRET_KEY
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ENDPOINT_URL
+              value: http://minio:9000
+            - name: AWS_S3_ENDPOINT
+              value: http://minio:9000
+            - name: AWS_S3_USE_PATH_STYLE_ENDPOINT
+              value: "true"
+            - name: POLARIS_BOOTSTRAP_CREDENTIALS
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: POLARIS_BOOTSTRAP_CREDENTIALS
+          readinessProbe:
+            tcpSocket:
+              port: 8181
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 250m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: polaris
+  namespace: chess
+spec:
+  selector:
+    app: polaris
+  ports:
+    - port: 8181
+      targetPort: 8181

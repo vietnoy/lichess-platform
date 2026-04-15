@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etl
+  namespace: chess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etl
+  template:
+    metadata:
+      labels:
+        app: etl
+    spec:
+      containers:
+        - name: etl
+          image: chess-airflow:latest
+          imagePullPolicy: Never
+          command: ["python", "/ingestion/etl.py"]
+          envFrom:
+            - secretRef:
+                name: chess-secrets
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 250m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          volumeMounts:
+            - name: ingestion
+              mountPath: /ingestion
+      volumes:
+        - name: ingestion
+          hostPath:
+            path: /opt/chess/ingestion
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-to-minio
+  namespace: chess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-to-minio
+  template:
+    metadata:
+      labels:
+        app: kafka-to-minio
+    spec:
+      containers:
+        - name: kafka-to-minio
+          image: chess-airflow:latest
+          imagePullPolicy: Never
+          command: ["python", "/ingestion/kafka_to_minio.py", "--batch-seconds", "270"]
+          envFrom:
+            - configMapRef:
+                name: chess-config
+            - secretRef:
+                name: chess-secrets
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 250m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          volumeMounts:
+            - name: ingestion
+              mountPath: /ingestion
+      volumes:
+        - name: ingestion
+          hostPath:
+            path: /opt/chess/ingestion
