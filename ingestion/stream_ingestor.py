@@ -298,11 +298,13 @@ def stream_batch(producer: Producer, batch_id: int, players: list[str], disconne
     Runs in its own thread. Reconnects indefinitely until _shutdown is set.
     disconnect_ts: timestamp (ms) of when this batch last disconnected (for bulk sweep).
     """
-    body         = "\n".join(players)
+    body            = "\n".join(players)
     boards:      dict = {}
     prev_clocks: dict = {}
-    backoff      = 5
-    last_disconnect = disconnect_ts
+    backoff          = 30   # start conservatively after a potential IP rate-limit
+    last_disconnect  = disconnect_ts
+    # minimum seconds a stream must stay alive to count as "healthy"
+    HEALTHY_THRESHOLD = 60
 
     logger.info(f"[Batch {batch_id}] Starting stream for {len(players)} players")
 
@@ -320,6 +322,7 @@ def stream_batch(producer: Producer, batch_id: int, players: list[str], disconne
             if response.status_code == 429:
                 logger.warning(f"[Batch {batch_id}] Rate limited — cooldown {RATE_LIMIT_COOLDOWN}s")
                 time.sleep(RATE_LIMIT_COOLDOWN)
+                backoff = 30  # reset to conservative value after cooldown
                 continue
 
             if response.status_code != 200:
@@ -328,12 +331,12 @@ def stream_batch(producer: Producer, batch_id: int, players: list[str], disconne
                 backoff = min(backoff * 2, 120)
                 continue
 
+            connect_time = time.time()
             logger.info(f"[Batch {batch_id}] Stream connected")
-            # Sweep for games missed during the downtime gap
-            if last_disconnect:
-                bulk_sweep(producer, players, last_disconnect)
 
-            backoff = 5  # reset on successful connect
+            # Only sweep if we had real downtime (> 30s), not on initial connect
+            if last_disconnect and (int(time.time() * 1000) - last_disconnect) > 30_000:
+                bulk_sweep(producer, players, last_disconnect)
 
             for raw in response.iter_lines():
                 if _shutdown.is_set():
@@ -346,6 +349,23 @@ def stream_batch(producer: Producer, batch_id: int, players: list[str], disconne
                     logger.warning(f"[Batch {batch_id}] Non-JSON: {raw[:80]}")
                     continue
                 process_event(ev, producer, boards, prev_clocks)
+
+            # Stream closed by server
+            uptime = time.time() - connect_time
+            last_disconnect = int(time.time() * 1000)
+
+            if uptime < HEALTHY_THRESHOLD:
+                # Connection died too fast — likely soft rate-limit; back off longer
+                backoff = min(backoff * 2, 120)
+                logger.warning(
+                    f"[Batch {batch_id}] Stream only lived {uptime:.0f}s "
+                    f"(unhealthy) — backoff {backoff}s"
+                )
+            else:
+                backoff = 30  # healthy session, reset to conservative default
+                logger.info(f"[Batch {batch_id}] Stream closed after {uptime:.0f}s — reconnecting in {backoff}s")
+
+            time.sleep(backoff)
 
         except Exception as e:
             logger.warning(f"[Batch {batch_id}] Stream error: {e} — backoff {backoff}s")
