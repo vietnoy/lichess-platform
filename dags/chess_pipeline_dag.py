@@ -53,34 +53,29 @@ with DAG(
 
     setup_catalog = BashOperator(
         task_id="setup_polaris_catalog",
-        bash_command="""
-    mysql -h ${STARROCKS_HOST} -P ${STARROCKS_PORT} -u ${STARROCKS_USER} << 'EOF'
-    DROP CATALOG IF EXISTS polaris_catalog;
-    CREATE EXTERNAL CATALOG IF NOT EXISTS polaris_catalog
-    PROPERTIES (
-    "type"                        = "iceberg",
-    "iceberg.catalog.type"        = "rest",
-    "iceberg.catalog.uri"         = "http://polaris:8181/api/catalog",
-    "iceberg.catalog.warehouse"   = "chess_warehouse",
-    "iceberg.catalog.credential"  = "${STARROCKS_POLARIS_CREDENTIAL}",
-    "iceberg.catalog.scope"       = "PRINCIPAL_ROLE:ALL",
-    "aws.s3.use_instance_profile" = "false",
-    "aws.s3.access_key"           = "${MINIO_ACCESS_KEY}",
-    "aws.s3.secret_key"           = "${MINIO_SECRET_KEY}",
-    "aws.s3.endpoint"             = "http://minio:9000",
-    "aws.s3.enable_path_style_access" = "true"
-    );
-    SET CATALOG polaris_catalog;
-    EOF
-    """,
+        bash_command="""mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -p$STARROCKS_PASSWORD -e "
+DROP CATALOG IF EXISTS polaris_catalog;
+CREATE EXTERNAL CATALOG IF NOT EXISTS polaris_catalog
+PROPERTIES (
+  'type'='iceberg',
+  'iceberg.catalog.type'='rest',
+  'iceberg.catalog.uri'='http://polaris:8181/api/catalog',
+  'iceberg.catalog.warehouse'='chess_warehouse',
+  'iceberg.catalog.credential'='$STARROCKS_POLARIS_CREDENTIAL',
+  'iceberg.catalog.scope'='PRINCIPAL_ROLE:ALL',
+  'aws.s3.use_instance_profile'='false',
+  'aws.s3.access_key'='$MINIO_ACCESS_KEY',
+  'aws.s3.secret_key'='$MINIO_SECRET_KEY',
+  'aws.s3.endpoint'='http://minio:9000',
+  'aws.s3.enable_path_style_access'='true'
+);
+"
+""",
     )
 
     refresh_catalog = BashOperator(
         task_id="refresh_polaris_catalog",
-        bash_command="""
-    mysql -h ${STARROCKS_HOST} -P ${STARROCKS_PORT} -u ${STARROCKS_USER} \
-    -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.moves;"
-    """,
+        bash_command="mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -p$STARROCKS_PASSWORD -e \"REFRESH EXTERNAL TABLE polaris_catalog.prod.moves;\"",
     )
 
     setup_catalog >> refresh_catalog
