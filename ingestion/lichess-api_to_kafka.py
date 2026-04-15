@@ -235,6 +235,12 @@ def _stream_batch(producer: Producer, player_ids: list):
                 timeout=86400  # keep alive for 24 hours
             )
 
+            if response.status_code == 429:
+                wait = 60
+                logger.warning(f"Rate limited (429), backing off {wait}s")
+                time.sleep(wait)
+                continue
+
             retry_attempt = 0
             for raw in response.iter_lines():
                 if not raw:
@@ -349,22 +355,12 @@ if __name__ == "__main__":
     # step 1: get players
     player_ids = get_top_players()
 
-    # step 2: check who is online and mid-game
-    online, mid_game = get_active_players(player_ids)
-
-    # step 3: connect to kafka
+    # step 2: connect to kafka
     logger.info("Connecting to Kafka...")
     producer = create_producer()
     logger.info("Connected.")
 
-    # step 4: stream games already in progress
-    unique_games = list(set(mid_game.values()))
-    logger.info(f"Streaming {len(unique_games)} active games...")
-    for game_id in unique_games:
-        t = threading.Thread(target=stream_active_game, args=(producer, game_id), daemon=True)
-        t.start()
-
-    # step 5: open games-by-users stream to catch new games
+    # step 3: open games-by-users stream (withCurrentGames=true covers in-progress games)
     logger.info(f"Opening games-by-users stream for {len(player_ids)} players...")
     stream_games_by_users(producer, list(player_ids))
 

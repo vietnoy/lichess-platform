@@ -213,6 +213,33 @@ Agent reasons over tool results to give personalized coaching.
 
 ---
 
+## Ingestion Architecture Decisions (2026-04-15)
+
+### stream_active_game removed
+- `stream_active_game` threads were opening individual HTTP connections per in-progress game at startup
+- Combined with the main batch stream, this caused 6+ concurrent Lichess connections → HTTP 429 rate limiting
+- `withCurrentGames=true` on the batch stream already covers in-progress games — individual threads were redundant
+- Removed: `stream_active_game`, `get_active_players` calls from main entrypoint
+
+### 429 handling
+- Added `response.status_code == 429` check in `_stream_batch` before iterating lines
+- Backs off 60s on 429 instead of looping on HTML error responses
+- Added `try/except json.JSONDecodeError` to skip non-JSON lines (Lichess sends HTML on errors)
+- Added `retry_attempt = 0` reset after successful connection to prevent backoff accumulation
+
+### Dynamic player list (planned, not yet implemented)
+- Goal: grow tracked player set by adding opponents seen in gameStart events
+- Constraint: Lichess stream connections are fixed at POST time — cannot add players mid-stream
+- Plan: maintain pending set, open new stream connection every 30s for newly seen opponents
+- Store all players in Postgres (`tracked_players` table) for persistence across restarts
+- Cap: ~3000 players max (10 concurrent stream connections of 300 each)
+
+### Spark (planned)
+- Current pipeline (Python + pandas) will bottleneck as player list grows
+- Plan: replace kafka_to_minio.py and annotate.py with Spark Structured Streaming jobs
+- Spark master + 2 workers fits in remaining VPS RAM (~5GB available)
+- Airflow triggers via SparkSubmitOperator instead of BashOperator
+
 ## Known Issues to Fix
 
 - consumer.py: player_id derived from move_number parity — fragile (low priority, consumer.py is demo-only)
