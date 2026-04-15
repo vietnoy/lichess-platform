@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-POLARIS_CATALOG_URL = "http://localhost:8182/api/catalog"
-POLARIS_MGMT_URL    = "http://localhost:8182/api/management/v1"
+POLARIS_CATALOG_URL = "http://polaris:8181/api/catalog"
+POLARIS_MGMT_URL    = "http://polaris:8181/api/management/v1"
 CLIENT_ID           = "root"
 CLIENT_SECRET       = os.getenv("POLARIS_BOOTSTRAP_CREDENTIALS", "").split(",")[-1]
 MINIO_BUCKET        = os.getenv("MINIO_BUCKET_PROD")
