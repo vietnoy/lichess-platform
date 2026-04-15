@@ -235,12 +235,17 @@ def _stream_batch(producer: Producer, player_ids: list):
                 timeout=86400  # keep alive for 24 hours
             )
 
+            retry_attempt = 0
             for raw in response.iter_lines():
                 if not raw:
                     continue
 
                 logger.debug(f"[RAW _stream_batch] {raw[:200]}")
-                ev    = json.loads(raw)
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.warning(f"Non-JSON line skipped: {raw[:100]}")
+                    continue
                 etype = ev.get("type")
 
                 # new game started
