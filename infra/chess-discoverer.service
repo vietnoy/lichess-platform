@@ -1,0 +1,19 @@
+[Unit]
+Description=Chess Player Discoverer — grows tracked player list from Kafka events
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/chess
+EnvironmentFile=/opt/chess/.env
+ExecStart=/usr/bin/python3 /opt/chess/ingestion/player_discoverer.py
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chess-discoverer
+
+[Install]
+WantedBy=multi-user.target

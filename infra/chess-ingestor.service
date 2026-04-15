@@ -1,0 +1,19 @@
+[Unit]
+Description=Chess Stream Ingestor — primary + secondary Lichess streams
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/chess
+EnvironmentFile=/opt/chess/.env
+ExecStart=/usr/bin/python3 /opt/chess/ingestion/stream_ingestor.py
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chess-ingestor
+
+[Install]
+WantedBy=multi-user.target
