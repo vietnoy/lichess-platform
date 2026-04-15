@@ -20,7 +20,7 @@ Lichess API
   → processing/transform.py    (clean + enrich)
   → storage/minio prod         (clean parquet, partitioned)
   → StarRocks                  (OLAP query layer)
-  → serving/agent.py           (AI Chess Coach — Claude API tool use)
+  → serving/agent.py           (AI Chess Coach — Gemini 2.5 Flash tool use)
 ```
 
 ---
@@ -93,7 +93,7 @@ is_check, is_capture, played_at
 
 ## AI Chess Coach Design
 
-Agent (not simple RAG) using Claude API tool use:
+Agent (not simple RAG) using Gemini 2.5 Flash (Vertex AI) tool use:
 
 Tools the agent has:
 - get_player_stats(player_id)
@@ -215,6 +215,4 @@ Agent reasons over tool results to give personalized coaching.
 
 ## Known Issues to Fix
 
-- etl.py: max_retries=5 in _stream_batch — remove cap
-- etl.py: logging level DEBUG — change to INFO for production
-- consumer.py: player_id derived from move_number parity — fragile
+- consumer.py: player_id derived from move_number parity — fragile (low priority, consumer.py is demo-only)

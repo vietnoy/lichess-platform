@@ -22,12 +22,26 @@ x-airflow-common: &airflow-common
 
 services:
 
+  # ─── Chess Engine ────────────────────────────────────────────────────────────
+  stockfish:
+    build:
+      context: .
+      dockerfile: Dockerfile.stockfish
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
   # ─── Object Storage ───────────────────────────────────────────────────────────
   minio:
     image: minio/minio:latest
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9002:9000"
+      - "9003:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
@@ -41,16 +55,34 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # ─── Polaris Schema Bootstrap (runs once) ────────────────────────────────────
+  polaris-bootstrap:
+    image: apache/polaris-admin-tool:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      POLARIS_PERSISTENCE_TYPE: relational-jdbc
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres:5432/polaris_db
+      QUARKUS_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      QUARKUS_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+    command: bootstrap -v 3 -r POLARIS -c "${POLARIS_BOOTSTRAP_CREDENTIALS}"
+    restart: "no"
+
   # ─── Iceberg Catalog ──────────────────────────────────────────────────────────
   polaris:
     image: apache/polaris:latest
     ports:
-      - "8181:8181"
+      - "8182:8181"
     depends_on:
       postgres:
         condition: service_healthy
       minio:
         condition: service_healthy
+      polaris-bootstrap:
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:
@@ -80,9 +112,9 @@ services:
         echo "cloud_native_storage_type = S3" >> /opt/starrocks/fe/conf/fe.conf
         /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN
     ports:
-      - "8030:8030"
-      - "9020:9020"
-      - "9030:9030"
+      - "8031:8030"
+      - "9021:9020"
+      - "9031:9030"
     healthcheck:
       test: 'mysql -u root -h starrocks-fe -P 9030 -e "show frontends\G" |grep "Alive: true"'
       interval: 10s
@@ -93,6 +125,18 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  starrocks-init:
+    image: mysql:8.0
+    depends_on:
+      starrocks-fe:
+        condition: service_healthy
+    env_file:
+      - .env
+    command: >
+      bash -c "mysql -h starrocks-fe -P 9030 -u root
+      -e \"ALTER USER 'root'@'%' IDENTIFIED BY '${STARROCKS_PASSWORD}';\""
+    restart: "no"
+
   starrocks-cn-1:
     image: starrocks/cn-ubuntu:4.0-latest
     hostname: starrocks-cn-1
@@ -102,16 +146,13 @@ services:
       - -c
       - |
         sleep 15s
-        mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot -e "ALTER SYSTEM ADD COMPUTE NODE 'starrocks-cn-1:9050';"
+        mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot -p${STARROCKS_PASSWORD} -e "ALTER SYSTEM ADD COMPUTE NODE 'starrocks-cn-1:9050';"
         /opt/starrocks/cn/bin/start_cn.sh
     ports:
-      - "8040:8040"
+      - "8043:8040"
     environment:
       - TZ=UTC
       - HOST_TYPE=FQDN
-    volumes:
-      - starrocks_cn1_storage:/opt/starrocks/cn/storage
-      - starrocks_cn1_log:/opt/starrocks/cn/log
     healthcheck:
       test: 'mysql -u root -h starrocks-fe -P 9030 -e "SHOW COMPUTE NODES\G" |grep "Alive: true"'
       interval: 30s
@@ -126,7 +167,7 @@ services:
   postgres:
     image: postgres:15
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -150,7 +191,7 @@ services:
     command: >
       -c "
       airflow db migrate &&
-      airflow users create --username admin --password ${AIRFLOW_ADMIN_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@chessanalytics.local || true
+      airflow users create --username admin --password ${AIRFLOW_ADMIN_PASSWORD} --firstname Khang --lastname Do --role Admin --email khangdo0110200401102004@gmail.com || true
       "
     restart: on-failure
 
@@ -160,7 +201,7 @@ services:
       airflow-init:
         condition: service_completed_successfully
     ports:
-      - "8081:8080"
+      - "8082:8080"
     command: api-server
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
@@ -216,6 +257,4 @@ services:
 
 volumes:
   minio_data:
-  starrocks_cn1_storage:
-  starrocks_cn1_log:
   postgres_data:

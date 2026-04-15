@@ -8,13 +8,13 @@ default_args = {
     "retry_delay": timedelta(minutes=3),
 }
 
-# ─── DAG 1: Kafka → MinIO (runs every 5 min, drains 300s buffer) ─────────────
+# ─── DAG 1: Kafka → MinIO (runs every 15 min) ─────────────
 with DAG(
     dag_id="kafka_to_minio",
     default_args=default_args,
     description="Consume Kafka topics and flush raw Parquet to MinIO chess-raw bucket",
     start_date=datetime(2026, 4, 14),
-    schedule=timedelta(minutes=5),
+    schedule=timedelta(minutes=15),
     catchup=False,
     tags=["chess", "ingestion", "kafka", "minio"],
 ) as dag_ingest:

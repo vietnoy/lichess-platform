@@ -16,8 +16,8 @@ metadata:
   namespace: chess
 data:
   init_postgres.sql: |
-    SELECT 'CREATE DATABASE airflow_db' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'airflow_db')\gexec
-    SELECT 'CREATE DATABASE polaris_db'  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'polaris_db')\gexec
+    CREATE DATABASE airflow_db;
+    CREATE DATABASE polaris_db;
 ---
 apiVersion: apps/v1
 kind: Deployment

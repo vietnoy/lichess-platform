@@ -19,7 +19,10 @@ data:
   STARROCKS_HOST: starrocks-fe
   STARROCKS_PORT: "9030"
   STARROCKS_USER: root
-  STARROCKS_PASSWORD: ""
+
+  # Stockfish
+  STOCKFISH_URL: http://stockfish:8001/eval
+  STOCKFISH_DEPTH: "18"
 
   # Airflow
   AIRFLOW__CORE__EXECUTOR: LocalExecutor

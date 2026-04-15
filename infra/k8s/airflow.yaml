@@ -9,7 +9,7 @@ spec:
     requests:
       storage: 5Gi
 ---
-# ─── Init Job: migrate DB + create admin user ────────────────────────────────
+# ─── Init Job ─────────────────────────────────────────────────────────────────
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -25,8 +25,8 @@ spec:
           command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done"]
       containers:
         - name: airflow-init
-          image: chess-airflow:latest
-          imagePullPolicy: Never
+          image: vietnoy/chess-airflow:latest
+          imagePullPolicy: Always
           command:
             - /bin/bash
             - -c
@@ -62,30 +62,15 @@ spec:
                   name: chess-secrets
                   key: AIRFLOW_SECRET_KEY
           volumeMounts:
-            - name: dags
-              mountPath: /opt/airflow/dags
             - name: logs
               mountPath: /opt/airflow/logs
-            - name: ingestion
-              mountPath: /ingestion
-            - name: processing
-              mountPath: /processing
       volumes:
-        - name: dags
-          hostPath:
-            path: /opt/chess/dags
         - name: logs
           persistentVolumeClaim:
             claimName: airflow-logs-pvc
-        - name: ingestion
-          hostPath:
-            path: /opt/chess/ingestion
-        - name: processing
-          hostPath:
-            path: /opt/chess/processing
+  backoffLimit: 3
 ---
-# ─── Shared pod template for all Airflow components ──────────────────────────
-# API Server
+# ─── API Server ───────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -103,9 +88,9 @@ spec:
     spec:
       containers:
         - name: airflow-apiserver
-          image: chess-airflow:latest
-          imagePullPolicy: Never
-          command: ["airflow", "api-server", "--workers", "2"]
+          image: vietnoy/chess-airflow:latest
+          imagePullPolicy: Always
+          command: ["airflow", "api-server", "--workers", "1"]
           ports:
             - containerPort: 8080
           envFrom:
@@ -131,41 +116,52 @@ spec:
                 secretKeyRef:
                   name: chess-secrets
                   key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__CORE__DAGS_FOLDER
+              value: /git/repo/dags
           readinessProbe:
             httpGet:
               path: /api/v2/version
               port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 10
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 10
           resources:
             requests:
-              memory: 512Mi
-              cpu: 250m
+              memory: 256Mi
+              cpu: 100m
             limits:
-              memory: 1Gi
+              memory: 768Mi
               cpu: 500m
           volumeMounts:
-            - name: dags
-              mountPath: /opt/airflow/dags
+            - name: git-data
+              mountPath: /git
             - name: logs
               mountPath: /opt/airflow/logs
-            - name: ingestion
-              mountPath: /ingestion
-            - name: processing
-              mountPath: /processing
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.2.1
+          args:
+            - --repo=https://github.com/vietnoy/lichess-platform
+            - --branch=main
+            - --depth=1
+            - --period=30s
+            - --root=/git
+            - --link=repo
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 100m
       volumes:
-        - name: dags
-          hostPath:
-            path: /opt/chess/dags
+        - name: git-data
+          emptyDir: {}
         - name: logs
           persistentVolumeClaim:
             claimName: airflow-logs-pvc
-        - name: ingestion
-          hostPath:
-            path: /opt/chess/ingestion
-        - name: processing
-          hostPath:
-            path: /opt/chess/processing
 ---
 apiVersion: v1
 kind: Service
@@ -193,7 +189,7 @@ spec:
       targetPort: 8080
       nodePort: 30808
 ---
-# Scheduler
+# ─── Scheduler ────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -211,8 +207,8 @@ spec:
     spec:
       containers:
         - name: airflow-scheduler
-          image: chess-airflow:latest
-          imagePullPolicy: Never
+          image: vietnoy/chess-airflow:latest
+          imagePullPolicy: Always
           command: ["airflow", "scheduler"]
           envFrom:
             - configMapRef:
@@ -237,6 +233,8 @@ spec:
                 secretKeyRef:
                   name: chess-secrets
                   key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__CORE__DAGS_FOLDER
+              value: /git/repo/dags
           resources:
             requests:
               memory: 256Mi
@@ -245,29 +243,37 @@ spec:
               memory: 512Mi
               cpu: 500m
           volumeMounts:
-            - name: dags
-              mountPath: /opt/airflow/dags
+            - name: git-data
+              mountPath: /git
             - name: logs
               mountPath: /opt/airflow/logs
-            - name: ingestion
-              mountPath: /ingestion
-            - name: processing
-              mountPath: /processing
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.2.1
+          args:
+            - --repo=https://github.com/vietnoy/lichess-platform
+            - --branch=main
+            - --depth=1
+            - --period=30s
+            - --root=/git
+            - --link=repo
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 100m
       volumes:
-        - name: dags
-          hostPath:
-            path: /opt/chess/dags
+        - name: git-data
+          emptyDir: {}
         - name: logs
           persistentVolumeClaim:
             claimName: airflow-logs-pvc
-        - name: ingestion
-          hostPath:
-            path: /opt/chess/ingestion
-        - name: processing
-          hostPath:
-            path: /opt/chess/processing
 ---
-# Triggerer
+# ─── Triggerer ────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -285,8 +291,8 @@ spec:
     spec:
       containers:
         - name: airflow-triggerer
-          image: chess-airflow:latest
-          imagePullPolicy: Never
+          image: vietnoy/chess-airflow:latest
+          imagePullPolicy: Always
           command: ["airflow", "triggerer"]
           envFrom:
             - configMapRef:
@@ -311,6 +317,8 @@ spec:
                 secretKeyRef:
                   name: chess-secrets
                   key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__CORE__DAGS_FOLDER
+              value: /git/repo/dags
           resources:
             requests:
               memory: 256Mi
@@ -319,29 +327,37 @@ spec:
               memory: 512Mi
               cpu: 500m
           volumeMounts:
-            - name: dags
-              mountPath: /opt/airflow/dags
+            - name: git-data
+              mountPath: /git
             - name: logs
               mountPath: /opt/airflow/logs
-            - name: ingestion
-              mountPath: /ingestion
-            - name: processing
-              mountPath: /processing
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.2.1
+          args:
+            - --repo=https://github.com/vietnoy/lichess-platform
+            - --branch=main
+            - --depth=1
+            - --period=30s
+            - --root=/git
+            - --link=repo
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 100m
       volumes:
-        - name: dags
-          hostPath:
-            path: /opt/chess/dags
+        - name: git-data
+          emptyDir: {}
         - name: logs
           persistentVolumeClaim:
             claimName: airflow-logs-pvc
-        - name: ingestion
-          hostPath:
-            path: /opt/chess/ingestion
-        - name: processing
-          hostPath:
-            path: /opt/chess/processing
 ---
-# DAG Processor
+# ─── DAG Processor ────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -359,8 +375,8 @@ spec:
     spec:
       containers:
         - name: airflow-dag-processor
-          image: chess-airflow:latest
-          imagePullPolicy: Never
+          image: vietnoy/chess-airflow:latest
+          imagePullPolicy: Always
           command: ["airflow", "dag-processor"]
           envFrom:
             - configMapRef:
@@ -385,6 +401,8 @@ spec:
                 secretKeyRef:
                   name: chess-secrets
                   key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__CORE__DAGS_FOLDER
+              value: /git/repo/dags
           resources:
             requests:
               memory: 256Mi
@@ -393,24 +411,32 @@ spec:
               memory: 512Mi
               cpu: 500m
           volumeMounts:
-            - name: dags
-              mountPath: /opt/airflow/dags
+            - name: git-data
+              mountPath: /git
             - name: logs
               mountPath: /opt/airflow/logs
-            - name: ingestion
-              mountPath: /ingestion
-            - name: processing
-              mountPath: /processing
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.2.1
+          args:
+            - --repo=https://github.com/vietnoy/lichess-platform
+            - --branch=main
+            - --depth=1
+            - --period=30s
+            - --root=/git
+            - --link=repo
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 100m
       volumes:
-        - name: dags
-          hostPath:
-            path: /opt/chess/dags
+        - name: git-data
+          emptyDir: {}
         - name: logs
           persistentVolumeClaim:
             claimName: airflow-logs-pvc
-        - name: ingestion
-          hostPath:
-            path: /opt/chess/ingestion
-        - name: processing
-          hostPath:
-            path: /opt/chess/processing

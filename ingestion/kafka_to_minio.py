@@ -6,11 +6,9 @@ Topics consumed:
   lichess.moves       →  chess-raw/moves/date=YYYY-MM-DD/batch_<ts>.parquet
   lichess.game_end    →  chess-raw/game_end/date=YYYY-MM-DD/batch_<ts>.parquet
 
-Run standalone:  python kafka_to_minio.py
-Run via Airflow: BashOperator → python /ingestion/kafka_to_minio.py --batch-seconds 300
+Triggered by Airflow every 15 minutes — drains all available messages then exits.
 """
 
-import argparse
 import io
 import json
 import logging
@@ -25,7 +23,6 @@ import pyarrow.parquet as pq
 from confluent_kafka import Consumer, KafkaError
 from dotenv import load_dotenv
 from minio import Minio
-from minio.error import S3Error
 
 load_dotenv()
 
@@ -43,9 +40,10 @@ CLUSTER_API_SECRET = os.getenv("CLUSTER_API_SECRET")
 MINIO_ENDPOINT     = os.getenv("MINIO_ENDPOINT", "minio:9000").replace("http://", "").replace("https://", "")
 MINIO_ACCESS_KEY   = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY   = os.getenv("MINIO_SECRET_KEY")
-BUCKET_RAW         = os.getenv("MINIO_BUCKET_RAW", "chess-raw")
+BUCKET_DEV         = os.getenv("MINIO_BUCKET_DEV")
 
-TOPICS = ["lichess.game_start", "lichess.moves", "lichess.game_end"]
+TOPICS        = ["lichess.game_start", "lichess.moves", "lichess.game_end"]
+IDLE_TIMEOUT  = 10
 
 
 def build_consumer() -> Consumer:
@@ -64,9 +62,9 @@ def build_consumer() -> Consumer:
 def build_minio() -> Minio:
     use_ssl = not MINIO_ENDPOINT.startswith("localhost") and not MINIO_ENDPOINT.startswith("minio:")
     client  = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=use_ssl)
-    if not client.bucket_exists(BUCKET_RAW):
-        client.make_bucket(BUCKET_RAW)
-        logger.info(f"Created bucket: {BUCKET_RAW}")
+    if not client.bucket_exists(BUCKET_DEV):
+        client.make_bucket(BUCKET_DEV)
+        logger.info(f"Created bucket: {BUCKET_DEV}")
     return client
 
 
@@ -82,35 +80,37 @@ def flush_to_minio(minio: Minio, topic: str, records: list[dict]):
 
     date_str  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     ts        = int(time.time())
-    topic_key = topic.split(".")[-1]  # game_start / moves / game_end
+    topic_key = topic.split(".")[-1]
     obj_path  = f"{topic_key}/date={date_str}/batch_{ts}.parquet"
 
     minio.put_object(
-        bucket_name=BUCKET_RAW,
+        bucket_name=BUCKET_DEV,
         object_name=obj_path,
         data=buf,
         length=buf.getbuffer().nbytes,
         content_type="application/octet-stream",
     )
-    logger.info(f"Flushed {len(records):,} records → s3://{BUCKET_RAW}/{obj_path}")
+    logger.info(f"Flushed {len(records):,} records → s3://{BUCKET_DEV}/{obj_path}")
 
 
-def run(batch_seconds: int = 300):
+def run():
     consumer = build_consumer()
     minio    = build_minio()
     consumer.subscribe(TOPICS)
 
-    buffers:    dict[str, list] = defaultdict(list)
-    last_flush: dict[str, float] = {t: time.time() for t in TOPICS}
+    buffers:  dict[str, list] = defaultdict(list)
+    last_msg  = time.time()
 
-    logger.info(f"Consuming {TOPICS}  (flush every {batch_seconds}s)")
+    logger.info(f"Consuming {TOPICS} — will exit after {IDLE_TIMEOUT}s idle...")
 
     try:
         while True:
             msg = consumer.poll(timeout=1.0)
 
             if msg is None:
-                pass
+                if time.time() - last_msg >= IDLE_TIMEOUT:
+                    logger.info("Queue drained — flushing and exiting.")
+                    break
             elif msg.error():
                 if msg.error().code() != KafkaError._PARTITION_EOF:
                     logger.error(f"Kafka error: {msg.error()}")
@@ -118,27 +118,13 @@ def run(batch_seconds: int = 300):
                 topic  = msg.topic()
                 record = json.loads(msg.value().decode("utf-8"))
                 buffers[topic].append(record)
+                last_msg = time.time()
 
-            now = time.time()
-            for topic in TOPICS:
-                if now - last_flush[topic] >= batch_seconds:
-                    if buffers[topic]:
-                        flush_to_minio(minio, topic, buffers[topic])
-                        buffers[topic] = []
-                    last_flush[topic] = now
-
-    except KeyboardInterrupt:
-        logger.info("Shutting down — flushing remaining buffers...")
-        for topic in TOPICS:
-            if buffers[topic]:
-                flush_to_minio(minio, topic, buffers[topic])
     finally:
+        for topic in TOPICS:
+            flush_to_minio(minio, topic, buffers[topic])
         consumer.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--batch-seconds", type=int, default=300,
-                        help="Flush buffer to MinIO every N seconds (default 300)")
-    args = parser.parse_args()
-    run(batch_seconds=args.batch_seconds)
+    run()

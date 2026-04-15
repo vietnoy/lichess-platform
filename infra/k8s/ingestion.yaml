@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: etl
-          image: chess-airflow:latest
-          imagePullPolicy: Never
+          image: vietnoy/chess-airflow:latest
+          imagePullPolicy: Always
           command: ["python", "/ingestion/etl.py"]
           envFrom:
             - secretRef:
@@ -53,8 +53,8 @@ spec:
     spec:
       containers:
         - name: kafka-to-minio
-          image: chess-airflow:latest
-          imagePullPolicy: Never
+          image: vietnoy/chess-airflow:latest
+          imagePullPolicy: Always
           command: ["python", "/ingestion/kafka_to_minio.py", "--batch-seconds", "270"]
           envFrom:
             - configMapRef:

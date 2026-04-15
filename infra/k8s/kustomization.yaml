@@ -13,3 +13,4 @@ resources:
   - starrocks-fe.yaml
   - starrocks-cn.yaml
   - airflow.yaml
+  - stockfish.yaml
