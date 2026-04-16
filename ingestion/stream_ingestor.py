@@ -382,6 +382,9 @@ def secondary_stream_loop(producer: Producer, primary_ids: set):
     Reloads DISCOVERED_FILE every SECONDARY_REFRESH seconds.
     """
     logger.info("Secondary stream thread starting")
+    backoff    = 30
+    HEALTHY_THRESHOLD = 60
+
     while not _shutdown.is_set():
         discovered = load_discovered_players(primary_ids)
         if not discovered:
@@ -393,7 +396,6 @@ def secondary_stream_loop(producer: Producer, primary_ids: set):
         body         = "\n".join(discovered)
         boards:      dict = {}
         prev_clocks: dict = {}
-        start_time   = time.time()
 
         try:
             response = requests.post(
@@ -408,19 +410,22 @@ def secondary_stream_loop(producer: Producer, primary_ids: set):
             if response.status_code == 429:
                 logger.warning(f"Secondary stream rate limited — cooldown {RATE_LIMIT_COOLDOWN}s")
                 time.sleep(RATE_LIMIT_COOLDOWN)
+                backoff = 30
                 continue
 
             if response.status_code != 200:
-                logger.error(f"Secondary stream HTTP {response.status_code}")
-                time.sleep(30)
+                logger.error(f"Secondary stream HTTP {response.status_code} — backoff {backoff}s")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 120)
                 continue
 
+            connect_time = time.time()
             logger.info("Secondary stream connected")
 
             for raw in response.iter_lines():
                 if _shutdown.is_set():
                     return
-                if time.time() - start_time >= SECONDARY_REFRESH:
+                if time.time() - connect_time >= SECONDARY_REFRESH:
                     logger.info("Secondary stream: refresh interval — reconnecting with updated list")
                     break
                 if not raw:
@@ -431,9 +436,19 @@ def secondary_stream_loop(producer: Producer, primary_ids: set):
                     continue
                 process_event(ev, producer, boards, prev_clocks)
 
+            uptime = time.time() - connect_time
+            if uptime < HEALTHY_THRESHOLD:
+                backoff = min(backoff * 2, 120)
+                logger.warning(f"Secondary stream only lived {uptime:.0f}s (unhealthy) — backoff {backoff}s")
+            else:
+                backoff = 30
+                logger.info(f"Secondary stream closed after {uptime:.0f}s — reconnecting in {backoff}s")
+            time.sleep(backoff)
+
         except Exception as e:
-            logger.warning(f"Secondary stream error: {e} — retrying in 30s")
-            time.sleep(30)
+            logger.warning(f"Secondary stream error: {e} — backoff {backoff}s")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 120)
 
 
 def run():
