@@ -310,6 +310,11 @@ def stream_batch(producer: Producer, batch_id: int, players: list[str], disconne
 
     while not _shutdown.is_set():
         try:
+            # Sweep for missed games BEFORE opening the stream so we don't
+            # block iter_lines() and cause Lichess to time out the connection
+            if last_disconnect and (int(time.time() * 1000) - last_disconnect) > 30_000:
+                bulk_sweep(producer, players, last_disconnect)
+
             response = requests.post(
                 url="https://lichess.org/api/stream/games-by-users",
                 headers=HDR_NDJSON,
@@ -333,10 +338,6 @@ def stream_batch(producer: Producer, batch_id: int, players: list[str], disconne
 
             connect_time = time.time()
             logger.info(f"[Batch {batch_id}] Stream connected")
-
-            # Only sweep if we had real downtime (> 30s), not on initial connect
-            if last_disconnect and (int(time.time() * 1000) - last_disconnect) > 30_000:
-                bulk_sweep(producer, players, last_disconnect)
 
             for raw in response.iter_lines():
                 if _shutdown.is_set():
