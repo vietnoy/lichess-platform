@@ -1,28 +1,12 @@
-"""
-stream_ingestor.py — Multi-stream ingestor with rate-limit-safe reconnects.
-
-Primary stream:  tracks up to 900 seed players across 3 staggered connections.
-Secondary stream: tracks discovered players (written by player_discoverer.py).
-
-Key behaviours:
-  - No /api/users/status polling — zero status calls
-  - Staggered batch reconnects: 15s gap between each batch connection
-  - 429 → 90s mandatory cooldown, then reconnect that batch only
-  - Bulk sweep on reconnect: fetches completed games missed during downtime
-  - game_id used as Kafka message key for downstream deduplication
-
-Run:  python ingestion/stream_ingestor.py
-"""
-
-import chess
 import json
 import logging
 import os
+import queue
 import signal
+import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import requests
 from confluent_kafka import Producer
@@ -43,28 +27,26 @@ CLUSTER_API_KEY    = os.getenv("CLUSTER_API_KEY")
 CLUSTER_API_SECRET = os.getenv("CLUSTER_API_SECRET")
 
 TOPIC_GAME_START = "lichess.game_start"
-TOPIC_MOVES      = "lichess.moves"
 TOPIC_GAME_END   = "lichess.game_end"
+TOPIC_MOVES      = "lichess.moves"
 
 HDR_NDJSON = {
     "Authorization": f"Bearer {LICHESS_TOKEN}",
-    "Accept": "application/x-ndjson",
-    "Content-Type": "text/plain",
+    "Accept":        "application/x-ndjson",
+    "Content-Type":  "text/plain",
 }
 HDR_JSON = {
     "Authorization": f"Bearer {LICHESS_TOKEN}",
-    "Accept": "application/json",
+    "Accept":        "application/json",
 }
 
-# Shared file written by player_discoverer.py
-DISCOVERED_FILE    = Path(os.getenv("PLAYER_LIST_FILE", "/tmp/chess_discovered.json"))
-RECONNECT_STAGGER  = 15    # seconds between each batch connection at startup
-RATE_LIMIT_COOLDOWN = 90   # mandatory wait on 429
-MAX_BATCH          = 300   # Lichess hard limit per connection
-# Refresh secondary stream with discovered players every N seconds
-SECONDARY_REFRESH  = int(os.getenv("SECONDARY_REFRESH", "3600"))
+PLAYER_DB        = os.getenv("PLAYER_DB", "/tmp/chess_players.db")
+POLL_INTERVAL    = 30
+RATE_LIMIT_WAIT  = 90
+STREAM_ROTATE_AT = 900
+STREAM_ID_BASE   = "chess-analytics"
 
-_shutdown = threading.Event()
+_shutdown      = threading.Event()
 _producer_lock = threading.Lock()
 
 
@@ -77,7 +59,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
 
-def build_producer() -> Producer:
+def build_producer():
     return Producer({
         "bootstrap.servers": BOOTSTRAP_SERVER,
         "sasl.username":     CLUSTER_API_KEY,
@@ -88,7 +70,7 @@ def build_producer() -> Producer:
     })
 
 
-def produce(producer: Producer, topic: str, key: str, value: dict):
+def produce(producer, topic, key, value):
     with _producer_lock:
         producer.produce(
             topic=topic,
@@ -98,12 +80,35 @@ def produce(producer: Producer, topic: str, key: str, value: dict):
         producer.poll(0)
 
 
-def get_top_players() -> list[str]:
-    """Fetch top players across bullet/blitz/rapid — called ONCE at startup."""
-    game_styles = ["bullet", "blitz", "rapid"]
+def init_db():
+    con = sqlite3.connect(PLAYER_DB)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            id         TEXT PRIMARY KEY,
+            first_seen TEXT NOT NULL,
+            last_seen  TEXT NOT NULL
+        )
+    """)
+    con.commit()
+    con.close()
+
+
+def load_players():
+    try:
+        con = sqlite3.connect(PLAYER_DB)
+        rows = con.execute("SELECT id FROM players").fetchall()
+        con.close()
+        return [r[0] for r in rows]
+    except Exception as e:
+        logger.warning(f"Could not load players: {e}")
+        return []
+
+
+def fetch_top_players():
     seen = set()
     ids  = []
-    for style in game_styles:
+    for style in ["bullet", "blitz", "rapid"]:
         try:
             r = requests.get(
                 f"https://lichess.org/api/player/top/300/{style}",
@@ -116,395 +121,368 @@ def get_top_players() -> list[str]:
                     if uid not in seen:
                         seen.add(uid)
                         ids.append(uid)
-                logger.info(f"Fetched {style} top players — total unique so far: {len(ids)}")
-            else:
-                logger.warning(f"top/{style} returned {r.status_code}")
-            time.sleep(2)  # be polite between styles
+                logger.info(f"Fetched top {style} — {len(ids)} unique players so far")
+            time.sleep(2)
         except Exception as e:
-            logger.error(f"Error fetching top {style} players: {e}")
+            logger.error(f"Error fetching top {style}: {e}")
     return ids
 
 
-def load_discovered_players(primary_ids: set) -> list[str]:
-    """Load players discovered by player_discoverer.py, excluding primaries."""
-    if not DISCOVERED_FILE.exists():
-        return []
-    try:
-        data = json.loads(DISCOVERED_FILE.read_text())
-        players = [p for p in data.get("players", []) if p not in primary_ids]
-        return players[:MAX_BATCH]
-    except Exception as e:
-        logger.warning(f"Failed to read discovered players: {e}")
-    return []
+def seed_db(players):
+    now = datetime.now(timezone.utc).isoformat()
+    con = sqlite3.connect(PLAYER_DB)
+    con.executemany(
+        "INSERT OR IGNORE INTO players (id, first_seen, last_seen) VALUES (?, ?, ?)",
+        [(p, now, now) for p in players],
+    )
+    con.commit()
+    count = con.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+    con.close()
+    logger.info(f"Seeded DB — total players: {count}")
 
 
-def bulk_sweep(producer: Producer, player_ids: list[str], since_ts: int):
-    """
-    Fetch recently completed games for players missed during downtime.
-    since_ts: Unix timestamp in milliseconds of last disconnect.
-    Only sweeps the first 10 players to avoid rate limiting.
-    """
-    logger.info(f"Bulk sweep for {min(len(player_ids), 10)} players since {since_ts}")
-    swept = 0
-    for uid in player_ids[:10]:
+class GameStream:
+    def __init__(self, stream_id, producer, export_queue):
+        self.stream_id    = stream_id
+        self.producer     = producer
+        self.export_queue = export_queue
+        self._lock        = threading.Lock()
+        self.active       = set()
+        self.finished     = set()
+        self.stop_event   = threading.Event()
+        self._response    = None
+        self._resp_lock   = threading.Lock()
+        self.thread       = threading.Thread(
+            target=self._run,
+            name=f"stream-{stream_id}",
+            daemon=True,
+        )
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        with self._resp_lock:
+            if self._response:
+                try:
+                    self._response.close()
+                except Exception:
+                    pass
+
+    def join(self, timeout=10):
+        self.thread.join(timeout=timeout)
+
+    def total(self):
+        with self._lock:
+            return len(self.active) + len(self.finished)
+
+    def needs_rotation(self):
+        return self.total() >= STREAM_ROTATE_AT
+
+    def active_ids(self):
+        with self._lock:
+            return list(self.active)
+
+    def add_games(self, game_ids):
+        if not game_ids:
+            return
+        r = requests.post(
+            f"https://lichess.org/api/stream/games/{self.stream_id}/add",
+            headers=HDR_NDJSON,
+            data=",".join(game_ids),
+            timeout=10,
+        )
+        if r.status_code == 200:
+            with self._lock:
+                self.active.update(game_ids)
+            logger.info(f"[Stream {self.stream_id}] Added {len(game_ids)} — total: {self.total()}")
+        else:
+            logger.warning(f"[Stream {self.stream_id}] Add failed: HTTP {r.status_code}")
+
+    def _handle_event(self, ev):
+        gid         = ev.get("id")
+        status_name = ev.get("statusName", "")
+        wp          = ev.get("players", {}).get("white", {})
+        bp          = ev.get("players", {}).get("black", {})
+
+        if not gid:
+            return
+
+        if status_name == "started":
+            msg = {
+                "game_id"      : gid,
+                "timestamp"    : datetime.now(timezone.utc).isoformat(),
+                "speed"        : ev.get("speed"),
+                "rated"        : ev.get("rated"),
+                "variant"      : ev.get("variant"),
+                "white_id"     : wp.get("userId") or wp.get("user", {}).get("id") or wp.get("id"),
+                "white_rating" : wp.get("rating"),
+                "white_title"  : wp.get("title") or wp.get("user", {}).get("title"),
+                "black_id"     : bp.get("userId") or bp.get("user", {}).get("id") or bp.get("id"),
+                "black_rating" : bp.get("rating"),
+                "black_title"  : bp.get("title") or bp.get("user", {}).get("title"),
+                "source"       : ev.get("source"),
+                "tournament_id": (ev.get("tournament") or {}).get("id"),
+            }
+            produce(self.producer, TOPIC_GAME_START, gid, msg)
+            logger.info(f"[GAME START] {gid}  {msg['white_id']} vs {msg['black_id']}")
+
+        elif status_name not in ("", "created", "started"):
+            msg = {
+                "game_id"  : gid,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "winner"   : ev.get("winner"),
+                "status"   : status_name,
+            }
+            produce(self.producer, TOPIC_GAME_END, gid, msg)
+            logger.info(f"[GAME END] {gid}  winner={msg['winner']}  status={status_name}")
+            with self._lock:
+                self.active.discard(gid)
+                self.finished.add(gid)
+            self.export_queue.put(gid)
+
+    def _run(self):
+        backoff = 30
+        logger.info(f"[Stream {self.stream_id}] Starting")
+
+        while not self.stop_event.is_set():
+            try:
+                response = requests.post(
+                    f"https://lichess.org/api/stream/games/{self.stream_id}",
+                    headers=HDR_NDJSON,
+                    data="",
+                    stream=True,
+                    timeout=86400,
+                )
+                with self._resp_lock:
+                    self._response = response
+
+                if response.status_code == 429:
+                    wait = max(int(response.headers.get("Retry-After", RATE_LIMIT_WAIT)), RATE_LIMIT_WAIT)
+                    logger.warning(f"[Stream {self.stream_id}] Rate limited, waiting {wait}s")
+                    time.sleep(wait)
+                    continue
+
+                if response.status_code != 200:
+                    logger.error(f"[Stream {self.stream_id}] HTTP {response.status_code}, backoff {backoff}s")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 120)
+                    continue
+
+                backoff = 30
+                logger.info(f"[Stream {self.stream_id}] Connected")
+
+                for raw in response.iter_lines():
+                    if self.stop_event.is_set():
+                        break
+                    if not raw:
+                        continue
+                    try:
+                        ev = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    self._handle_event(ev)
+
+                if self.stop_event.is_set():
+                    break
+
+                logger.info(f"[Stream {self.stream_id}] Disconnected, reconnecting in {backoff}s")
+                time.sleep(backoff)
+
+            except Exception as e:
+                if self.stop_event.is_set():
+                    break
+                logger.warning(f"[Stream {self.stream_id}] Error: {e}, backoff {backoff}s")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 120)
+
+        logger.info(f"[Stream {self.stream_id}] Stopped")
+
+
+def export_worker(export_queue, producer):
+    batch_wait    = 10
+    max_batch     = 300
+
+    while not _shutdown.is_set():
+        batch     = []
+        deadline  = time.time() + batch_wait
+
+        while len(batch) < max_batch and time.time() < deadline:
+            try:
+                remaining = max(0.1, deadline - time.time())
+                batch.append(export_queue.get(timeout=remaining))
+            except queue.Empty:
+                break
+
+        if not batch:
+            continue
+
         try:
-            r = requests.get(
-                f"https://lichess.org/api/games/user/{uid}",
-                headers=HDR_NDJSON,
-                params={"since": since_ts, "max": 5, "ongoing": "false"},
-                timeout=15,
-                stream=True,
+            r = requests.post(
+                "https://lichess.org/api/games/export/_ids?moves=true&clocks=true&opening=true",
+                headers={**HDR_JSON, "Content-Type": "text/plain", "Accept": "application/x-ndjson"},
+                data=",".join(batch),
+                timeout=30,
             )
-            for line in r.iter_lines():
+
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", RATE_LIMIT_WAIT))
+                logger.warning(f"[Export] Rate limited, waiting {wait}s")
+                for gid in batch:
+                    export_queue.put(gid)
+                time.sleep(wait)
+                continue
+
+            if r.status_code != 200:
+                logger.warning(f"[Export] HTTP {r.status_code}")
+                for gid in batch:
+                    export_queue.put(gid)
+                continue
+
+            count = 0
+            for line in r.text.splitlines():
+                line = line.strip()
                 if not line:
                     continue
                 try:
                     game = json.loads(line)
-                    gid  = game.get("id")
-                    if not gid:
-                        continue
-                    players_data = game.get("players", {})
-                    wp = players_data.get("white", {}).get("user", {})
-                    bp = players_data.get("black", {}).get("user", {})
-                    msg = {
-                        "game_id"      : gid,
-                        "timestamp"    : datetime.now(timezone.utc).isoformat(),
-                        "speed"        : game.get("speed"),
-                        "rated"        : game.get("rated"),
-                        "variant"      : game.get("variant"),
-                        "white_id"     : wp.get("id"),
-                        "white_rating" : players_data.get("white", {}).get("rating"),
-                        "white_title"  : wp.get("title"),
-                        "black_id"     : bp.get("id"),
-                        "black_rating" : players_data.get("black", {}).get("rating"),
-                        "black_title"  : bp.get("title"),
-                        "source"       : "bulk_sweep",
-                        "tournament_id": game.get("tournament", {}).get("id"),
-                    }
-                    produce(producer, TOPIC_GAME_START, gid, msg)
-                    swept += 1
-                except Exception:
-                    pass
-            time.sleep(1)  # space out bulk requests
+                    produce(producer, TOPIC_MOVES, game["id"], game)
+                    count += 1
+                except Exception as e:
+                    logger.warning(f"[Export] Failed to parse line: {e}")
+
+            logger.info(f"[Export] Fetched {count}/{len(batch)} games")
+
         except Exception as e:
-            logger.warning(f"Bulk sweep failed for {uid}: {e}")
-    logger.info(f"Bulk sweep complete — {swept} games recovered")
+            logger.warning(f"[Export] Error: {e}")
+            for gid in batch:
+                export_queue.put(gid)
+            time.sleep(5)
 
 
-def process_event(ev: dict, producer: Producer, boards: dict, prev_clocks: dict):
-    etype = ev.get("type")
+def status_poller_loop(game_queue):
+    known_games = set()
 
-    if etype == "gameStart":
-        g   = ev.get("game", {})
-        gid = g.get("gameId") or g.get("id")
-        if not gid:
-            return
-        boards[gid]      = chess.Board()
-        prev_clocks[gid] = (None, None)
-        wp  = g.get("white", {})
-        bp  = g.get("black", {})
-        msg = {
-            "game_id"      : gid,
-            "timestamp"    : datetime.now(timezone.utc).isoformat(),
-            "speed"        : g.get("speed"),
-            "rated"        : g.get("rated"),
-            "variant"      : (g.get("variant", {}).get("key")
-                              if isinstance(g.get("variant"), dict)
-                              else g.get("variant")),
-            "white_id"     : wp.get("id"),
-            "white_rating" : wp.get("rating"),
-            "white_title"  : wp.get("title"),
-            "black_id"     : bp.get("id"),
-            "black_rating" : bp.get("rating"),
-            "black_title"  : bp.get("title"),
-            "source"       : g.get("source"),
-            "tournament_id": g.get("tournamentId"),
-        }
-        produce(producer, TOPIC_GAME_START, gid, msg)
-        logger.info(f"[GAME START] {gid}  {wp.get('id')} vs {bp.get('id')}")
+    while not _shutdown.is_set():
+        players = load_players()
+        logger.info(f"Status poll — {len(players)} players")
 
-    elif etype == "gameState":
-        gid        = ev.get("gameId")
-        if not gid:
-            return
-        moves_list = ev.get("moves", "").split()
-        wc         = ev.get("wc", ev.get("wtime", 0))
-        bc         = ev.get("bc", ev.get("btime", 0))
-        wc         = wc // 1000 if wc > 1000 else wc
-        bc         = bc // 1000 if bc > 1000 else bc
-
-        if gid not in boards:
-            boards[gid]      = chess.Board()
-            prev_clocks[gid] = (None, None)
-
-        board = boards[gid]
-        board.reset()
-        for m in moves_list:
+        for i in range(0, len(players), 100):
+            if _shutdown.is_set():
+                break
+            batch = players[i:i + 100]
             try:
-                board.push(chess.Move.from_uci(m))
-            except Exception:
-                pass
-
-        ply         = len(moves_list)
-        lm          = moves_list[-1] if moves_list else None
-        if not lm:
-            return
-
-        phase       = "opening" if ply <= 20 else ("middlegame" if ply <= 60 else "endgame")
-        whose_moved = "white" if ply % 2 == 1 else "black"
-        prev_wc, prev_bc = prev_clocks.get(gid, (None, None))
-        time_spent  = ((prev_wc - wc) if whose_moved == "white" and prev_wc is not None
-                       else (prev_bc - bc) if whose_moved == "black" and prev_bc is not None
-                       else None)
-        prev_clocks[gid] = (wc, bc)
-
-        msg = {
-            "game_id"      : gid,
-            "timestamp"    : datetime.now(timezone.utc).isoformat(),
-            "move"         : lm,
-            "fen"          : board.fen(),
-            "white_clock"  : wc,
-            "black_clock"  : bc,
-            "move_number"  : board.fullmove_number,
-            "game_phase"   : phase,
-            "time_spent_s" : time_spent,
-            "time_pressure": wc < 10 or bc < 10,
-            "is_check"     : board.is_check(),
-        }
-        produce(producer, TOPIC_MOVES, gid, msg)
-        logger.info(f"[MOVE] {gid}  #{board.fullmove_number}  {lm}  phase={phase}")
-
-    elif etype == "gameFinish":
-        g      = ev.get("game", {})
-        gid    = g.get("gameId") or g.get("id")
-        if not gid:
-            return
-        status = g.get("status", {})
-        msg    = {
-            "game_id"  : gid,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "winner"   : g.get("winner"),
-            "status"   : status.get("name") if isinstance(status, dict) else status,
-        }
-        produce(producer, TOPIC_GAME_END, gid, msg)
-        logger.info(f"[GAME END] {gid}  winner={msg['winner']}  status={msg['status']}")
-        boards.pop(gid, None)
-        prev_clocks.pop(gid, None)
-
-
-def stream_batch(producer: Producer, batch_id: int, players: list[str], disconnect_ts: int):
-    """
-    Long-lived stream for one batch of players.
-    Runs in its own thread. Reconnects indefinitely until _shutdown is set.
-    disconnect_ts: timestamp (ms) of when this batch last disconnected (for bulk sweep).
-    """
-    body            = ",".join(players)
-    boards:      dict = {}
-    prev_clocks: dict = {}
-    backoff          = 30   # start conservatively after a potential IP rate-limit
-    last_disconnect  = disconnect_ts
-    # minimum seconds a stream must stay alive to count as "healthy"
-    HEALTHY_THRESHOLD = 60
-
-    logger.info(f"[Batch {batch_id}] Starting stream for {len(players)} players")
-
-    while not _shutdown.is_set():
-        try:
-            # Sweep for missed games BEFORE opening the stream so we don't
-            # block iter_lines() and cause Lichess to time out the connection
-            if last_disconnect and (int(time.time() * 1000) - last_disconnect) > 30_000:
-                bulk_sweep(producer, players, last_disconnect)
-
-            response = requests.post(
-                url="https://lichess.org/api/stream/games-by-users",
-                headers=HDR_NDJSON,
-                params={"withCurrentGames": "true"},
-                data=body,
-                stream=True,
-                timeout=86400,
-            )
-
-            if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", RATE_LIMIT_COOLDOWN))
-                wait = max(retry_after, RATE_LIMIT_COOLDOWN)
-                logger.warning(f"[Batch {batch_id}] Rate limited — Retry-After={retry_after}s, waiting {wait}s")
-                time.sleep(wait)
-                backoff = 30
-                continue
-
-            if response.status_code != 200:
-                logger.error(f"[Batch {batch_id}] HTTP {response.status_code} — backoff {backoff}s")
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 120)
-                continue
-
-            connect_time = time.time()
-            logger.info(f"[Batch {batch_id}] Stream connected")
-
-            for raw in response.iter_lines():
-                if _shutdown.is_set():
-                    return
-                if not raw:
-                    continue
-                try:
-                    ev = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.warning(f"[Batch {batch_id}] Non-JSON: {raw[:80]}")
-                    continue
-                process_event(ev, producer, boards, prev_clocks)
-
-            # Stream closed by server
-            uptime = time.time() - connect_time
-            last_disconnect = int(time.time() * 1000)
-
-            if uptime < HEALTHY_THRESHOLD:
-                # Connection died too fast — likely soft rate-limit; back off longer
-                backoff = min(backoff * 2, 120)
-                logger.warning(
-                    f"[Batch {batch_id}] Stream only lived {uptime:.0f}s "
-                    f"(unhealthy) — backoff {backoff}s"
+                r = requests.get(
+                    "https://lichess.org/api/users/status",
+                    params={"ids": ",".join(batch), "withGameIds": "true"},
+                    headers=HDR_JSON,
+                    timeout=10,
                 )
-            else:
-                backoff = 30  # healthy session, reset to conservative default
-                logger.info(f"[Batch {batch_id}] Stream closed after {uptime:.0f}s — reconnecting in {backoff}s")
+                for user in r.json():
+                    playing_id = user.get("playingId")
+                    if playing_id and playing_id not in known_games:
+                        known_games.add(playing_id)
+                        game_queue.put(playing_id)
+                        logger.info(f"New game: {playing_id} ({user['id']})")
+            except Exception as e:
+                logger.warning(f"Status poll error: {e}")
+            time.sleep(1)
 
-            time.sleep(backoff)
-
-        except Exception as e:
-            logger.warning(f"[Batch {batch_id}] Stream error: {e} — backoff {backoff}s")
-            last_disconnect = int(time.time() * 1000)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 120)
-
-    logger.info(f"[Batch {batch_id}] Thread exiting")
+        elapsed = 0
+        while elapsed < POLL_INTERVAL and not _shutdown.is_set():
+            time.sleep(1)
+            elapsed += 1
 
 
-def secondary_stream_loop(producer: Producer, primary_ids: set):
-    """
-    Secondary stream thread: tracks dynamically discovered players.
-    Reloads DISCOVERED_FILE every SECONDARY_REFRESH seconds.
-    """
-    logger.info("Secondary stream thread starting")
-    backoff    = 30
-    HEALTHY_THRESHOLD = 60
+def game_adder_loop(game_queue, streams, export_queue, producer):
+    stream_counter = len(streams)
 
     while not _shutdown.is_set():
-        discovered = load_discovered_players(primary_ids)
-        if not discovered:
-            logger.info("No discovered players yet — secondary stream idle, checking in 60s")
-            time.sleep(60)
-            continue
-
-        logger.info(f"Secondary stream: {len(discovered)} discovered players")
-        body         = ",".join(discovered)
-        boards:      dict = {}
-        prev_clocks: dict = {}
-
+        pending = []
         try:
-            response = requests.post(
-                url="https://lichess.org/api/stream/games-by-users",
-                headers=HDR_NDJSON,
-                params={"withCurrentGames": "true"},
-                data=body,
-                stream=True,
-                timeout=86400,
-            )
+            while True:
+                pending.append(game_queue.get_nowait())
+        except queue.Empty:
+            pass
 
-            if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", RATE_LIMIT_COOLDOWN))
-                wait = max(retry_after, RATE_LIMIT_COOLDOWN)
-                logger.warning(f"Secondary stream rate limited — Retry-After={retry_after}s, waiting {wait}s")
-                time.sleep(wait)
-                backoff = 30
-                continue
+        if pending:
+            current = streams[-1]
 
-            if response.status_code != 200:
-                logger.error(f"Secondary stream HTTP {response.status_code} — backoff {backoff}s")
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 120)
-                continue
+            if current.needs_rotation():
+                active_ids = current.active_ids()
+                current.stop()
+                stream_counter += 1
+                new_id     = f"{STREAM_ID_BASE}-{stream_counter}"
+                new_stream = GameStream(new_id, producer, export_queue)
+                new_stream.start()
+                streams.append(new_stream)
+                logger.info(f"Stream rotated to {new_id}, carrying {len(active_ids)} active games")
+                if active_ids:
+                    new_stream.add_games(active_ids)
+                current = new_stream
 
-            connect_time = time.time()
-            logger.info("Secondary stream connected")
+            current.add_games(pending)
 
-            for raw in response.iter_lines():
-                if _shutdown.is_set():
-                    return
-                if time.time() - connect_time >= SECONDARY_REFRESH:
-                    logger.info("Secondary stream: refresh interval — reconnecting with updated list")
-                    break
-                if not raw:
-                    continue
-                try:
-                    ev = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                process_event(ev, producer, boards, prev_clocks)
-
-            uptime = time.time() - connect_time
-            if uptime < HEALTHY_THRESHOLD:
-                backoff = min(backoff * 2, 120)
-                logger.warning(f"Secondary stream only lived {uptime:.0f}s (unhealthy) — backoff {backoff}s")
-            else:
-                backoff = 30
-                logger.info(f"Secondary stream closed after {uptime:.0f}s — reconnecting in {backoff}s")
-            time.sleep(backoff)
-
-        except Exception as e:
-            logger.warning(f"Secondary stream error: {e} — backoff {backoff}s")
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 120)
+        time.sleep(60)
 
 
 def run():
-    logger.info("stream_ingestor starting up — fetching seed players (once)")
-    primary_ids = get_top_players()
+    init_db()
 
-    if not primary_ids:
-        logger.error("Could not fetch any seed players — exiting")
-        return
+    player_count = len(load_players())
+    if player_count == 0:
+        logger.info("No players in DB — fetching top players from Lichess...")
+        players = fetch_top_players()
+        if not players:
+            logger.error("Could not fetch any players — exiting")
+            return
+        seed_db(players)
+        player_count = len(load_players())
 
-    producer = build_producer()
+    logger.info(f"Starting with {player_count} tracked players")
 
-    # Split primary players into batches of 300
-    batches = [primary_ids[i:i + MAX_BATCH] for i in range(0, len(primary_ids), MAX_BATCH)]
-    logger.info(f"Primary players: {len(primary_ids)} across {len(batches)} stream(s)")
+    producer     = build_producer()
+    game_queue   = queue.Queue()
+    export_queue = queue.Queue()
 
-    threads = []
+    stream = GameStream(f"{STREAM_ID_BASE}-1", producer, export_queue)
+    stream.start()
+    streams = [stream]
 
-    # Start primary batch threads with staggered connects to avoid burst
-    for idx, batch in enumerate(batches):
-        if idx > 0:
-            logger.info(f"Stagger: waiting {RECONNECT_STAGGER}s before batch {idx + 1}")
-            time.sleep(RECONNECT_STAGGER)
-        t = threading.Thread(
-            target=stream_batch,
-            args=(producer, idx + 1, batch, 0),
-            daemon=True,
-            name=f"primary-batch-{idx + 1}",
-        )
-        t.start()
-        threads.append(t)
-
-    # Start secondary stream thread for discovered players
-    sec = threading.Thread(
-        target=secondary_stream_loop,
-        args=(producer, set(primary_ids)),
+    threading.Thread(
+        target=status_poller_loop,
+        args=(game_queue,),
         daemon=True,
-        name="secondary-stream",
-    )
-    sec.start()
-    threads.append(sec)
+        name="status-poller",
+    ).start()
+
+    threading.Thread(
+        target=game_adder_loop,
+        args=(game_queue, streams, export_queue, producer),
+        daemon=True,
+        name="game-adder",
+    ).start()
+
+    threading.Thread(
+        target=export_worker,
+        args=(export_queue, producer),
+        daemon=True,
+        name="export-worker",
+    ).start()
 
     try:
-        while not _shutdown.is_set():
-            time.sleep(1)
+        _shutdown.wait()
     except KeyboardInterrupt:
         _shutdown.set()
 
-    logger.info("Flushing producer...")
+    logger.info("Shutting down...")
+    for s in streams:
+        s.stop()
+    for s in streams:
+        s.join(timeout=10)
     producer.flush()
-    logger.info("Shutdown complete.")
+    logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":

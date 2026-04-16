@@ -12,15 +12,15 @@ default_args = {
 with DAG(
     dag_id="kafka_to_minio",
     default_args=default_args,
-    description="Consume Kafka topics and flush raw Parquet to MinIO chess-raw bucket",
+    description="Spark Structured Streaming — Kafka to MinIO chess-dev, micro-batch every 10 min",
     start_date=datetime(2026, 4, 14),
-    schedule=timedelta(minutes=15),
+    schedule=None,
     catchup=False,
-    tags=["chess", "ingestion", "kafka", "minio"],
+    tags=["chess", "ingestion", "kafka", "minio", "spark"],
 ) as dag_ingest:
 
     kafka_to_minio = BashOperator(
-        task_id="flush_kafka_to_minio",
+        task_id="spark_kafka_to_minio",
         bash_command="python /git/repo/ingestion/kafka_to_minio.py",
     )
 

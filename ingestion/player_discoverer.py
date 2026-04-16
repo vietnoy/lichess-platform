@@ -1,22 +1,11 @@
-"""
-player_discoverer.py — Kafka consumer that grows the tracked player list.
-
-Consumes lichess.game_start events. For each game, extracts both players.
-Any player not already in the known list is added to DISCOVERED_FILE.
-The secondary stream in stream_ingestor.py reloads this file every hour.
-
-Zero HTTP calls — this process never talks to the Lichess API.
-
-Run:  python ingestion/player_discoverer.py
-"""
-
 import json
 import logging
 import os
 import signal
+import sqlite3
 import threading
 import time
-from pathlib import Path
+from datetime import datetime, timezone
 
 from confluent_kafka import Consumer, KafkaError
 from dotenv import load_dotenv
@@ -34,13 +23,9 @@ BOOTSTRAP_SERVER   = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
 CLUSTER_API_KEY    = os.getenv("CLUSTER_API_KEY")
 CLUSTER_API_SECRET = os.getenv("CLUSTER_API_SECRET")
 
-TOPIC_GAME_START   = "lichess.game_start"
-DISCOVERED_FILE    = Path(os.getenv("PLAYER_LIST_FILE", "/tmp/chess_discovered.json"))
-
-# Flush discovered list to disk every N seconds (not on every event)
-FLUSH_INTERVAL = 30
-# Cap how many discovered players we track (secondary stream limit)
-MAX_DISCOVERED = 300
+PLAYER_DB      = os.getenv("PLAYER_DB", "/tmp/chess_players.db")
+TOPIC_GAME_START = "lichess.game_start"
+FLUSH_INTERVAL   = 30
 
 _shutdown = threading.Event()
 
@@ -54,7 +39,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
 
-def build_consumer() -> Consumer:
+def build_consumer():
     return Consumer({
         "bootstrap.servers":  BOOTSTRAP_SERVER,
         "sasl.username":      CLUSTER_API_KEY,
@@ -62,39 +47,53 @@ def build_consumer() -> Consumer:
         "security.protocol":  "SASL_SSL",
         "sasl.mechanisms":    "PLAIN",
         "group.id":           "player-discoverer",
-        "auto.offset.reset":  "latest",  # only new games matter
+        "auto.offset.reset":  "latest",
         "enable.auto.commit": True,
     })
 
 
-def load_discovered() -> dict:
-    """Load existing discovered players from disk."""
-    if DISCOVERED_FILE.exists():
-        try:
-            return json.loads(DISCOVERED_FILE.read_text())
-        except Exception as e:
-            logger.warning(f"Failed to load {DISCOVERED_FILE}: {e}")
-    return {"players": [], "count": 0}
+def init_db():
+    con = sqlite3.connect(PLAYER_DB)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            id         TEXT PRIMARY KEY,
+            first_seen TEXT NOT NULL,
+            last_seen  TEXT NOT NULL
+        )
+    """)
+    con.commit()
+    con.close()
 
 
-def save_discovered(data: dict):
-    """Atomically write discovered players to disk."""
-    tmp = DISCOVERED_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    tmp.replace(DISCOVERED_FILE)
+def save_players(new_players):
+    if not new_players:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    con = sqlite3.connect(PLAYER_DB)
+    con.executemany(
+        "INSERT OR IGNORE INTO players (id, first_seen, last_seen) VALUES (?, ?, ?)",
+        [(p, now, now) for p in new_players],
+    )
+    con.commit()
+    total = con.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+    con.close()
+    logger.info(f"Saved {len(new_players)} new player(s) — total: {total}")
 
 
 def run():
-    # Load existing discovered state (survives restarts)
-    state     = load_discovered()
-    known_set = set(state.get("players", []))
-    new_batch = set()
-    last_flush = time.time()
+    init_db()
 
-    consumer = build_consumer()
+    con      = sqlite3.connect(PLAYER_DB)
+    existing = set(r[0] for r in con.execute("SELECT id FROM players").fetchall())
+    con.close()
+    logger.info(f"player_discoverer started — {len(existing)} players already tracked")
+
+    consumer  = build_consumer()
     consumer.subscribe([TOPIC_GAME_START])
 
-    logger.info(f"player_discoverer started — {len(known_set)} players already tracked")
+    new_batch  = set()
+    last_flush = time.time()
 
     try:
         while not _shutdown.is_set():
@@ -108,36 +107,21 @@ def run():
             else:
                 try:
                     event = json.loads(msg.value().decode("utf-8"))
-                    white = event.get("white_id")
-                    black = event.get("black_id")
-
-                    for player in [white, black]:
-                        if player and player not in known_set:
-                            known_set.add(player)
+                    for player in [event.get("white_id"), event.get("black_id")]:
+                        if player and player not in existing:
+                            existing.add(player)
                             new_batch.add(player)
                 except Exception as e:
                     logger.warning(f"Failed to parse event: {e}")
 
-            # Flush to disk periodically
             if new_batch and (time.time() - last_flush >= FLUSH_INTERVAL):
-                # Keep list capped at MAX_DISCOVERED (LRU-style: keep newest)
-                all_players = list(known_set)[-MAX_DISCOVERED:]
-                known_set   = set(all_players)
-                data        = {"players": all_players, "count": len(all_players)}
-                save_discovered(data)
-                logger.info(
-                    f"Discovered {len(new_batch)} new player(s) this cycle — "
-                    f"total tracked: {len(all_players)}"
-                )
+                save_players(new_batch)
                 new_batch.clear()
                 last_flush = time.time()
 
     finally:
-        # Final flush before exit
         if new_batch:
-            all_players = list(known_set)[-MAX_DISCOVERED:]
-            save_discovered({"players": all_players, "count": len(all_players)})
-            logger.info(f"Final flush: {len(all_players)} discovered players saved")
+            save_players(new_batch)
         consumer.close()
         logger.info("player_discoverer shut down")
 

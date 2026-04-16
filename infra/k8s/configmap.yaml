@@ -6,8 +6,8 @@ metadata:
 data:
   # MinIO
   MINIO_ENDPOINT: http://minio:9000
-  MINIO_BUCKET_RAW: chess-raw
-  MINIO_BUCKET_ENRICHED: chess-enriched
+  MINIO_BUCKET_DEV: chess-dev
+  MINIO_BUCKET_PROD: chess-prod
 
   # Polaris
   POLARIS_URI: http://polaris:8181/api/catalog
