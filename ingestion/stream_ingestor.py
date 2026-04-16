@@ -298,7 +298,7 @@ def stream_batch(producer: Producer, batch_id: int, players: list[str], disconne
     Runs in its own thread. Reconnects indefinitely until _shutdown is set.
     disconnect_ts: timestamp (ms) of when this batch last disconnected (for bulk sweep).
     """
-    body            = "\n".join(players)
+    body            = ",".join(players)
     boards:      dict = {}
     prev_clocks: dict = {}
     backoff          = 30   # start conservatively after a potential IP rate-limit
@@ -325,9 +325,11 @@ def stream_batch(producer: Producer, batch_id: int, players: list[str], disconne
             )
 
             if response.status_code == 429:
-                logger.warning(f"[Batch {batch_id}] Rate limited — cooldown {RATE_LIMIT_COOLDOWN}s")
-                time.sleep(RATE_LIMIT_COOLDOWN)
-                backoff = 30  # reset to conservative value after cooldown
+                retry_after = int(response.headers.get("Retry-After", RATE_LIMIT_COOLDOWN))
+                wait = max(retry_after, RATE_LIMIT_COOLDOWN)
+                logger.warning(f"[Batch {batch_id}] Rate limited — Retry-After={retry_after}s, waiting {wait}s")
+                time.sleep(wait)
+                backoff = 30
                 continue
 
             if response.status_code != 200:
@@ -394,7 +396,7 @@ def secondary_stream_loop(producer: Producer, primary_ids: set):
             continue
 
         logger.info(f"Secondary stream: {len(discovered)} discovered players")
-        body         = "\n".join(discovered)
+        body         = ",".join(discovered)
         boards:      dict = {}
         prev_clocks: dict = {}
 
@@ -409,8 +411,10 @@ def secondary_stream_loop(producer: Producer, primary_ids: set):
             )
 
             if response.status_code == 429:
-                logger.warning(f"Secondary stream rate limited — cooldown {RATE_LIMIT_COOLDOWN}s")
-                time.sleep(RATE_LIMIT_COOLDOWN)
+                retry_after = int(response.headers.get("Retry-After", RATE_LIMIT_COOLDOWN))
+                wait = max(retry_after, RATE_LIMIT_COOLDOWN)
+                logger.warning(f"Secondary stream rate limited — Retry-After={retry_after}s, waiting {wait}s")
+                time.sleep(wait)
                 backoff = 30
                 continue
 
