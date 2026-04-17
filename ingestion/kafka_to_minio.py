@@ -80,7 +80,7 @@ SPARK_PACKAGES = ",".join([
 def build_spark():
     return (
         SparkSession.builder
-        .master("local[*]")
+        .master("spark://spark-master:7077")
         .appName("chess-kafka-to-minio")
         .config("spark.jars.packages",                        SPARK_PACKAGES)
         .config("spark.sql.shuffle.partitions",               "4")

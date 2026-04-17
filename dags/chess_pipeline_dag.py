@@ -1,5 +1,6 @@
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from datetime import datetime, timedelta
 
 default_args = {
@@ -19,9 +20,16 @@ with DAG(
     tags=["chess", "ingestion", "kafka", "minio", "spark"],
 ) as dag_ingest:
 
-    kafka_to_minio = BashOperator(
+    kafka_to_minio = SparkSubmitOperator(
         task_id="spark_kafka_to_minio",
-        bash_command="python /git/repo/ingestion/kafka_to_minio.py",
+        application="/git/repo/ingestion/kafka_to_minio.py",
+        conn_id="spark_default",
+        packages=(
+            "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,"
+            "org.apache.hadoop:hadoop-aws:3.3.4,"
+            "com.amazonaws:aws-java-sdk-bundle:1.12.262"
+        ),
+        verbose=True,
     )
 
 # ─── DAG 2: Annotate moves (runs every 15 min) ───────────────────────────────

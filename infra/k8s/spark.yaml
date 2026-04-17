@@ -1,0 +1,158 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-master
+  namespace: chess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark-master
+  template:
+    metadata:
+      labels:
+        app: spark-master
+    spec:
+      initContainers:
+        - name: git-sync-init
+          image: registry.k8s.io/git-sync/git-sync:v4.2.1
+          args:
+            - --repo=https://github.com/vietnoy/lichess-platform
+            - --branch=main
+            - --depth=1
+            - --one-time
+            - --root=/git
+            - --link=repo
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+      containers:
+        - name: spark-master
+          image: vietnoy/chess-spark:latest
+          command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+          env:
+            - name: SPARK_MASTER_HOST
+              value: spark-master
+          ports:
+            - containerPort: 7077
+            - containerPort: 8080
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 1Gi
+              cpu: 500m
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.2.1
+          args:
+            - --repo=https://github.com/vietnoy/lichess-platform
+            - --branch=main
+            - --depth=1
+            - --period=30s
+            - --root=/git
+            - --link=repo
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 100m
+      volumes:
+        - name: git-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-master
+  namespace: chess
+spec:
+  selector:
+    app: spark-master
+  ports:
+    - name: cluster
+      port: 7077
+      targetPort: 7077
+    - name: ui
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-worker
+  namespace: chess
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: spark-worker
+  template:
+    metadata:
+      labels:
+        app: spark-worker
+    spec:
+      initContainers:
+        - name: git-sync-init
+          image: registry.k8s.io/git-sync/git-sync:v4.2.1
+          args:
+            - --repo=https://github.com/vietnoy/lichess-platform
+            - --branch=main
+            - --depth=1
+            - --one-time
+            - --root=/git
+            - --link=repo
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+      containers:
+        - name: spark-worker
+          image: vietnoy/chess-spark:latest
+          command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+          env:
+            - name: SPARK_WORKER_MEMORY
+              value: 2g
+            - name: SPARK_WORKER_CORES
+              value: "2"
+          ports:
+            - containerPort: 8081
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: 500m
+            limits:
+              memory: 2Gi
+              cpu: "2"
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.2.1
+          args:
+            - --repo=https://github.com/vietnoy/lichess-platform
+            - --branch=main
+            - --depth=1
+            - --period=30s
+            - --root=/git
+            - --link=repo
+          volumeMounts:
+            - name: git-data
+              mountPath: /git
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 100m
+      volumes:
+        - name: git-data
+          emptyDir: {}

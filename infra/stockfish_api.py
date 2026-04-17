@@ -7,7 +7,7 @@ engine: chess.engine.SimpleEngine | None = None
 
 
 @asynccontextmanager
-async def lifespan():
+async def lifespan(app):
     global engine
     engine = chess.engine.SimpleEngine.popen_uci("/usr/games/stockfish")
     yield

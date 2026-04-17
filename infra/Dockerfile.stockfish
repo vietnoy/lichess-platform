@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir fastapi uvicorn[standard] chess
 
-COPY stockfish_api.py /app/stockfish_api.py
+COPY infra/stockfish_api.py /app/stockfish_api.py
 
 WORKDIR /app
 EXPOSE 8001
