@@ -29,6 +29,12 @@ with DAG(
             "org.apache.hadoop:hadoop-aws:3.3.4,"
             "com.amazonaws:aws-java-sdk-bundle:1.12.262"
         ),
+        conf={
+            "spark.driver.host": "airflow-scheduler",
+            "spark.driver.bindAddress": "0.0.0.0",
+            "spark.driver.port": "20002",
+            "spark.blockManager.port": "20003",
+        },
         verbose=True,
     )
 
