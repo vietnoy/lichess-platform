@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, to_date, current_timestamp
 from pyspark.sql.types import (
-    BooleanType, DoubleType, IntegerType, StringType, StructField, StructType,
+    BooleanType, IntegerType, LongType, StringType, StructField, StructType,
 )
 
 load_dotenv()
@@ -45,22 +45,22 @@ SCHEMAS = {
         StructField("tournament_id", StringType()),
     ]),
     "lichess.moves": StructType([
-        StructField("game_id",       StringType()),
-        StructField("id",            StringType()),
-        StructField("timestamp",     StringType()),
-        StructField("move",          StringType()),
-        StructField("fen",           StringType()),
-        StructField("white_clock",   IntegerType()),
-        StructField("black_clock",   IntegerType()),
-        StructField("move_number",   IntegerType()),
-        StructField("game_phase",    StringType()),
-        StructField("time_spent_s",  DoubleType()),
-        StructField("time_pressure", BooleanType()),
-        StructField("is_check",      BooleanType()),
-        StructField("moves",         StringType()),
-        StructField("speed",         StringType()),
-        StructField("rated",         BooleanType()),
-        StructField("variant",       StringType()),
+        StructField("id",          StringType()),
+        StructField("rated",       BooleanType()),
+        StructField("variant",     StringType()),
+        StructField("speed",       StringType()),
+        StructField("perf",        StringType()),
+        StructField("createdAt",   LongType()),
+        StructField("lastMoveAt",  LongType()),
+        StructField("status",      StringType()),
+        StructField("source",      StringType()),
+        StructField("winner",      StringType()),
+        StructField("moves",       StringType()),
+        StructField("clocks",      StringType()),
+        StructField("pgn",         StringType()),
+        StructField("clock",       StringType()),
+        StructField("players",     StringType()),
+        StructField("opening",     StringType()),
     ]),
     "lichess.game_end": StructType([
         StructField("game_id",   StringType()),
@@ -70,19 +70,12 @@ SCHEMAS = {
     ]),
 }
 
-SPARK_PACKAGES = ",".join([
-    "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0",
-    "org.apache.hadoop:hadoop-aws:3.3.4",
-    "com.amazonaws:aws-java-sdk-bundle:1.12.262",
-])
-
 
 def build_spark():
     return (
         SparkSession.builder
         .master("spark://spark-master:7077")
         .appName("chess-kafka-to-minio")
-        .config("spark.jars.packages",                        SPARK_PACKAGES)
         .config("spark.sql.shuffle.partitions",               "4")
         .config("spark.hadoop.fs.s3a.endpoint",               MINIO_ENDPOINT)
         .config("spark.hadoop.fs.s3a.access.key",             MINIO_ACCESS_KEY)
@@ -111,9 +104,13 @@ def run():
             .load()
             .select(from_json(col("value").cast("string"), schema).alias("d"))
             .select("d.*")
-            .withColumn("date", to_date(col("timestamp").cast("timestamp")))
             .withColumn("ingested_at", current_timestamp())
         )
+
+        if topic == "lichess.moves":
+            df = df.withColumn("date", to_date((col("createdAt") / 1000).cast("timestamp")))
+        else:
+            df = df.withColumn("date", to_date(col("timestamp").cast("timestamp")))
 
         q = (
             df.writeStream
