@@ -13,6 +13,7 @@ spec:
       labels:
         app: spark-master
     spec:
+      enableServiceLinks: false
       initContainers:
         - name: git-sync-init
           image: registry.k8s.io/git-sync/git-sync:v4.2.1
@@ -32,7 +33,11 @@ spec:
           command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
           env:
             - name: SPARK_MASTER_HOST
-              value: spark-master
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SPARK_MASTER_PORT
+              value: "7077"
           ports:
             - containerPort: 7077
             - containerPort: 8080
@@ -42,7 +47,7 @@ spec:
           resources:
             requests:
               memory: 512Mi
-              cpu: 250m
+              cpu: 100m
             limits:
               memory: 1Gi
               cpu: 500m
@@ -100,6 +105,7 @@ spec:
       labels:
         app: spark-worker
     spec:
+      enableServiceLinks: false
       initContainers:
         - name: git-sync-init
           image: registry.k8s.io/git-sync/git-sync:v4.2.1
@@ -118,6 +124,8 @@ spec:
           image: vietnoy/chess-spark:latest
           command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
           env:
+            - name: SPARK_MASTER_PORT
+              value: "7077"
             - name: SPARK_WORKER_MEMORY
               value: 2g
             - name: SPARK_WORKER_CORES
@@ -130,7 +138,7 @@ spec:
           resources:
             requests:
               memory: 1Gi
-              cpu: 500m
+              cpu: 200m
             limits:
               memory: 2Gi
               cpu: "2"

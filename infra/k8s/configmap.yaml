@@ -24,6 +24,9 @@ data:
   STOCKFISH_URL: http://stockfish:8001/eval
   STOCKFISH_DEPTH: "18"
 
+  # Spark
+  AIRFLOW_CONN_SPARK_DEFAULT: spark://spark-master:7077
+
   # Airflow
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"

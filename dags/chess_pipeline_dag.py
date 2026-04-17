@@ -12,7 +12,7 @@ default_args = {
 # ─── DAG 1: Kafka → MinIO (runs every 15 min) ─────────────
 with DAG(
     dag_id="kafka_to_minio",
-    default_args=default_args,
+    default_args={**default_args, "retries": 0},
     description="Spark Structured Streaming — Kafka to MinIO chess-dev, micro-batch every 10 min",
     start_date=datetime(2026, 4, 14),
     schedule=None,
