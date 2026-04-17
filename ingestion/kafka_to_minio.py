@@ -1,3 +1,4 @@
+import logging
 import os
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
@@ -87,6 +88,9 @@ def build_spark():
     )
 
 
+logger = logging.getLogger(__name__)
+
+
 def run():
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
@@ -112,14 +116,18 @@ def run():
         else:
             df = df.withColumn("date", to_date(col("timestamp").cast("timestamp")))
 
+        def write_batch(batch_df, batch_id, key=topic_key):
+            count = batch_df.count()
+            logger.info(f"[{key}] batch={batch_id} rows={count}")
+            if count > 0:
+                batch_df.write.mode("append").partitionBy("date").parquet(f"s3a://{BUCKET_DEV}/{key}")
+
         q = (
             df.writeStream
-            .format("parquet")
             .outputMode("append")
-            .option("path",               f"s3a://{BUCKET_DEV}/{topic_key}")
             .option("checkpointLocation", f"s3a://{BUCKET_DEV}/_checkpoints/{topic_key}")
-            .partitionBy("date")
             .trigger(processingTime="10 minutes")
+            .foreachBatch(write_batch)
             .start()
         )
 
