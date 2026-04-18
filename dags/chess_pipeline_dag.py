@@ -33,7 +33,7 @@ with DAG(
             "spark.driver.host": "airflow-scheduler",
             "spark.driver.bindAddress": "0.0.0.0",
             "spark.driver.port": "20002",
-            "spark.blockManager.port": "20003",
+            "spark.blockManager.port": "20003"
         },
         verbose=True,
     )
@@ -62,16 +62,10 @@ with DAG(
             "spark.driver.host": "airflow-scheduler",
             "spark.driver.bindAddress": "0.0.0.0",
             "spark.driver.port": "20002",
-            "spark.blockManager.port": "20003",
+            "spark.blockManager.port": "20003"
         },
         verbose=True,
     )
-    conf={
-            "spark.driver.host": "airflow-scheduler",
-            "spark.driver.bindAddress": "0.0.0.0",
-            "spark.driver.port": "20002",
-            "spark.blockManager.port": "20003",
-        }
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────
 with DAG(
