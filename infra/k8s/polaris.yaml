@@ -160,6 +160,8 @@ spec:
               pip install -q requests python-dotenv &&
               python /git/repo/infra/setup_polaris.py
           envFrom:
+            - configMapRef:
+                name: chess-config
             - secretRef:
                 name: chess-secrets
           volumeMounts:

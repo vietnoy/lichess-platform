@@ -147,6 +147,60 @@ PLAYER_MOVES_SCHEMA = {
 }
 
 
+def create_principal(token: str, name: str):
+    r = requests.post(f"{POLARIS_MGMT_URL}/principals", headers=hdrs(token),
+                      json={"principal": {"name": name, "type": "SERVICE"}})
+    if r.status_code == 201:
+        data  = r.json()
+        creds = data.get("credentials") or data.get("principal", {}).get("credentials", {})
+        logger.info(f"Created principal '{name}'")
+        return creds.get("clientId"), creds.get("clientSecret")
+    elif r.status_code == 409:
+        r2 = requests.post(f"{POLARIS_MGMT_URL}/principals/{name}/rotate-credentials", headers=hdrs(token))
+        if r2.status_code == 200:
+            c = r2.json()
+            return c.get("clientId"), c.get("clientSecret")
+    logger.error(f"Failed to create principal '{name}': {r.text}")
+    return None, None
+
+
+def create_catalog_role(token: str, role: str):
+    r = requests.post(f"{POLARIS_MGMT_URL}/catalogs/{WAREHOUSE}/catalog-roles",
+                      headers=hdrs(token), json={"catalogRole": {"name": role}})
+    if r.status_code in [200, 201, 409]:
+        logger.info(f"Catalog role '{role}' ready")
+
+
+def grant_privilege(token: str, role: str, grant: dict):
+    r = requests.put(
+        f"{POLARIS_MGMT_URL}/catalogs/{WAREHOUSE}/catalog-roles/{role}/grants",
+        headers=hdrs(token), json={"grant": grant}
+    )
+    if r.status_code not in [200, 201]:
+        logger.warning(f"Grant failed for {role}: {r.status_code} {r.text}")
+
+
+def link_principal_to_catalog_role(token: str, principal: str, catalog_role: str):
+    p_role = f"{principal}_role"
+    requests.post(f"{POLARIS_MGMT_URL}/principal-roles", headers=hdrs(token),
+                  json={"principalRole": {"name": p_role}})
+    requests.put(f"{POLARIS_MGMT_URL}/principals/{principal}/principal-roles",
+                 headers=hdrs(token), json={"principalRole": {"name": p_role}})
+    r = requests.put(f"{POLARIS_MGMT_URL}/principal-roles/{p_role}/catalog-roles/{WAREHOUSE}",
+                     headers=hdrs(token), json={"catalogRole": {"name": catalog_role}})
+    if r.status_code in [200, 201]:
+        logger.info(f"Linked '{principal}' to '{catalog_role}'")
+
+
+def setup_principal(token: str, name: str, role: str, grants: list):
+    cid, csecret = create_principal(token, name)
+    create_catalog_role(token, role)
+    for g in grants:
+        grant_privilege(token, role, g)
+    link_principal_to_catalog_role(token, name, role)
+    return cid, csecret
+
+
 def main():
     if not wait_for_polaris():
         logger.error("Polaris not ready — aborting")
@@ -154,11 +208,28 @@ def main():
 
     token = get_token()
 
-    # create_catalog(token)
-    # create_namespace(token)
-    create_table(token, "chess_raw_events", PLAYER_MOVES_SCHEMA)
+    create_catalog(token)
+    create_namespace(token)
+    create_table(token, "player_moves", PLAYER_MOVES_SCHEMA)
+
+    etl_id, etl_secret = setup_principal(token, "airflow_etl", "catalog_admin", [
+        {"type": "catalog",   "privilege": "CATALOG_MANAGE_CONTENT"},
+        {"type": "namespace", "namespace": [NAMESPACE], "privilege": "NAMESPACE_FULL_METADATA"},
+    ])
+
+    sr_id, sr_secret = setup_principal(token, "starrocks_query", "catalog_reader", [
+        {"type": "catalog",   "privilege": "CATALOG_MANAGE_METADATA"},
+        {"type": "catalog",   "privilege": "TABLE_READ_DATA"},
+        {"type": "catalog",   "privilege": "TABLE_LIST"},
+        {"type": "namespace", "namespace": [NAMESPACE], "privilege": "NAMESPACE_LIST"},
+    ])
 
     logger.info("Polaris setup complete")
+    if etl_id:
+        logger.info(f"airflow_etl     id={etl_id}  secret={etl_secret}")
+    if sr_id:
+        logger.info(f"starrocks_query id={sr_id}  secret={sr_secret}")
+    logger.info("Update chess-secrets: POLARIS_ETL_CLIENT_ID/SECRET and STARROCKS_POLARIS_CREDENTIAL")
 
 
 if __name__ == "__main__":
