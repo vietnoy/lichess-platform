@@ -11,14 +11,14 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW_CONN_SPARK_DEFAULT: spark://spark-master:7077
   env_file:
     - .env
   volumes:
     - ../dags:/opt/airflow/dags
     - ../logs:/opt/airflow/logs
-    - ../ingestion:/ingestion
-    - ../processing:/processing
-    # - ../credentials:/credentials:ro  # uncomment when Vertex AI service account is ready
+    - ../ingestion:/opt/airflow/ingestion
+    - ../processing:/opt/airflow/processing
 
 services:
 

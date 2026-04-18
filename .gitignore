@@ -5,3 +5,5 @@ venv/
 .DS_Store
 infra/k8s/secrets.yaml
 infra/.env
+credentials.txt
+logs

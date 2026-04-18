@@ -38,23 +38,23 @@ with DAG(
         verbose=True,
     )
 
-# ─── DAG 2: Annotate moves (runs every 15 min) ───────────────────────────────
+# ─── DAG 2: MinIO → Stockfish annotation → Polaris (daily at 01:00 UTC) ───────
 with DAG(
-    dag_id="annotate_moves",
+    dag_id="process_to_polaris",
     default_args=default_args,
-    description="Read raw moves from MinIO, call Lichess Cloud Eval, write enriched Parquet",
+    description="Parse games, annotate with Stockfish, write player_moves to Polaris Iceberg",
     start_date=datetime(2026, 4, 14),
-    schedule=timedelta(minutes=15),
-    catchup=False,
-    tags=["chess", "processing", "annotation"],
-) as dag_annotate:
+    schedule="0 1 * * *",
+    catchup=True,
+    tags=["chess", "processing", "polaris", "stockfish"],
+) as dag_process:
 
-    annotate = BashOperator(
-        task_id="run_annotate",
-        bash_command="python /git/repo/processing/annotate.py --date {{ ds }}",
+    process = BashOperator(
+        task_id="run_process_to_polaris",
+        bash_command="python /git/repo/processing/process_to_polaris.py --date {{ ds }}",
     )
 
-# ─── DAG 3: Load enriched data into StarRocks via Polaris (runs every 30 min) ─
+# ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────
 with DAG(
     dag_id="init_catalog_starrocks",
     default_args=default_args,

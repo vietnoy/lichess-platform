@@ -126,7 +126,7 @@ def run():
             df.writeStream
             .outputMode("append")
             .option("checkpointLocation", f"s3a://{BUCKET_DEV}/_checkpoints/{topic_key}")
-            .trigger(processingTime="10 minutes")
+            .trigger(processingTime="60 minutes")
             .foreachBatch(write_batch)
             .start()
         )

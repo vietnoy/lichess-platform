@@ -1,8 +1,8 @@
-FROM apache/airflow:3.0.1-python3.11
+FROM apache/airflow:latest
 
 USER root
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc librdkafka-dev openjdk-17-jdk-headless && \
+    apt-get install -y --no-install-recommends gcc librdkafka-dev openjdk-17-jdk-headless procps default-mysql-client && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
@@ -10,8 +10,11 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 USER airflow
 RUN pip install --no-cache-dir \
     apache-airflow-providers-apache-spark \
+    apache-airflow-providers-fab \
     minio \
     chess \
     pyspark==3.5.0
 
-RUN python -c "from pyspark.sql import SparkSession; SparkSession.builder.config('spark.jars.packages', 'org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262').getOrCreate().stop()"
+ENV SPARK_HOME=/home/airflow/.local/lib/python3.13/site-packages/pyspark
+ENV PATH=$PATH:$SPARK_HOME/bin
+

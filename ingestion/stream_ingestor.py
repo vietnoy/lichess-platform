@@ -273,6 +273,12 @@ class GameStream:
                 backoff = 30
                 logger.info(f"[Stream {self.stream_id}] Connected")
 
+                with self._lock:
+                    to_readd = list(self.active)
+                if to_readd:
+                    time.sleep(1)
+                    self.add_games(to_readd)
+
                 for raw in response.iter_lines():
                     if self.stop_event.is_set():
                         break

@@ -14,6 +14,7 @@ data:
   POLARIS_DB_USER: postgres
   POLARIS_DB_URL: jdbc:postgresql://postgres:5432/polaris_db
   POLARIS_NAMESPACE: prod
+  POLARIS_WAREHOUSE: chess_warehouse
 
   # StarRocks
   STARROCKS_HOST: starrocks-fe

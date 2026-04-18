@@ -127,10 +127,10 @@ spec:
             failureThreshold: 10
           resources:
             requests:
-              memory: 256Mi
+              memory: 512Mi
               cpu: 100m
             limits:
-              memory: 768Mi
+              memory: 1500Mi
               cpu: 500m
           volumeMounts:
             - name: git-data
@@ -237,10 +237,10 @@ spec:
               value: /git/repo/dags
           resources:
             requests:
-              memory: 256Mi
+              memory: 512Mi
               cpu: 250m
             limits:
-              memory: 512Mi
+              memory: 2Gi
               cpu: 500m
           volumeMounts:
             - name: git-data
@@ -272,6 +272,23 @@ spec:
         - name: logs
           persistentVolumeClaim:
             claimName: airflow-logs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-scheduler
+  namespace: chess
+spec:
+  selector:
+    app: airflow-scheduler
+  clusterIP: None
+  ports:
+    - name: spark-driver
+      port: 20002
+      targetPort: 20002
+    - name: spark-blockmanager
+      port: 20003
+      targetPort: 20003
 ---
 # ─── Triggerer ────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
