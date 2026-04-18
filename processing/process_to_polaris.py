@@ -143,19 +143,13 @@ def run(date_str: str):
     game_end_path   = f"s3a://{BUCKET_DEV}/game_end/date={date_str}"
 
     logger.info(f"Reading raw game exports for date={date_str}")
-    games_pd = spark.read.parquet(moves_path).toPandas()
+    games_df = spark.read.parquet(moves_path)
 
-    if games_pd.empty:
+    if games_df.head(1) == []:
         logger.info(f"No games found for date={date_str}, skipping")
         spark.stop()
         return
 
-    logger.info(f"Loaded exploding into individual moves")
-    moves_pd = explode_games_to_moves(games_pd)
-    logger.info(f"Exploded to moves annotating with Stockfish")
-    moves_pd = annotate_moves(moves_pd)
-
-    logger.info("Reading game_start and game_end")
     game_start_df = spark.read.parquet(game_start_path)
     game_end_df   = spark.read.parquet(game_end_path).select(
         col("game_id"),
@@ -163,16 +157,25 @@ def run(date_str: str):
         col("status").alias("end_status"),
     )
 
-    moves_df = spark.createDataFrame(moves_pd)
+    chunk_size = 5000
+    total      = games_df.count()
+    logger.info(f"Loaded {total:,} games — processing in chunks of {chunk_size}")
 
-    player_moves = (
-        moves_df
-        .join(game_start_df, on="game_id", how="inner")
-        .join(game_end_df,   on="game_id", how="left")
-        .withColumn("date", lit(date_str))
-    )
+    for offset in range(0, total, chunk_size):
+        logger.info(f"Chunk {offset // chunk_size + 1}: games {offset}–{min(offset + chunk_size, total)}")
+        chunk_pd  = games_df.limit(offset + chunk_size).toPandas().iloc[offset:]
+        moves_pd  = explode_games_to_moves(chunk_pd)
+        moves_pd  = annotate_moves(moves_pd)
+        moves_df  = spark.createDataFrame(moves_pd)
 
-    player_moves.writeTo("polaris.prod.chess_raw_events").append()
+        player_moves = (
+            moves_df
+            .join(game_start_df, on="game_id", how="inner")
+            .join(game_end_df,   on="game_id", how="inner")
+            .withColumn("date", lit(date_str))
+        )
+        player_moves.writeTo("polaris.prod.chess_raw_events").partitionedBy("date").append()
+        logger.info(f"Chunk {offset // chunk_size + 1} written to Polaris")
 
     logger.info(f"Done — date={date_str} written to Polaris")
     spark.stop()
