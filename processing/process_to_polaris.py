@@ -71,20 +71,16 @@ def explode_games_to_moves(games_df: pd.DataFrame) -> pd.DataFrame:
 
         board  = chess.Board()
         tokens = moves_str.strip().split()
-        for move_number, uci in enumerate(tokens, start=1):
+        for move_number, san in enumerate(tokens, start=1):
             try:
-                move = chess.Move.from_uci(uci)
-            except Exception:
-                break
-            fen = board.fen()
-            rows.append({
-                "game_id":     game_id,
-                "move_number": move_number,
-                "move":        uci,
-                "fen":         fen,
-            })
-            try:
-                board.push(move)
+                fen  = board.fen()
+                move = board.push_san(san)
+                rows.append({
+                    "game_id":     game_id,
+                    "move_number": move_number,
+                    "move":        move.uci(),
+                    "fen":         fen,
+                })
             except Exception:
                 break
 
