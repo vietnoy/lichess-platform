@@ -2,21 +2,26 @@ FROM apache/airflow:latest
 
 USER root
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc librdkafka-dev openjdk-17-jdk-headless procps default-mysql-client && \
+    apt-get install -y --no-install-recommends \
+        gcc librdkafka-dev openjdk-17-jdk-headless procps default-mysql-client \
+        software-properties-common && \
+    add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends python3.11 python3.11-dev python3.11-venv && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+RUN python3.11 -m ensurepip && \
+    python3.11 -m pip install --no-cache-dir \
+        python-dotenv chess pandas requests pyspark==3.5.0
+
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PYSPARK_PYTHON=/usr/bin/python3.11
+ENV PYSPARK_DRIVER_PYTHON=/usr/bin/python3.11
+ENV SPARK_HOME=/usr/local/lib/python3.11/dist-packages/pyspark
+ENV PATH=$PATH:$SPARK_HOME/bin
 
 USER airflow
 RUN pip install --no-cache-dir \
     apache-airflow-providers-apache-spark \
     apache-airflow-providers-fab \
-    minio \
-    chess \
-    pandas \
-    requests \
-    pyspark==3.5.0
-
-ENV SPARK_HOME=/home/airflow/.local/lib/python3.13/site-packages/pyspark
-ENV PATH=$PATH:$SPARK_HOME/bin
-
+    minio
