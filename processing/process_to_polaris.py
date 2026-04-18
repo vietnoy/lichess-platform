@@ -161,7 +161,7 @@ def run(date_str: str):
     )
 
     # --- 4. Join with game metadata and write ---
-    game_start_df = spark.read.parquet(game_start_path)
+    game_start_df = spark.read.parquet(game_start_path).drop("ingested_at")
     game_end_df   = spark.read.parquet(game_end_path).select(
         col("game_id"),
         col("winner"),
