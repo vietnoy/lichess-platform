@@ -51,7 +51,7 @@ with DAG(
 
     process = BashOperator(
         task_id="run_process_to_polaris",
-        bash_command="python /git/repo/processing/process_to_polaris.py --date {{ ds }}",
+        bash_command="python /git/repo/processing/process_to_polaris.py",
     )
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────

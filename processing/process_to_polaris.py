@@ -188,7 +188,5 @@ def run(date_str: str):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--date", required=True, help="Date to process (YYYY-MM-DD)")
-    args = parser.parse_args()
-    run(date_str=args.date)
+    date="2026-04-16"
+    run(date)
