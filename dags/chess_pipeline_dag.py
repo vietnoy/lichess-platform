@@ -33,7 +33,11 @@ with DAG(
             "spark.driver.host": "airflow-scheduler",
             "spark.driver.bindAddress": "0.0.0.0",
             "spark.driver.port": "20002",
-            "spark.blockManager.port": "20003"
+            "spark.blockManager.port": "20003",
+            "spark.cores.max": "2",
+            "spark.executor.instances": "1",
+            "spark.executor.cores": "2",
+            "spark.executor.memory": "1g",
         },
         verbose=True,
     )
@@ -62,7 +66,11 @@ with DAG(
             "spark.driver.host": "airflow-scheduler",
             "spark.driver.bindAddress": "0.0.0.0",
             "spark.driver.port": "20002",
-            "spark.blockManager.port": "20003"
+            "spark.blockManager.port": "20003",
+            "spark.cores.max": "2",
+            "spark.executor.instances": "1",
+            "spark.executor.cores": "2",
+            "spark.executor.memory": "1g",
         },
         verbose=True,
     )
