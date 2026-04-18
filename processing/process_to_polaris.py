@@ -11,16 +11,15 @@ from pyspark.sql.functions import col, lit
 
 load_dotenv()
 
-MINIO_ENDPOINT     = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
+MINIO_ENDPOINT     = os.getenv("MINIO_ENDPOINT")
 MINIO_ACCESS_KEY   = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY   = os.getenv("MINIO_SECRET_KEY")
-BUCKET_DEV         = os.getenv("MINIO_BUCKET_DEV", "chess-dev")
-SPARK_MASTER       = os.getenv("SPARK_MASTER", "spark://spark-master:7077")
-POLARIS_URI        = os.getenv("POLARIS_URI", "http://polaris:8181/api/catalog")
-POLARIS_CREDENTIAL = os.getenv("SPARK_POLARIS_CREDENTIAL")
-POLARIS_WAREHOUSE  = os.getenv("POLARIS_WAREHOUSE", "chess_warehouse")
-STOCKFISH_URL      = os.getenv("STOCKFISH_URL", "http://stockfish:8001/eval")
-STOCKFISH_DEPTH    = int(os.getenv("STOCKFISH_DEPTH", "18"))
+BUCKET_DEV         = os.getenv("MINIO_BUCKET_DEV")
+POLARIS_URI        = os.getenv("POLARIS_URI")
+POLARIS_CREDENTIAL = f"{os.getenv('POLARIS_ETL_CLIENT_ID')}:{os.getenv('POLARIS_ETL_CLIENT_SECRET')}"
+POLARIS_WAREHOUSE  = os.getenv("POLARIS_WAREHOUSE")
+STOCKFISH_URL      = os.getenv("STOCKFISH_URL")
+STOCKFISH_DEPTH    = int(os.getenv("STOCKFISH_DEPTH"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +38,7 @@ def build_spark():
     return (
         SparkSession.builder
         .appName("chess-process-to-polaris")
-        .master(SPARK_MASTER)
+        .master("spark://spark-master:7077")
         .config("spark.jars.packages", ",".join(packages))
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.sql.catalog.polaris", "org.apache.iceberg.spark.SparkCatalog")
