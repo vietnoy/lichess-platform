@@ -52,7 +52,13 @@ with DAG(
     process = BashOperator(
         task_id="run_process_to_polaris",
         bash_command="python /git/repo/processing/process_to_polaris.py",
-    )
+    ),
+    conf={
+            "spark.driver.host": "airflow-scheduler",
+            "spark.driver.bindAddress": "0.0.0.0",
+            "spark.driver.port": "20002",
+            "spark.blockManager.port": "20003",
+        }
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────
 with DAG(
