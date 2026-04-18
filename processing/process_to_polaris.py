@@ -1,6 +1,7 @@
 import logging
 import os
 import requests
+from multiprocessing import Pool, cpu_count
 
 import chess
 import pandas as pd
@@ -37,7 +38,6 @@ def build_spark():
     return (
         SparkSession.builder
         .appName("chess-process-to-polaris")
-        .master("spark://spark-master:7077")
         .config("spark.jars.packages", ",".join(packages))
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.sql.catalog.polaris", "org.apache.iceberg.spark.SparkCatalog")
@@ -62,29 +62,34 @@ def build_spark():
 
 
 def explode_games_to_moves(games_df: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for game in games_df.itertuples(index=False):
-        game_id   = getattr(game, "id", None)
-        moves_str = getattr(game, "moves", None) or ""
-        if not game_id or not moves_str.strip():
-            continue
+    records = list(games_df[["id", "moves"]].itertuples(index=False, name=None))
 
-        board  = chess.Board()
-        tokens = moves_str.strip().split()
-        for move_number, san in enumerate(tokens, start=1):
-            try:
-                fen  = board.fen()
-                move = board.push_san(san)
-                rows.append({
-                    "game_id":     game_id,
-                    "move_number": move_number,
-                    "move":        move.uci(),
-                    "fen":         fen,
-                })
-            except Exception:
-                break
+    with Pool(cpu_count()) as pool:
+        results = pool.map(_explode_game, records)
 
+    rows = [row for game_rows in results for row in game_rows]
     return pd.DataFrame(rows)
+
+
+def _explode_game(record):
+    game_id, moves_str = record
+    if not game_id or not (moves_str or "").strip():
+        return []
+    rows  = []
+    board = chess.Board()
+    for move_number, san in enumerate((moves_str or "").strip().split(), start=1):
+        try:
+            fen  = board.fen()
+            move = board.push_san(san)
+            rows.append({
+                "game_id":     game_id,
+                "move_number": move_number,
+                "move":        move.uci(),
+                "fen":         fen,
+            })
+        except Exception:
+            break
+    return rows
 
 
 def stockfish_eval(fen: str):
