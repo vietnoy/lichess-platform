@@ -143,9 +143,9 @@ def run(date_str: str):
     game_end_path   = f"s3a://{BUCKET_DEV}/game_end/date={date_str}"
 
     logger.info(f"Reading raw game exports for date={date_str}")
-    games_df = spark.read.parquet(moves_path)
+    games_pd = spark.read.parquet(moves_path).toPandas()
 
-    if games_df.head(1) == []:
+    if games_pd.empty:
         logger.info(f"No games found for date={date_str}, skipping")
         spark.stop()
         return
@@ -158,12 +158,12 @@ def run(date_str: str):
     )
 
     chunk_size = 5000
-    total      = games_df.count()
+    total      = len(games_pd)
     logger.info(f"Loaded {total:,} games — processing in chunks of {chunk_size}")
 
     for offset in range(0, total, chunk_size):
         logger.info(f"Chunk {offset // chunk_size + 1}: games {offset}–{min(offset + chunk_size, total)}")
-        chunk_pd  = games_df.limit(offset + chunk_size).toPandas().iloc[offset:]
+        chunk_pd  = games_pd.iloc[offset:offset + chunk_size]
         moves_pd  = explode_games_to_moves(chunk_pd)
         moves_pd  = annotate_moves(moves_pd)
         moves_df  = spark.createDataFrame(moves_pd)
