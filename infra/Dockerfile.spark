@@ -1,9 +1,9 @@
 FROM apache/spark:3.5.0
 
-ARG PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262"
+ARG PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0"
 
 USER root
-RUN pip3 install --no-cache-dir python-dotenv
+RUN pip3 install --no-cache-dir python-dotenv chess
 
 RUN echo "from pyspark.sql import SparkSession; SparkSession.builder.getOrCreate().stop()" > /tmp/warmup.py && \
     /opt/spark/bin/spark-submit \

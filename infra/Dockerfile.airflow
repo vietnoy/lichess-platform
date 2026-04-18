@@ -13,6 +13,8 @@ RUN pip install --no-cache-dir \
     apache-airflow-providers-fab \
     minio \
     chess \
+    pandas \
+    requests \
     pyspark==3.5.0
 
 ENV SPARK_HOME=/home/airflow/.local/lib/python3.13/site-packages/pyspark

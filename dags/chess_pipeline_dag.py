@@ -89,7 +89,7 @@ PROPERTIES (
 
     refresh_catalog = BashOperator(
         task_id="refresh_polaris_catalog",
-        bash_command="mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -p$STARROCKS_PASSWORD -e \"REFRESH EXTERNAL TABLE polaris_catalog.prod.moves;\"",
+        bash_command="mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -p$STARROCKS_PASSWORD -e \"REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_raw_events;\"",
     )
 
     setup_catalog >> refresh_catalog

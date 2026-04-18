@@ -179,9 +179,9 @@ def run(date_str: str):
     )
 
     row_count = player_moves.count()
-    logger.info(f"Writing {row_count:,} rows to polaris.prod.player_moves")
+    logger.info(f"Writing {row_count:,} rows to polaris.prod.chess_raw_events")
 
-    player_moves.writeTo("polaris.prod.player_moves").append()
+    player_moves.writeTo("polaris.prod.chess_raw_events").append()
 
     logger.info(f"Done — date={date_str} written to Polaris")
     spark.stop()
