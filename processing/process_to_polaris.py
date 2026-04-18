@@ -120,7 +120,7 @@ def annotate_moves(df: pd.DataFrame) -> pd.DataFrame:
         evals.append(cp)
         best_moves.append(bm)
         if (i + 1) % 200 == 0:
-            logger.info(f"  Annotated {i + 1}/{len(df)} moves")
+            logger.info(f"  Annotated {i + 1} moves")
 
     df = df.copy()
     df["eval_cp"]   = pd.array(evals, dtype=pd.Int64Dtype())
@@ -150,9 +150,9 @@ def run(date_str: str):
         spark.stop()
         return
 
-    logger.info(f"Loaded {len(games_pd):,} games — exploding into individual moves")
+    logger.info(f"Loaded exploding into individual moves")
     moves_pd = explode_games_to_moves(games_pd)
-    logger.info(f"Exploded to {len(moves_pd):,} moves — annotating with Stockfish")
+    logger.info(f"Exploded to moves annotating with Stockfish")
     moves_pd = annotate_moves(moves_pd)
 
     logger.info("Reading game_start and game_end")
@@ -171,9 +171,6 @@ def run(date_str: str):
         .join(game_end_df,   on="game_id", how="left")
         .withColumn("date", lit(date_str))
     )
-
-    row_count = player_moves.count()
-    logger.info(f"Writing {row_count:,} rows to polaris.prod.chess_raw_events")
 
     player_moves.writeTo("polaris.prod.chess_raw_events").append()
 
