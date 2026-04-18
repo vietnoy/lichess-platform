@@ -49,10 +49,23 @@ with DAG(
     tags=["chess", "processing", "polaris", "stockfish"],
 ) as dag_process:
 
-    process = BashOperator(
+    process = SparkSubmitOperator(
         task_id="run_process_to_polaris",
-        bash_command="python /git/repo/processing/process_to_polaris.py",
-    ),
+        application="/git/repo/processing/process_to_polaris.py",
+        conn_id="spark_default",
+        packages=(
+            "org.apache.hadoop:hadoop-aws:3.3.4,"
+            "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+            "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0"
+        ),
+        conf={
+            "spark.driver.host": "airflow-scheduler",
+            "spark.driver.bindAddress": "0.0.0.0",
+            "spark.driver.port": "20002",
+            "spark.blockManager.port": "20003",
+        },
+        verbose=True,
+    )
     conf={
             "spark.driver.host": "airflow-scheduler",
             "spark.driver.bindAddress": "0.0.0.0",
