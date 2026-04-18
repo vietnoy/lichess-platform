@@ -15,7 +15,10 @@ MINIO_ENDPOINT      = os.getenv("MINIO_ENDPOINT")
 WAREHOUSE           = os.getenv("POLARIS_WAREHOUSE")
 NAMESPACE           = "prod"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s %(levelname)-8s %(message)s", 
+    datefmt="%Y-%m-%d %H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
@@ -118,33 +121,32 @@ def create_table(token: str, name: str, schema: dict):
         r.raise_for_status()
 
 
-PLAYER_MOVES_SCHEMA = {
+CHESS_MOVE_EVENTS_SCHEMA = {
     "type": "struct", "schema-id": 0,
     "fields": [
-        {"id": 1,  "name": "game_id",        "required": True,  "type": "string"},
-        {"id": 2,  "name": "move_number",    "required": False, "type": "int"},
-        {"id": 3,  "name": "move",           "required": False, "type": "string"},
-        {"id": 4,  "name": "fen",            "required": False, "type": "string"},
-        {"id": 5,  "name": "eval_cp",        "required": False, "type": "long"},
-        {"id": 6,  "name": "best_move",      "required": False, "type": "string"},
-        {"id": 7,  "name": "eval_delta",     "required": False, "type": "double"},
-        {"id": 8,  "name": "whose_moved",    "required": False, "type": "string"},
-        {"id": 9,  "name": "classification", "required": False, "type": "string"},
-        {"id": 10, "name": "timestamp",      "required": False, "type": "string"},
-        {"id": 11, "name": "speed",          "required": False, "type": "string"},
-        {"id": 12, "name": "rated",          "required": False, "type": "boolean"},
-        {"id": 13, "name": "variant",        "required": False, "type": "string"},
-        {"id": 14, "name": "white_id",       "required": False, "type": "string"},
-        {"id": 15, "name": "white_rating",   "required": False, "type": "int"},
-        {"id": 16, "name": "white_title",    "required": False, "type": "string"},
-        {"id": 17, "name": "black_id",       "required": False, "type": "string"},
-        {"id": 18, "name": "black_rating",   "required": False, "type": "int"},
-        {"id": 19, "name": "black_title",    "required": False, "type": "string"},
-        {"id": 20, "name": "source",         "required": False, "type": "string"},
-        {"id": 21, "name": "tournament_id",  "required": False, "type": "string"},
-        {"id": 22, "name": "winner",         "required": False, "type": "string"},
-        {"id": 23, "name": "end_status",     "required": False, "type": "string"},
-        {"id": 24, "name": "date",           "required": False, "type": "string"},
+        {"id": 1,  "name": "game_id",          "required": True,  "type": "string"},
+        {"id": 2,  "name": "move_number",      "required": False, "type": "int"},
+        {"id": 3,  "name": "move",             "required": False, "type": "string"},
+        {"id": 4,  "name": "fen",              "required": False, "type": "string"},
+        {"id": 5,  "name": "whose_moved",      "required": False, "type": "string"},
+        {"id": 6,  "name": "clock_remaining",  "required": False, "type": "int"},
+        {"id": 7,  "name": "opening_eco",      "required": False, "type": "string"},
+        {"id": 8,  "name": "opening_name",     "required": False, "type": "string"},
+        {"id": 9,  "name": "clock_initial",    "required": False, "type": "int"},
+        {"id": 10, "name": "clock_increment",  "required": False, "type": "int"},
+        {"id": 11, "name": "speed",            "required": False, "type": "string"},
+        {"id": 12, "name": "perf",             "required": False, "type": "string"},
+        {"id": 13, "name": "variant",          "required": False, "type": "string"},
+        {"id": 14, "name": "white_id",         "required": False, "type": "string"},
+        {"id": 15, "name": "white_rating",     "required": False, "type": "int"},
+        {"id": 16, "name": "white_title",      "required": False, "type": "string"},
+        {"id": 17, "name": "black_id",         "required": False, "type": "string"},
+        {"id": 18, "name": "black_rating",     "required": False, "type": "int"},
+        {"id": 19, "name": "black_title",      "required": False, "type": "string"},
+        {"id": 20, "name": "tournament_id",    "required": False, "type": "string"},
+        {"id": 21, "name": "winner",           "required": False, "type": "string"},
+        {"id": 22, "name": "end_status",       "required": False, "type": "string"},
+        {"id": 23, "name": "date",             "required": False, "type": "string"},
     ]
 }
 
@@ -212,7 +214,7 @@ def main():
 
     create_catalog(token)
     create_namespace(token)
-    create_table(token, "chess_raw_events", PLAYER_MOVES_SCHEMA)
+    create_table(token, "chess_move_events", CHESS_MOVE_EVENTS_SCHEMA)
 
     etl_id, etl_secret = setup_principal(token, "airflow_etl", "catalog_admin", [
         {"type": "catalog",   "privilege": "CATALOG_MANAGE_CONTENT"},
@@ -234,5 +236,17 @@ def main():
     logger.info("Update chess-secrets: POLARIS_ETL_CLIENT_ID/SECRET and STARROCKS_POLARIS_CREDENTIAL")
 
 
+def create_table_only():
+    if not wait_for_polaris():
+        logger.error("Polaris not ready — aborting")
+        return
+    token = get_token()
+    create_table(token, "chess_move_events", CHESS_MOVE_EVENTS_SCHEMA)
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "create-table":
+        create_table_only()
+    else:
+        main()

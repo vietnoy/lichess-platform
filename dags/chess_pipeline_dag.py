@@ -43,15 +43,15 @@ with DAG(
         verbose=True,
     )
 
-# ─── DAG 2: MinIO → Stockfish annotation → Polaris (daily at 01:00 UTC) ───────
+# ─── DAG 2: MinIO → Polaris (daily at 01:00 UTC) ─────────────────────────────
 with DAG(
     dag_id="process_to_polaris",
     default_args=default_args,
-    description="Parse games, annotate with Stockfish, write player_moves to Polaris Iceberg",
+    description="Explode moves with clocks and metadata, write chess_move_events to Polaris Iceberg",
     start_date=datetime(2026, 4, 14),
     schedule="15 1 * * *",
     catchup=True,
-    tags=["chess", "processing", "polaris", "stockfish"],
+    tags=["chess", "processing", "polaris"],
 ) as dag_process:
 
     process = SparkSubmitOperator(
@@ -113,7 +113,7 @@ PROPERTIES (
 
     refresh_catalog = BashOperator(
         task_id="refresh_polaris_catalog",
-        bash_command="mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -p$STARROCKS_PASSWORD -e \"REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_raw_events;\"",
+        bash_command="mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -p$STARROCKS_PASSWORD -e \"REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;\"",
     )
 
     setup_catalog >> refresh_catalog

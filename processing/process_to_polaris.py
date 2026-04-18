@@ -1,12 +1,10 @@
 import logging
 import os
-import requests
 
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lag, lit, udf, when
+from pyspark.sql.functions import col, lit
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
-from pyspark.sql.window import Window
 
 load_dotenv()
 
@@ -17,8 +15,6 @@ BUCKET_DEV         = os.getenv("MINIO_BUCKET_DEV")
 POLARIS_URI        = os.getenv("POLARIS_URI")
 POLARIS_CREDENTIAL = f"{os.getenv('POLARIS_ETL_CLIENT_ID')}:{os.getenv('POLARIS_ETL_CLIENT_SECRET')}"
 POLARIS_WAREHOUSE  = os.getenv("POLARIS_WAREHOUSE")
-STOCKFISH_URL      = os.getenv("STOCKFISH_URL")
-STOCKFISH_DEPTH    = int(os.getenv("STOCKFISH_DEPTH"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,39 +59,87 @@ def build_spark():
 
 def _explode_partition(iterator):
     import chess
+    import json
+
     for row in iterator:
         game_id   = row.id
         moves_str = row.moves or ""
         if not game_id or not moves_str.strip():
             continue
+
+        # Parse clocks array — centiseconds remaining after each half-move
+        clocks = []
+        try:
+            if row.clocks:
+                clocks = json.loads(row.clocks)
+        except Exception:
+            pass
+
+        # Parse opening
+        opening_eco, opening_name = None, None
+        try:
+            if row.opening:
+                op = json.loads(row.opening)
+                opening_eco  = op.get("eco")
+                opening_name = op.get("name")
+        except Exception:
+            pass
+
+        # Parse time control
+        clock_initial, clock_increment = None, None
+        try:
+            if row.clock:
+                ck = json.loads(row.clock)
+                clock_initial   = ck.get("initial")
+                clock_increment = ck.get("increment")
+        except Exception:
+            pass
+
         board = chess.Board()
-        for move_number, san in enumerate(moves_str.strip().split(), start=1):
+        for idx, san in enumerate(moves_str.strip().split()):
+            move_number = idx + 1
             try:
-                fen  = board.fen()
-                move = board.push_san(san)
-                yield (game_id, move_number, move.uci(), fen)
+                fen        = board.fen()
+                move       = board.push_san(san)
+                whose_moved = "white" if move_number % 2 == 1 else "black"
+
+                # clocks[idx] = remaining after this half-move (centiseconds)
+                clock_remaining = clocks[idx] if idx < len(clocks) else None
+
+                yield (
+                    game_id,
+                    move_number,
+                    move.uci(),
+                    fen,
+                    whose_moved,
+                    clock_remaining,
+                    opening_eco,
+                    opening_name,
+                    clock_initial,
+                    clock_increment,
+                    row.speed,
+                    row.perf,
+                    row.variant,
+                )
             except Exception:
                 break
 
 
-_eval_schema = StructType([
-    StructField("cp",        IntegerType(), True),
-    StructField("best_move", StringType(),  True),
+_move_schema = StructType([
+    StructField("game_id",          StringType(),  True),
+    StructField("move_number",      IntegerType(), True),
+    StructField("move",             StringType(),  True),
+    StructField("fen",              StringType(),  True),
+    StructField("whose_moved",      StringType(),  True),
+    StructField("clock_remaining",  IntegerType(), True),
+    StructField("opening_eco",      StringType(),  True),
+    StructField("opening_name",     StringType(),  True),
+    StructField("clock_initial",    IntegerType(), True),
+    StructField("clock_increment",  IntegerType(), True),
+    StructField("speed",            StringType(),  True),
+    StructField("perf",             StringType(),  True),
+    StructField("variant",          StringType(),  True),
 ])
-
-
-def _make_eval_udf(url: str, depth: int):
-    @udf(returnType=_eval_schema)
-    def stockfish_eval_udf(fen):
-        try:
-            r = requests.get(url, params={"fen": fen, "depth": depth}, timeout=10)
-            if r.status_code == 200:
-                data = r.json()
-                return (data.get("cp"), data.get("best_move"))
-        except Exception:
-            pass
-        return (None, None)
-    return stockfish_eval_udf
 
 
 def run(date_str: str):
@@ -114,60 +158,40 @@ def run(date_str: str):
         spark.stop()
         return
 
-    # --- 1. Explode moves distributed across all executors ---
+    # --- 1. Explode moves with clocks and game-level metadata ---
     moves_df = (
         raw_games.rdd
         .mapPartitions(_explode_partition)
-        .toDF(["game_id", "move_number", "move", "fen"])
+        .toDF(_move_schema)
     )
 
-    # --- 2. Annotate with Stockfish — each executor calls concurrently ---
-    stockfish_eval_udf = _make_eval_udf(STOCKFISH_URL, STOCKFISH_DEPTH)
-    moves_df = (
-        moves_df
-        .withColumn("eval_result", stockfish_eval_udf(col("fen")))
-        .withColumn("eval_cp",    col("eval_result.cp"))
-        .withColumn("best_move",  col("eval_result.best_move"))
-        .drop("eval_result")
-    )
-
-    # --- 3. Compute eval_delta and classification via window functions ---
-    window = Window.partitionBy("game_id").orderBy("move_number")
-    moves_df = (
-        moves_df
-        .withColumn("eval_delta",  col("eval_cp") - lag("eval_cp", 1).over(window))
-        .withColumn("whose_moved", when(col("move_number") % 2 == 1, "white").otherwise("black"))
-        .withColumn(
-            "classification",
-            when(col("eval_delta").isNull(), "unknown")
-            .when(
-                (col("whose_moved") == "white") & (-col("eval_delta") >= 300) |
-                (col("whose_moved") == "black") & ( col("eval_delta") >= 300), "blunder"
-            )
-            .when(
-                (col("whose_moved") == "white") & (-col("eval_delta") >= 100) |
-                (col("whose_moved") == "black") & ( col("eval_delta") >= 100), "mistake"
-            )
-            .when(
-                (col("whose_moved") == "white") & (-col("eval_delta") >= 50) |
-                (col("whose_moved") == "black") & ( col("eval_delta") >= 50), "inaccuracy"
-            )
-            .when(
-                (col("whose_moved") == "white") & (-col("eval_delta") >= -20) |
-                (col("whose_moved") == "black") & ( col("eval_delta") >= -20), "good"
-            )
-            .otherwise("excellent")
+    # --- 2. Join game_start for player metadata ---
+    game_start_df = (
+        spark.read.parquet(game_start_path)
+        .drop("ingested_at")
+        .select(
+            col("game_id"),
+            col("white_id"),
+            col("white_rating"),
+            col("white_title"),
+            col("black_id"),
+            col("black_rating"),
+            col("black_title"),
+            col("tournament_id"),
         )
     )
 
-    # --- 4. Join with game metadata and write ---
-    game_start_df = spark.read.parquet(game_start_path).drop("ingested_at")
-    game_end_df   = spark.read.parquet(game_end_path).select(
-        col("game_id"),
-        col("winner"),
-        col("status").alias("end_status"),
+    # --- 3. Join game_end for result ---
+    game_end_df = (
+        spark.read.parquet(game_end_path)
+        .select(
+            col("game_id"),
+            col("winner"),
+            col("status").alias("end_status"),
+        )
     )
 
+    # --- 4. Assemble flat table ---
     player_moves = (
         moves_df
         .join(game_start_df, on="game_id", how="inner")
@@ -175,7 +199,7 @@ def run(date_str: str):
         .withColumn("date", lit(date_str))
     )
 
-    player_moves.writeTo("polaris.prod.chess_raw_events").partitionedBy("date").append()
+    player_moves.writeTo("polaris.prod.chess_move_events").partitionedBy("date").append()
     logger.info(f"Done — date={date_str} written to Polaris")
     spark.stop()
 
