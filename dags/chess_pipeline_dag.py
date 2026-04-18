@@ -70,7 +70,7 @@ with DAG(
             "spark.blockManager.port": "20003",
             "spark.executor.instances": "2",
             "spark.executor.cores": "2",
-            "spark.executor.memory": "1500m",
+            "spark.executor.memory": "800m",
             "spark.driver.memory": "1g",
         },
         verbose=True,
