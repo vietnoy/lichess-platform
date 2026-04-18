@@ -126,14 +126,15 @@ def run():
             df.writeStream
             .outputMode("append")
             .option("checkpointLocation", f"s3a://{BUCKET_DEV}/_checkpoints/{topic_key}")
-            .trigger(processingTime="60 minutes")
+            .trigger(availableNow=True)
             .foreachBatch(write_batch)
             .start()
         )
 
         queries.append(q)
 
-    spark.streams.awaitAnyTermination()
+    for q in queries:
+        q.awaitTermination()
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ with DAG(
     default_args={**default_args, "retries": 0},
     description="Spark Structured Streaming — Kafka to MinIO chess-dev, micro-batch every 10 min",
     start_date=datetime(2026, 4, 14),
-    schedule=None,
+    schedule="0 * * * *",
     catchup=False,
     tags=["chess", "ingestion", "kafka", "minio", "spark"],
 ) as dag_ingest:
@@ -48,7 +48,7 @@ with DAG(
     default_args=default_args,
     description="Parse games, annotate with Stockfish, write player_moves to Polaris Iceberg",
     start_date=datetime(2026, 4, 14),
-    schedule="0 1 * * *",
+    schedule="15 1 * * *",
     catchup=True,
     tags=["chess", "processing", "polaris", "stockfish"],
 ) as dag_process:
