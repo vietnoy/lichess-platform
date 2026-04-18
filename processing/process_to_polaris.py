@@ -1,7 +1,6 @@
 import logging
 import os
 import requests
-from multiprocessing import Pool, cpu_count
 
 import chess
 import pandas as pd
@@ -63,11 +62,7 @@ def build_spark():
 
 def explode_games_to_moves(games_df: pd.DataFrame) -> pd.DataFrame:
     records = list(games_df[["id", "moves"]].itertuples(index=False, name=None))
-
-    with Pool(cpu_count()) as pool:
-        results = pool.map(_explode_game, records)
-
-    rows = [row for game_rows in results for row in game_rows]
+    rows = [row for record in records for row in _explode_game(record)]
     return pd.DataFrame(rows)
 
 
