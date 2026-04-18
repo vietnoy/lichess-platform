@@ -23,7 +23,7 @@ data:
 
   # Stockfish
   STOCKFISH_URL: http://stockfish:8001/eval
-  STOCKFISH_DEPTH: "18"
+  STOCKFISH_DEPTH: "8"
 
   # Spark
   AIRFLOW_CONN_SPARK_DEFAULT: spark://spark-master:7077

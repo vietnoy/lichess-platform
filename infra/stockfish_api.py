@@ -1,9 +1,12 @@
+import threading
+
 import chess
 import chess.engine
 from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 
 engine: chess.engine.SimpleEngine | None = None
+engine_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -26,9 +29,10 @@ def eval_position(fen: str, depth: int = 18):
     except ValueError:
         raise HTTPException(400, f"Invalid FEN: {fen}")
 
-    info = engine.analyse(board, chess.engine.Limit(depth=depth))
-    score = info["score"].white()
+    with engine_lock:
+        info = engine.analyse(board, chess.engine.Limit(depth=depth))
 
+    score = info["score"].white()
     cp        = score.score()
     mate      = score.mate()
     best_move = info.get("pv")
