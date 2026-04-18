@@ -109,7 +109,9 @@ def create_table(token: str, name: str, schema: dict):
             }
         }
     )
-    if r.status_code in [409, 200] or (r.status_code == 500 and "already exists" in r.text.lower()):
+    if r.status_code == 200:
+        logger.info(f"Created table '{NAMESPACE}.{name}'")
+    elif r.status_code == 409 or (r.status_code == 500 and "already exists" in r.text.lower()):
         logger.info(f"Table '{NAMESPACE}.{name}' already exists")
     else:
         logger.error(f"Table creation failed: {r.status_code} {r.text}")
@@ -210,7 +212,7 @@ def main():
 
     create_catalog(token)
     create_namespace(token)
-    create_table(token, "player_moves", PLAYER_MOVES_SCHEMA)
+    create_table(token, "chess_raw_events", PLAYER_MOVES_SCHEMA)
 
     etl_id, etl_secret = setup_principal(token, "airflow_etl", "catalog_admin", [
         {"type": "catalog",   "privilege": "CATALOG_MANAGE_CONTENT"},
