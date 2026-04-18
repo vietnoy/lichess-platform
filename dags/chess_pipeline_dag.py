@@ -72,7 +72,7 @@ with DAG(
             "spark.executor.cores": "2",
             "spark.executor.memory": "800m",
             "spark.driver.memory": "1g",
-            "spark.executorEnv.PYSPARK_PYTHON": "python3",
+            "spark.executorEnv.PYSPARK_PYTHON": "python3.11",
         },
         verbose=True,
     )
