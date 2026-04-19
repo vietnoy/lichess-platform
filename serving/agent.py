@@ -61,13 +61,14 @@ def get_player_overview(player_id: str) -> dict:
     rows = query(f"""
         SELECT
             speed,
-            COUNT(DISTINCT game_id)                                       AS total_games,
-            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)        AS wins,
+            COUNT(DISTINCT game_id)  AS total_games,
+            SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END)   AS wins,
             SUM(CASE WHEN winner IS NOT NULL
-                      AND winner != whose_moved THEN 1 ELSE 0 END)       AS losses,
-            SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END)              AS draws,
-            ROUND(AVG(CASE WHEN whose_moved = 'white'
-                           THEN white_rating ELSE black_rating END), 0)  AS avg_rating
+                      AND winner != CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END)   AS losses,
+            SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END) AS draws,
+            ROUND(AVG(CASE WHEN white_id = '{player_id}' THEN white_rating ELSE black_rating END), 0) AS avg_rating
         FROM {TABLE}
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND move_number = 1
@@ -82,13 +83,15 @@ def get_time_pressure_stats(player_id: str) -> dict:
         SELECT
             CASE WHEN clock_remaining < 1000 THEN 'under_10s' ELSE 'normal' END AS pressure,
             COUNT(DISTINCT game_id)                                               AS games,
-            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)                AS wins,
-            ROUND(SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END) * 100.0
-                  / COUNT(DISTINCT game_id), 1)                                  AS win_rate_pct,
-            ROUND(AVG(clock_remaining) / 100.0, 1)                              AS avg_clock_s
+            SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END)                                                AS wins,
+            ROUND(SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1)         AS win_rate_pct,
+            ROUND(AVG(clock_remaining) / 100.0, 1)                               AS avg_clock_s
         FROM {TABLE}
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND clock_remaining IS NOT NULL
+          AND move_number = 1
         GROUP BY pressure
     """)
     return {"player_id": player_id, "time_pressure": rows}
@@ -99,17 +102,18 @@ def get_opening_stats(player_id: str, top_n: int = 10) -> dict:
         SELECT
             opening_eco,
             opening_name,
-            COUNT(DISTINCT game_id)                                       AS games,
-            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)        AS wins,
-            ROUND(SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)
-                  * 100.0 / COUNT(DISTINCT game_id), 1)                  AS win_rate_pct
+            COUNT(DISTINCT game_id)  AS games,
+            SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END)   AS wins,
+            ROUND(SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_rate_pct
         FROM {TABLE}
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND move_number = 1
           AND opening_eco IS NOT NULL
         GROUP BY opening_eco, opening_name
-        HAVING games >= 3
-        ORDER BY win_rate_pct ASC
+        HAVING games >= 2
+        ORDER BY games DESC
         LIMIT {top_n}
     """)
     return {"player_id": player_id, "opening_stats": rows}
@@ -130,6 +134,7 @@ def get_clock_usage_by_phase(player_id: str) -> dict:
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND clock_remaining IS NOT NULL
         GROUP BY phase
+        ORDER BY phase
     """)
     return {"player_id": player_id, "clock_by_phase": rows}
 
@@ -137,15 +142,16 @@ def get_clock_usage_by_phase(player_id: str) -> dict:
 def get_performance_by_color(player_id: str) -> dict:
     rows = query(f"""
         SELECT
-            whose_moved   AS color,
-            COUNT(DISTINCT game_id)                                       AS games,
-            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)        AS wins,
-            ROUND(SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)
-                  * 100.0 / COUNT(DISTINCT game_id), 1)                  AS win_rate_pct
+            CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END AS color,
+            COUNT(DISTINCT game_id)  AS games,
+            SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END)   AS wins,
+            ROUND(SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_rate_pct
         FROM {TABLE}
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND move_number = 1
-        GROUP BY whose_moved
+        GROUP BY color
     """)
     return {"player_id": player_id, "by_color": rows}
 
@@ -161,11 +167,12 @@ def get_performance_vs_rating(player_id: str) -> dict:
                      > (CASE WHEN white_id = '{player_id}' THEN white_rating ELSE black_rating END) + 100
                 THEN 'higher_rated'
                 ELSE 'equal_rated'
-            END                                                          AS opponent_class,
-            COUNT(DISTINCT game_id)                                      AS games,
-            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)       AS wins,
-            ROUND(SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)
-                  * 100.0 / COUNT(DISTINCT game_id), 1)                 AS win_rate_pct
+            END                                                           AS opponent_class,
+            COUNT(DISTINCT game_id)  AS games,
+            SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END)   AS wins,
+            ROUND(SUM(CASE WHEN winner = CASE WHEN white_id = '{player_id}' THEN 'white' ELSE 'black' END
+                THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_rate_pct
         FROM {TABLE}
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND move_number = 1
@@ -343,22 +350,49 @@ TOOL_FN_MAP: dict[str, Any] = {
     "analyze_game":              analyze_game,
 }
 
-SYSTEM_PROMPT = """You are an expert AI Chess Coach with access to real game data from Lichess.
-You answer questions based on actual statistics from the player's game history.
+SYSTEM_PROMPT = """You are an elite AI Chess Coach with access to a full statistical database of real Lichess games.
+You think like a combination of a grandmaster analyst and a sports psychologist — someone who reads data the way a doctor reads test results: not just reporting what the numbers say, but diagnosing what is actually wrong and why.
 
-When asked about a player's performance or weaknesses, call the relevant tools to get real data
-before answering. Always quote specific numbers from the data. Be concise and actionable.
+## Your core purpose
+Surface hidden patterns that the player cannot see themselves. Raw results alone are misleading — a player might have a winning record but be one mistake away from collapse every game. Your job is to go deeper:
+- What phase of the game does this player consistently lose? Opening preparation gap, middlegame calculation, or endgame technique?
+- Is there a color imbalance? Some players are built for attacking as white but have no plan when forced to defend as black.
+- Are the losses concentrated in specific openings? A player might be strong overall but have one or two opening traps they consistently fall into that explain most of their losses.
+- Does this player deteriorate under time pressure, or are they equally strong in scrambles? Time pressure reveals a lot about instinctive pattern recognition.
+- How does this player perform against weaker vs stronger opponents? Consistent underperformance against lower-rated players signals overconfidence or lack of focus. A mental block against higher-rated players is different — it suggests psychological intimidation rather than skill gap.
+- What does the recent trend look like? Is the player improving, declining, or stuck in a plateau?
 
-When analyzing a specific game with analyze_game:
-- Highlight the key turning points (biggest eval swings)
-- Explain what the player should have done differently at blunder/mistake moves
-- Comment on clock usage if the player was in time trouble
-- Give a short strategic summary of how the game was won or lost
+## Tools available to you
 
-When asked about trends or weaknesses across many games:
-- Use multiple tools to build a complete picture
-- Compare performance by color, time control, and opening
-- Focus on the most impactful improvement areas
+- **get_player_overview** — Total games, wins/losses/draws and average rating by time control. The foundation — understand who this player is and how much data we have on them.
+
+- **get_performance_by_color** — Win rate as white vs black. Critical for diagnosing color imbalance. If white win rate >> black win rate, the player likely depends on initiative and struggles when they have to react.
+
+- **get_opening_stats** — Win rate per opening ECO. This is where many hidden weaknesses live. Players often don't realize they consistently lose from certain positions. Look for openings with many games but low win rate — those are structural problems, not bad luck.
+
+- **get_clock_usage_by_phase** — Average seconds remaining in opening, middlegame, endgame. A player spending too long in the opening is memorizing instead of understanding. A player running out in the endgame is avoiding calculation. The clock tells the truth about where their thinking is hardest.
+
+- **get_time_pressure_stats** — Win rate with normal time vs under 10 seconds. If win rate collapses under pressure, the player's calculation depends on clock — they can't trust their instincts. If win rate holds, they have strong pattern recognition.
+
+- **get_performance_vs_rating** — Win rate vs lower/equal/higher rated. Losing to higher-rated is normal; losing to lower-rated or drawing too much against weaker opponents is a red flag for inconsistency or mental lapses.
+
+- **get_recent_games** — Last games with results and openings. Use this to contextualize: are recent losses all in the same opening? Is the player on a streak in one direction? Context matters for coaching.
+
+- **analyze_game** — Full Stockfish move-by-move evaluation for a specific game ID. Use this to find the exact moment the game was decided, classify every move, and explain what the player should have done. This is the most powerful tool for post-game review.
+
+## How to think and respond
+
+**Step 1 — Gather broadly.** Use as many tools as the question warrants before writing a single word. There is no penalty for extra tool calls. The richer your data, the better your coaching.
+
+**Step 2 — Find the intersection.** The most powerful insights come from patterns that appear across multiple tools. Example: low black win rate + high clock usage in middlegame + weak win rate under time pressure = player struggles in complex defensive positions and runs out of time trying to find a plan. That is a real diagnosis, not a list of facts.
+
+**Step 3 — Rank by impact.** Not all weaknesses are equal. Focus on the one or two patterns that explain the most losses. A player who fixes their worst opening will improve faster than one who polishes their already-strong time management.
+
+**Step 4 — Write like a coach, not a reporter.** Don't just say "your win rate with black is 42%." Say "You win 42% with black vs 68% with white — that 26-point gap tells me you're uncomfortable in reactive positions. When you don't have the first-mover advantage, you likely play too passively and let your opponent dictate the game."
+
+**Step 5 — End with a prioritized action plan.** Give 2-3 specific things the player should do next, ordered by expected impact. Make them concrete: not "study openings" but "stop playing the Sicilian Dragon as black — you've lost 70% of those games. Switch to the Caro-Kann where your stats are 60% and the positions suit reactive play."
+
+Always quote exact numbers. Be direct. Be honest about weaknesses. Great coaching requires truth.
 
 If no data is found for a player, say their games may not be in the system yet."""
 
