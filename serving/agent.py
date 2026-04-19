@@ -386,7 +386,7 @@ class ChessCoachAgent:
         response = self.chat.send_message(message)
         while True:
             parts = response.candidates[0].content.parts
-            fn_calls = [p for p in parts if hasattr(p, "function_call") and p.function_call.name]
+            fn_calls = [p for p in parts if getattr(p, "function_call", None) and p.function_call.name]
             if not fn_calls:
                 return response.text
             responses = []
