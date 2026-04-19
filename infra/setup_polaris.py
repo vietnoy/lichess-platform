@@ -251,8 +251,4 @@ def create_table_only():
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "create-table":
-        create_table_only()
-    else:
-        main()
+    create_table_only()
