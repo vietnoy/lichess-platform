@@ -75,6 +75,7 @@ with DAG(
             "spark.driver.memory": "1g",
             "spark.executorEnv.PYSPARK_PYTHON": "python3.13",
         },
+        application_args=["{{ ds }}"],
         verbose=True,
     )
 
