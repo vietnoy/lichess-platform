@@ -145,7 +145,7 @@ with tab_explorer:
         col_board, col_info = st.columns([1, 1])
 
         with col_board:
-            st.image(board_svg.encode(), use_container_width=False)
+            st.markdown(board_svg, unsafe_allow_html=True)
 
             c1, c2, c3 = st.columns([1, 2, 1])
             with c1:
