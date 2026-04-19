@@ -1,6 +1,7 @@
 import logging
 import os
 
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
@@ -206,5 +207,5 @@ def run(date_str: str):
 
 if __name__ == "__main__":
     import sys
-    date = sys.argv[1] if len(sys.argv) > 1 else "2026-04-16"
+    date = sys.argv[1] if len(sys.argv) > 1 else (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
     run(date)
