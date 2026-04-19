@@ -7,7 +7,7 @@ from typing import Any
 from dotenv import load_dotenv
 import google.auth
 import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+from vertexai.generative_models import GenerativeModel, Part, Tool, FunctionDeclaration
 
 load_dotenv()
 
@@ -265,102 +265,72 @@ def analyze_game(game_id: str) -> dict:
     }
 
 
-TOOLS = [
-    {
-        "name": "get_player_overview",
-        "description": "Overall stats for a player: total games, win/loss/draw and average rating by time control.",
-        "parameters": {
-            "type": "object",
+_player_id_param = {"player_id": {"type_": "STRING", "description": "Lichess username"}}
+
+TOOLS = Tool(function_declarations=[
+    FunctionDeclaration(
+        name="get_player_overview",
+        description="Overall stats for a player: total games, win/loss/draw and average rating by time control.",
+        parameters={"type_": "OBJECT", "properties": _player_id_param, "required": ["player_id"]},
+    ),
+    FunctionDeclaration(
+        name="get_time_pressure_stats",
+        description="Win rate when clock is under 10 seconds vs normal. Reveals time management weaknesses.",
+        parameters={"type_": "OBJECT", "properties": _player_id_param, "required": ["player_id"]},
+    ),
+    FunctionDeclaration(
+        name="get_opening_stats",
+        description="Win rate by opening ECO code. Shows which openings the player wins and loses most.",
+        parameters={
+            "type_": "OBJECT",
             "properties": {
-                "player_id": {"type": "string", "description": "Lichess username"},
+                "player_id": {"type_": "STRING", "description": "Lichess username"},
+                "top_n":     {"type_": "INTEGER", "description": "Number of openings to return (default 10)"},
             },
             "required": ["player_id"],
         },
-    },
-    {
-        "name": "get_time_pressure_stats",
-        "description": "Win rate when clock is under 10 seconds vs normal. Reveals time management weaknesses.",
-        "parameters": {
-            "type": "object",
+    ),
+    FunctionDeclaration(
+        name="get_clock_usage_by_phase",
+        description="Average clock remaining in opening, middlegame and endgame. Detects if player runs out of time late.",
+        parameters={"type_": "OBJECT", "properties": _player_id_param, "required": ["player_id"]},
+    ),
+    FunctionDeclaration(
+        name="get_performance_by_color",
+        description="Win rate as white vs black. Reveals color-specific weaknesses.",
+        parameters={"type_": "OBJECT", "properties": _player_id_param, "required": ["player_id"]},
+    ),
+    FunctionDeclaration(
+        name="get_performance_vs_rating",
+        description="Win rate against lower, equal and higher rated opponents.",
+        parameters={"type_": "OBJECT", "properties": _player_id_param, "required": ["player_id"]},
+    ),
+    FunctionDeclaration(
+        name="get_recent_games",
+        description="Last N games with opponent, opening, result and time control.",
+        parameters={
+            "type_": "OBJECT",
             "properties": {
-                "player_id": {"type": "string", "description": "Lichess username"},
+                "player_id": {"type_": "STRING", "description": "Lichess username"},
+                "limit":     {"type_": "INTEGER", "description": "Number of games (default 10)"},
             },
             "required": ["player_id"],
         },
-    },
-    {
-        "name": "get_opening_stats",
-        "description": "Win rate by opening ECO code. Shows which openings the player wins and loses most.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "player_id": {"type": "string", "description": "Lichess username"},
-                "top_n":     {"type": "integer", "description": "Number of openings to return (default 10)"},
-            },
-            "required": ["player_id"],
-        },
-    },
-    {
-        "name": "get_clock_usage_by_phase",
-        "description": "Average clock remaining in opening, middlegame and endgame. Detects if player runs out of time late.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "player_id": {"type": "string", "description": "Lichess username"},
-            },
-            "required": ["player_id"],
-        },
-    },
-    {
-        "name": "get_performance_by_color",
-        "description": "Win rate as white vs black. Reveals color-specific weaknesses.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "player_id": {"type": "string", "description": "Lichess username"},
-            },
-            "required": ["player_id"],
-        },
-    },
-    {
-        "name": "get_performance_vs_rating",
-        "description": "Win rate against lower, equal and higher rated opponents.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "player_id": {"type": "string", "description": "Lichess username"},
-            },
-            "required": ["player_id"],
-        },
-    },
-    {
-        "name": "get_recent_games",
-        "description": "Last N games with opponent, opening, result and time control.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "player_id": {"type": "string", "description": "Lichess username"},
-                "limit":     {"type": "integer", "description": "Number of games (default 10)"},
-            },
-            "required": ["player_id"],
-        },
-    },
-    {
-        "name": "analyze_game",
-        "description": (
+    ),
+    FunctionDeclaration(
+        name="analyze_game",
+        description=(
             "Full move-by-move Stockfish analysis of a specific game. "
             "Returns eval, best move, and classification (blunder/mistake/inaccuracy/good) for every move. "
             "Use this when the player asks to review a specific game or understand what went wrong."
         ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "game_id": {"type": "string", "description": "Lichess game ID (8 chars, e.g. 'RPJr6MMX')"},
-            },
+        parameters={
+            "type_": "OBJECT",
+            "properties": {"game_id": {"type_": "STRING", "description": "Lichess game ID (8 chars, e.g. 'RPJr6MMX')"}},
             "required": ["game_id"],
         },
-    },
-]
+    ),
+])
 
 TOOL_FN_MAP: dict[str, Any] = {
     "get_player_overview":       get_player_overview,
@@ -398,7 +368,7 @@ class ChessCoachAgent:
         self.model = GenerativeModel(
             model_name="gemini-2.5-flash-preview-04-17",
             system_instruction=SYSTEM_PROMPT,
-            tools=[{"function_declarations": TOOLS}],
+            tools=[TOOLS],
         )
         self.chat = self.model.start_chat()
 
