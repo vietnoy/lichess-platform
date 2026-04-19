@@ -103,6 +103,12 @@ def create_table(token: str, name: str, schema: dict):
         json={
             "name": name,
             "schema": schema,
+            "partition-spec": {
+                "spec-id": 0,
+                "fields": [
+                    {"name": "date", "transform": "identity", "source-id": 23, "field-id": 1000}
+                ]
+            },
             "location": f"s3://{MINIO_BUCKET}/iceberg/{NAMESPACE}/{name}",
             "properties": {
                 "write.format.default": "parquet",

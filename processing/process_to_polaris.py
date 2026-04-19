@@ -200,7 +200,7 @@ def run(date_str: str):
         .withColumn("date", lit(date_str))
     )
 
-    player_moves.writeTo("polaris.prod.chess_move_events").partitionedBy("date").append()
+    player_moves.writeTo("polaris.prod.chess_move_events").overwritePartitions()
     logger.info(f"Done — date={date_str} written to Polaris")
     spark.stop()
 
