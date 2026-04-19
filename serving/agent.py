@@ -5,8 +5,8 @@ import requests
 import mysql.connector
 from typing import Any
 from dotenv import load_dotenv
-import google.auth
 import vertexai
+from google.oauth2 import service_account
 from vertexai.generative_models import GenerativeModel, Part, Tool, FunctionDeclaration
 
 load_dotenv()
@@ -18,11 +18,11 @@ _sa_path  = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 _project  = os.getenv("GCP_PROJECT", "sonat-game-new-installs-dash")
 _location = os.getenv("GCP_LOCATION", "us-central1")
 
-if _sa_path:
-    _creds, _ = google.auth.load_credentials_from_file(_sa_path)
-    vertexai.init(project=_project, location=_location, credentials=_creds)
-else:
-    vertexai.init(project=_project, location=_location)
+_creds = service_account.Credentials.from_service_account_file(
+    _sa_path,
+    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+)
+vertexai.init(project=_project, location=_location, credentials=_creds)
 
 SR_HOST         = os.getenv("STARROCKS_HOST", "localhost")
 SR_PORT         = int(os.getenv("STARROCKS_PORT", "9030"))
@@ -366,7 +366,7 @@ If no data is found for a player, say their games may not be in the system yet."
 class ChessCoachAgent:
     def __init__(self):
         self.model = GenerativeModel(
-            model_name="gemini-2.5-flash-preview-04-17",
+            model_name="gemini-2.5-flash",
             system_instruction=SYSTEM_PROMPT,
             tools=[TOOLS],
         )
