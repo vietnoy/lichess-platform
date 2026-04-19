@@ -207,5 +207,8 @@ def run(date_str: str):
 
 if __name__ == "__main__":
     import sys
-    date = sys.argv[1] if len(sys.argv) > 1 else (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    today     = datetime.today().strftime("%Y-%m-%d")
+    yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    arg  = sys.argv[1] if len(sys.argv) > 1 else None
+    date = yesterday if (arg is None or arg >= today) else arg
     run(date)
