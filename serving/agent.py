@@ -385,18 +385,20 @@ class ChessCoachAgent:
     def ask(self, message: str) -> str:
         response = self.chat.send_message(message)
         while True:
-            part = response.candidates[0].content.parts[0]
-            if hasattr(part, "function_call") and part.function_call.name:
-                fc     = part.function_call
-                args   = dict(fc.args)
-                logger.info(f"Tool: {fc.name}({args})")
-                result = self._dispatch(fc.name, args)
-                logger.info(f"Result: {result[:200]}")
-                response = self.chat.send_message(
-                    Part.from_function_response(name=fc.name, response={"result": result})
-                )
-            else:
+            parts = response.candidates[0].content.parts
+            fn_calls = [p for p in parts if hasattr(p, "function_call") and p.function_call.name]
+            if not fn_calls:
                 return response.text
+            responses = []
+            for fc in fn_calls:
+                args = dict(fc.function_call.args)
+                logger.info(f"Tool: {fc.function_call.name}({args})")
+                result = self._dispatch(fc.function_call.name, args)
+                logger.info(f"Result: {result[:200]}")
+                responses.append(
+                    Part.from_function_response(name=fc.function_call.name, response={"result": result})
+                )
+            response = self.chat.send_message(responses)
 
 
 try:
