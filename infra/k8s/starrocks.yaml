@@ -26,8 +26,30 @@ spec:
             - /bin/bash
             - -c
             - |
-              echo "cloud_native_storage_type = S3" >> /opt/starrocks/fe/conf/fe.conf
-              /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN
+              CONF=/opt/starrocks/fe/conf/fe.conf
+              if ! grep -q "run_mode" $CONF; then
+                ENDPOINT=$(echo "$MINIO_ENDPOINT" | sed 's|http://||;s|https://||')
+                echo "run_mode = shared_data" >> $CONF
+                echo "cloud_native_storage_type = S3" >> $CONF
+                echo "aws_s3_path = chess-prod/starrocks" >> $CONF
+                echo "aws_s3_endpoint = $ENDPOINT" >> $CONF
+                echo "aws_s3_access_key = $MINIO_ACCESS_KEY" >> $CONF
+                echo "aws_s3_secret_access_key = $MINIO_SECRET_KEY" >> $CONF
+                echo "aws_s3_use_instance_profile = false" >> $CONF
+                echo "aws_s3_use_aws_sdk_default_behavior = false" >> $CONF
+                echo "aws_s3_region = us-east-1" >> $CONF
+              fi
+              mkdir -p /opt/starrocks/fe/log
+              /opt/starrocks/fe/bin/start_fe.sh --host_type IP &
+              FE_PID=$!
+              sleep 5
+              tail -f /opt/starrocks/fe/log/fe.out /opt/starrocks/fe/log/fe.warn.log 2>/dev/null &
+              wait $FE_PID
+          envFrom:
+            - configMapRef:
+                name: chess-config
+            - secretRef:
+                name: chess-secrets
           ports:
             - name: http
               containerPort: 8030
@@ -140,17 +162,19 @@ spec:
             - -c
             - |
               sleep 15
-              mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot \
-                -e "ALTER SYSTEM ADD COMPUTE NODE 'starrocks-cn-1:9050';" || true
-              /opt/starrocks/cn/bin/start_cn.sh
+              MY_IP=$(hostname -i)
+              mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot -p"$STARROCKS_PASSWORD" \
+                -e "ALTER SYSTEM ADD COMPUTE NODE '$MY_IP:9050';" || true
+              /opt/starrocks/cn/bin/start_cn.sh --host_type IP
           ports:
             - containerPort: 8040
             - containerPort: 9050
           env:
             - name: TZ
               value: UTC
-            - name: HOST_TYPE
-              value: FQDN
+          envFrom:
+            - secretRef:
+                name: chess-secrets
           securityContext:
             runAsUser: 0
           readinessProbe:
