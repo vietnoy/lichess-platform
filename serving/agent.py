@@ -1,55 +1,44 @@
-"""
-agent.py — Gemini 2.5 Flash AI Chess Coach
-
-Connects to StarRocks (via polaris_catalog Iceberg external tables) and answers
-chess coaching questions using tool use.
-
-Run locally:
-  python serving/agent.py
-
-Or as a FastAPI service:
-  uvicorn serving.agent:app --host 0.0.0.0 --port 8000
-"""
-
 import os
 import json
 import logging
-from typing import Any
-
+import requests
 import mysql.connector
+from typing import Any
 from dotenv import load_dotenv
-import google.generativeai as genai
+import google.auth
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+_sa_path  = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+_project  = os.getenv("GCP_PROJECT", "sonat-game-new-installs-dash")
+_location = os.getenv("GCP_LOCATION", "us-central1")
 
-SR_HOST = os.getenv("STARROCKS_HOST", "localhost")
-SR_PORT = int(os.getenv("STARROCKS_PORT", "9030"))
-SR_USER = os.getenv("STARROCKS_USER", "root")
-SR_PASS = os.getenv("STARROCKS_PASSWORD", "")
-TABLE   = "polaris_catalog.prod.chess_move_events"
+if _sa_path:
+    _creds, _ = google.auth.load_credentials_from_file(_sa_path)
+    vertexai.init(project=_project, location=_location, credentials=_creds)
+else:
+    vertexai.init(project=_project, location=_location)
+
+SR_HOST         = os.getenv("STARROCKS_HOST", "localhost")
+SR_PORT         = int(os.getenv("STARROCKS_PORT", "9030"))
+SR_USER         = os.getenv("STARROCKS_USER", "root")
+SR_PASS         = os.getenv("STARROCKS_PASSWORD", "")
+STOCKFISH_URL   = os.getenv("STOCKFISH_URL", "http://stockfish:8001/eval")
+STOCKFISH_DEPTH = int(os.getenv("STOCKFISH_DEPTH", "8"))
+TABLE           = "polaris_catalog.prod.chess_move_events"
 
 
-def _sr_conn():
-    return mysql.connector.connect(
+def query(sql: str) -> list[dict]:
+    conn = mysql.connector.connect(
         host=SR_HOST, port=SR_PORT,
         user=SR_USER, password=SR_PASS,
-        database="",
-        connection_timeout=10,
+        database="", connection_timeout=10,
     )
-
-
-def _query(sql: str) -> list[dict]:
-    conn = _sr_conn()
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(sql)
@@ -58,39 +47,38 @@ def _query(sql: str) -> list[dict]:
         conn.close()
 
 
-# ── Tool implementations ───────────────────────────────────────────────────────
+def stockfish_eval(fen: str) -> dict | None:
+    try:
+        r = requests.get(STOCKFISH_URL, params={"fen": fen, "depth": STOCKFISH_DEPTH}, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
 
 def get_player_overview(player_id: str) -> dict:
-    """
-    Overall stats: total games, win/loss/draw, win rate, avg rating,
-    most played time controls.
-    """
-    sql = f"""
+    rows = query(f"""
         SELECT
-            COUNT(DISTINCT game_id)                                         AS total_games,
-            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)          AS wins,
+            speed,
+            COUNT(DISTINCT game_id)                                       AS total_games,
+            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)        AS wins,
             SUM(CASE WHEN winner IS NOT NULL
-                      AND winner != whose_moved THEN 1 ELSE 0 END)         AS losses,
-            SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END)                AS draws,
-            ROUND(AVG(CASE WHEN whose_moved = 'white' THEN white_rating
-                           ELSE black_rating END), 0)                      AS avg_rating,
-            speed
+                      AND winner != whose_moved THEN 1 ELSE 0 END)       AS losses,
+            SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END)              AS draws,
+            ROUND(AVG(CASE WHEN whose_moved = 'white'
+                           THEN white_rating ELSE black_rating END), 0)  AS avg_rating
         FROM {TABLE}
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND move_number = 1
         GROUP BY speed
         ORDER BY total_games DESC
-    """
-    rows = _query(sql)
+    """)
     return {"player_id": player_id, "overview": rows}
 
 
 def get_time_pressure_stats(player_id: str) -> dict:
-    """
-    Compare win rate and move count when clock < 10s vs normal.
-    High loss rate under time pressure = clock management issue.
-    """
-    sql = f"""
+    rows = query(f"""
         SELECT
             CASE WHEN clock_remaining < 1000 THEN 'under_10s' ELSE 'normal' END AS pressure,
             COUNT(DISTINCT game_id)                                               AS games,
@@ -102,24 +90,19 @@ def get_time_pressure_stats(player_id: str) -> dict:
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND clock_remaining IS NOT NULL
         GROUP BY pressure
-    """
-    rows = _query(sql)
+    """)
     return {"player_id": player_id, "time_pressure": rows}
 
 
-def get_opening_stats(player_id: str, top_n: int = 8) -> dict:
-    """
-    Win rate by opening ECO code. Shows which openings the player
-    performs best and worst in.
-    """
-    sql = f"""
+def get_opening_stats(player_id: str, top_n: int = 10) -> dict:
+    rows = query(f"""
         SELECT
             opening_eco,
             opening_name,
-            COUNT(DISTINCT game_id)                                        AS games,
-            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)         AS wins,
+            COUNT(DISTINCT game_id)                                       AS games,
+            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)        AS wins,
             ROUND(SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)
-                  * 100.0 / COUNT(DISTINCT game_id), 1)                   AS win_rate_pct
+                  * 100.0 / COUNT(DISTINCT game_id), 1)                  AS win_rate_pct
         FROM {TABLE}
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND move_number = 1
@@ -128,44 +111,74 @@ def get_opening_stats(player_id: str, top_n: int = 8) -> dict:
         HAVING games >= 3
         ORDER BY win_rate_pct ASC
         LIMIT {top_n}
-    """
-    rows = _query(sql)
+    """)
     return {"player_id": player_id, "opening_stats": rows}
 
 
-def get_endgame_clock_usage(player_id: str) -> dict:
-    """
-    How much clock time does the player have left in the endgame (move > 30)?
-    Compares avg clock remaining early vs late game to detect time trouble pattern.
-    """
-    sql = f"""
+def get_clock_usage_by_phase(player_id: str) -> dict:
+    rows = query(f"""
         SELECT
             CASE
                 WHEN move_number <= 10 THEN 'opening'
                 WHEN move_number <= 30 THEN 'middlegame'
                 ELSE 'endgame'
-            END AS phase,
-            ROUND(AVG(clock_remaining) / 100.0, 1) AS avg_clock_s,
-            ROUND(MIN(clock_remaining) / 100.0, 1) AS min_clock_s,
-            COUNT(*)                                AS move_count
+            END                                        AS phase,
+            ROUND(AVG(clock_remaining) / 100.0, 1)    AS avg_clock_s,
+            ROUND(MIN(clock_remaining) / 100.0, 1)    AS min_clock_s,
+            COUNT(*)                                   AS move_count
         FROM {TABLE}
         WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
           AND clock_remaining IS NOT NULL
         GROUP BY phase
-        ORDER BY move_count DESC
-    """
-    rows = _query(sql)
+    """)
     return {"player_id": player_id, "clock_by_phase": rows}
 
 
+def get_performance_by_color(player_id: str) -> dict:
+    rows = query(f"""
+        SELECT
+            whose_moved   AS color,
+            COUNT(DISTINCT game_id)                                       AS games,
+            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)        AS wins,
+            ROUND(SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)
+                  * 100.0 / COUNT(DISTINCT game_id), 1)                  AS win_rate_pct
+        FROM {TABLE}
+        WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
+          AND move_number = 1
+        GROUP BY whose_moved
+    """)
+    return {"player_id": player_id, "by_color": rows}
+
+
+def get_performance_vs_rating(player_id: str) -> dict:
+    rows = query(f"""
+        SELECT
+            CASE
+                WHEN (CASE WHEN white_id = '{player_id}' THEN black_rating ELSE white_rating END)
+                     < (CASE WHEN white_id = '{player_id}' THEN white_rating ELSE black_rating END) - 100
+                THEN 'lower_rated'
+                WHEN (CASE WHEN white_id = '{player_id}' THEN black_rating ELSE white_rating END)
+                     > (CASE WHEN white_id = '{player_id}' THEN white_rating ELSE black_rating END) + 100
+                THEN 'higher_rated'
+                ELSE 'equal_rated'
+            END                                                          AS opponent_class,
+            COUNT(DISTINCT game_id)                                      AS games,
+            SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)       AS wins,
+            ROUND(SUM(CASE WHEN winner = whose_moved THEN 1 ELSE 0 END)
+                  * 100.0 / COUNT(DISTINCT game_id), 1)                 AS win_rate_pct
+        FROM {TABLE}
+        WHERE (white_id = '{player_id}' OR black_id = '{player_id}')
+          AND move_number = 1
+        GROUP BY opponent_class
+    """)
+    return {"player_id": player_id, "vs_rating": rows}
+
+
 def get_recent_games(player_id: str, limit: int = 10) -> dict:
-    """
-    Last N games with result, opponent, opening, and time control.
-    """
-    sql = f"""
+    rows = query(f"""
         SELECT
             game_id,
-            CASE WHEN white_id = '{player_id}' THEN black_id ELSE white_id END AS opponent,
+            CASE WHEN white_id = '{player_id}' THEN black_id ELSE white_id END  AS opponent,
             CASE WHEN white_id = '{player_id}' THEN white_rating ELSE black_rating END AS my_rating,
             CASE WHEN white_id = '{player_id}' THEN black_rating ELSE white_rating END AS opp_rating,
             opening_eco,
@@ -179,45 +192,83 @@ def get_recent_games(player_id: str, limit: int = 10) -> dict:
           AND move_number = 1
         ORDER BY date DESC
         LIMIT {limit}
-    """
-    rows = _query(sql)
+    """)
     return {"player_id": player_id, "recent_games": rows}
 
 
-def get_game_moves(game_id: str) -> dict:
-    """
-    Full move list for a specific game with clock remaining per move.
-    Useful for exploring a specific game step by step.
-    """
-    sql = f"""
-        SELECT
-            move_number,
-            whose_moved,
-            move,
-            fen,
-            ROUND(clock_remaining / 100.0, 1) AS clock_s
+def analyze_game(game_id: str) -> dict:
+    moves = query(f"""
+        SELECT move_number, whose_moved, move, fen,
+               ROUND(clock_remaining / 100.0, 1) AS clock_s,
+               white_id, black_id, white_rating, black_rating,
+               opening_name, speed, winner, end_status
         FROM {TABLE}
         WHERE game_id = '{game_id}'
         ORDER BY move_number
-    """
-    moves = _query(sql)
+    """)
 
-    sql_meta = f"""
-        SELECT white_id, black_id, white_rating, black_rating,
-               speed, opening_eco, opening_name, winner, end_status
-        FROM {TABLE}
-        WHERE game_id = '{game_id}' AND move_number = 1
-    """
-    meta = _query(sql_meta)
-    return {"game_id": game_id, "meta": meta[0] if meta else {}, "moves": moves}
+    if not moves:
+        return {"error": f"Game {game_id} not found"}
 
+    annotated = []
+    prev_cp = None
 
-# ── Gemini tool declarations ───────────────────────────────────────────────────
+    for m in moves:
+        ev        = stockfish_eval(m["fen"])
+        cp        = ev.get("cp")       if ev else None
+        best_move = ev.get("best_move") if ev else None
+
+        delta = None
+        classification = None
+        if cp is not None and prev_cp is not None:
+            if m["whose_moved"] == "white":
+                drop = -(cp - prev_cp)
+            else:
+                drop = prev_cp - cp
+
+            if drop >= 200:
+                classification = "blunder"
+            elif drop >= 100:
+                classification = "mistake"
+            elif drop >= 50:
+                classification = "inaccuracy"
+            else:
+                classification = "good"
+            delta = cp - prev_cp
+
+        annotated.append({
+            "move_number":    m["move_number"],
+            "whose_moved":    m["whose_moved"],
+            "move":           m["move"],
+            "eval_cp":        cp,
+            "eval_delta":     delta,
+            "best_move":      best_move,
+            "classification": classification,
+            "clock_s":        m["clock_s"],
+        })
+        prev_cp = cp
+
+    meta = moves[0]
+    return {
+        "game_id":      game_id,
+        "white":        f"{meta['white_id']} ({meta['white_rating']})",
+        "black":        f"{meta['black_id']} ({meta['black_rating']})",
+        "opening":      meta["opening_name"],
+        "speed":        meta["speed"],
+        "result":       meta["winner"] or "draw",
+        "end_status":   meta["end_status"],
+        "moves":        annotated,
+        "total_moves":  len(annotated),
+        "blunders":     sum(1 for x in annotated if x["classification"] == "blunder"),
+        "mistakes":     sum(1 for x in annotated if x["classification"] == "mistake"),
+        "inaccuracies": sum(1 for x in annotated if x["classification"] == "inaccuracy"),
+    }
+
 
 TOOLS = [
     {
         "name": "get_player_overview",
-        "description": "Get overall stats for a player: total games, win/loss/draw, average rating, broken down by time control (bullet/blitz/rapid).",
+        "description": "Overall stats for a player: total games, win/loss/draw and average rating by time control.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -228,7 +279,7 @@ TOOLS = [
     },
     {
         "name": "get_time_pressure_stats",
-        "description": "Compare a player's win rate when the clock is under 10 seconds vs normal conditions. Reveals clock management weaknesses.",
+        "description": "Win rate when clock is under 10 seconds vs normal. Reveals time management weaknesses.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -239,19 +290,41 @@ TOOLS = [
     },
     {
         "name": "get_opening_stats",
-        "description": "Win rate by opening ECO code. Shows which openings the player performs best and worst in.",
+        "description": "Win rate by opening ECO code. Shows which openings the player wins and loses most.",
         "parameters": {
             "type": "object",
             "properties": {
                 "player_id": {"type": "string", "description": "Lichess username"},
-                "top_n":     {"type": "integer", "description": "Number of openings to return (default 8)"},
+                "top_n":     {"type": "integer", "description": "Number of openings to return (default 10)"},
             },
             "required": ["player_id"],
         },
     },
     {
-        "name": "get_endgame_clock_usage",
-        "description": "Shows average clock remaining in opening/middlegame/endgame phases. Detects if a player runs out of time in the endgame.",
+        "name": "get_clock_usage_by_phase",
+        "description": "Average clock remaining in opening, middlegame and endgame. Detects if player runs out of time late.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "player_id": {"type": "string", "description": "Lichess username"},
+            },
+            "required": ["player_id"],
+        },
+    },
+    {
+        "name": "get_performance_by_color",
+        "description": "Win rate as white vs black. Reveals color-specific weaknesses.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "player_id": {"type": "string", "description": "Lichess username"},
+            },
+            "required": ["player_id"],
+        },
+    },
+    {
+        "name": "get_performance_vs_rating",
+        "description": "Win rate against lower, equal and higher rated opponents.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -262,23 +335,27 @@ TOOLS = [
     },
     {
         "name": "get_recent_games",
-        "description": "Get the last N games for a player with opponent, opening, result and time control.",
+        "description": "Last N games with opponent, opening, result and time control.",
         "parameters": {
             "type": "object",
             "properties": {
                 "player_id": {"type": "string", "description": "Lichess username"},
-                "limit":     {"type": "integer", "description": "Number of games to return (default 10)"},
+                "limit":     {"type": "integer", "description": "Number of games (default 10)"},
             },
             "required": ["player_id"],
         },
     },
     {
-        "name": "get_game_moves",
-        "description": "Get the full move list for a specific game with clock time per move. Use this to explore a game step by step.",
+        "name": "analyze_game",
+        "description": (
+            "Full move-by-move Stockfish analysis of a specific game. "
+            "Returns eval, best move, and classification (blunder/mistake/inaccuracy/good) for every move. "
+            "Use this when the player asks to review a specific game or understand what went wrong."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "game_id": {"type": "string", "description": "Lichess game ID (8 chars, e.g. 'AbCdEfGh')"},
+                "game_id": {"type": "string", "description": "Lichess game ID (8 chars, e.g. 'RPJr6MMX')"},
             },
             "required": ["game_id"],
         },
@@ -286,84 +363,71 @@ TOOLS = [
 ]
 
 TOOL_FN_MAP: dict[str, Any] = {
-    "get_player_overview":     get_player_overview,
-    "get_time_pressure_stats": get_time_pressure_stats,
-    "get_opening_stats":       get_opening_stats,
-    "get_endgame_clock_usage": get_endgame_clock_usage,
-    "get_recent_games":        get_recent_games,
-    "get_game_moves":          get_game_moves,
+    "get_player_overview":       get_player_overview,
+    "get_time_pressure_stats":   get_time_pressure_stats,
+    "get_opening_stats":         get_opening_stats,
+    "get_clock_usage_by_phase":  get_clock_usage_by_phase,
+    "get_performance_by_color":  get_performance_by_color,
+    "get_performance_vs_rating": get_performance_vs_rating,
+    "get_recent_games":          get_recent_games,
+    "analyze_game":              analyze_game,
 }
 
 SYSTEM_PROMPT = """You are an expert AI Chess Coach with access to real game data from Lichess.
-You help players improve by analysing their actual game history — not generic advice.
+You answer questions based on actual statistics from the player's game history.
 
-When a player asks about their weaknesses or performance, use the available tools to pull
-real statistics from the database before answering. Always ground your advice in the data.
-Be specific: quote win rates, clock times, mention exact openings where they struggle.
+When asked about a player's performance or weaknesses, call the relevant tools to get real data
+before answering. Always quote specific numbers from the data. Be concise and actionable.
 
-Key metrics you can analyse:
-- Overall win/loss/draw rate by time control
-- Time pressure: performance when clock < 10 seconds vs normal
-- Opening repertoire: which ECO codes they win/lose most
-- Clock usage across game phases: do they rush in the endgame?
+When analyzing a specific game with analyze_game:
+- Highlight the key turning points (biggest eval swings)
+- Explain what the player should have done differently at blunder/mistake moves
+- Comment on clock usage if the player was in time trouble
+- Give a short strategic summary of how the game was won or lost
 
-If the database returns no data for a player, tell them their games may not be
-in the system yet.
+When asked about trends or weaknesses across many games:
+- Use multiple tools to build a complete picture
+- Compare performance by color, time control, and opening
+- Focus on the most impactful improvement areas
 
-Keep answers concise and actionable. Use bullet points for improvement tips."""
+If no data is found for a player, say their games may not be in the system yet."""
 
-
-# ── Agent loop ─────────────────────────────────────────────────────────────────
 
 class ChessCoachAgent:
     def __init__(self):
-        self.model = genai.GenerativeModel(
+        self.model = GenerativeModel(
             model_name="gemini-2.5-flash-preview-04-17",
             system_instruction=SYSTEM_PROMPT,
             tools=[{"function_declarations": TOOLS}],
         )
         self.chat = self.model.start_chat()
 
-    def _dispatch_tool(self, name: str, args: dict) -> str:
+    def _dispatch(self, name: str, args: dict) -> str:
         fn = TOOL_FN_MAP.get(name)
         if fn is None:
             return json.dumps({"error": f"unknown tool: {name}"})
         try:
-            result = fn(**args)
-            return json.dumps(result, default=str)
+            return json.dumps(fn(**args), default=str)
         except Exception as e:
             logger.error(f"Tool {name} failed: {e}")
             return json.dumps({"error": str(e)})
 
-    def ask(self, user_message: str) -> str:
-        response = self.chat.send_message(user_message)
-
+    def ask(self, message: str) -> str:
+        response = self.chat.send_message(message)
         while True:
             part = response.candidates[0].content.parts[0]
-
             if hasattr(part, "function_call") and part.function_call.name:
-                fc   = part.function_call
-                args = dict(fc.args)
-                logger.info(f"Tool call: {fc.name}({args})")
-                result_str = self._dispatch_tool(fc.name, args)
-                logger.info(f"Tool result: {result_str[:300]}")
-
+                fc     = part.function_call
+                args   = dict(fc.args)
+                logger.info(f"Tool: {fc.name}({args})")
+                result = self._dispatch(fc.name, args)
+                logger.info(f"Result: {result[:200]}")
                 response = self.chat.send_message(
-                    genai.protos.Content(
-                        parts=[genai.protos.Part(
-                            function_response=genai.protos.FunctionResponse(
-                                name=fc.name,
-                                response={"result": result_str},
-                            )
-                        )],
-                        role="tool",
-                    )
+                    Part.from_function_response(name=fc.name, response={"result": result})
                 )
             else:
                 return response.text
 
-
-# ── FastAPI ────────────────────────────────────────────────────────────────────
 
 try:
     from fastapi import FastAPI
@@ -380,8 +444,7 @@ try:
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(req: ChatRequest):
-        reply = _agent.ask(req.message)
-        return ChatResponse(reply=reply)
+        return ChatResponse(reply=_agent.ask(req.message))
 
     @app.get("/health")
     def health():
@@ -391,18 +454,14 @@ except ImportError:
     app = None
 
 
-# ── CLI ────────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    print("Chess Coach Agent — type 'quit' to exit\n")
+    print("Chess Coach — type 'quit' to exit\n")
     agent = ChessCoachAgent()
     while True:
         try:
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
             break
         if not user_input or user_input.lower() in {"quit", "exit"}:
             break
-        reply = agent.ask(user_input)
-        print(f"\nCoach: {reply}\n")
+        print(f"\nCoach: {agent.ask(user_input)}\n")

@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    fastapi uvicorn \
+    streamlit \
+    mysql-connector-python \
+    google-cloud-aiplatform \
+    google-auth \
+    chess \
+    requests \
+    python-dotenv
+
+COPY serving/ .
