@@ -4,6 +4,9 @@ import chess
 import chess.svg
 import streamlit as st
 import mysql.connector
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 from dotenv import load_dotenv
 from agent import ChessCoachAgent
 
@@ -82,7 +85,16 @@ def cp_to_label(cp):
     return f"{cp/100:+.1f} — Balanced"
 
 
-st.set_page_config(page_title="Chess Coach", page_icon="♟", layout="wide")
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Chess Coach", page_icon="♟", layout="wide", initial_sidebar_state="collapsed")
+
+# Hide sidebar arrow entirely
+st.markdown("""
+<style>
+[data-testid="collapsedControl"] { display: none; }
+section[data-testid="stSidebar"] { display: none; }
+</style>
+""", unsafe_allow_html=True)
 
 st.markdown("""
     <h1 style='text-align:center; margin-bottom:0'>♟ Chess Coach</h1>
@@ -90,35 +102,51 @@ st.markdown("""
     <hr>
 """, unsafe_allow_html=True)
 
-if "agent" not in st.session_state:
+# ── Session state ─────────────────────────────────────────────────────────────
+for key, default in [
+    ("agent", None),
+    ("chat_history", []),
+    ("game_moves", []),
+    ("move_index", 0),
+    ("chat_open", False),
+    ("dashboard_username", ""),
+    ("dashboard_data", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+if st.session_state.agent is None:
     st.session_state.agent = ChessCoachAgent()
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "game_moves" not in st.session_state:
-    st.session_state.game_moves = []
-if "move_index" not in st.session_state:
-    st.session_state.move_index = 0
 
-tab_explorer, tab_coach = st.tabs(["♟ Game Explorer", "🤖 AI Coach"])
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab_explorer, tab_dashboard, tab_sql = st.tabs(["♟ Game Explorer", "📊 Player Dashboard", "🗄️ SQL Explorer"])
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — GAME EXPLORER
+# ═══════════════════════════════════════════════════════════════════════════════
 with tab_explorer:
     st.subheader("Explore a Game")
 
     col_input, col_btn = st.columns([4, 1])
     with col_input:
-        game_id_input = st.text_input("Game ID", placeholder="e.g. RPJr6MMX", label_visibility="collapsed")
+        game_id_input = st.text_input("Game ID", placeholder="e.g. RPJr6MMX", label_visibility="collapsed", key="game_id_input")
     with col_btn:
         load_clicked = st.button("Load Game", use_container_width=True)
 
     if load_clicked and game_id_input:
-        with st.spinner("Loading game..."):
-            moves = load_game(game_id_input.strip())
-        if moves:
-            st.session_state.game_moves = moves
-            st.session_state.move_index = 0
-        else:
-            st.error("Game not found in the database.")
+        try:
+            with st.spinner("Loading game..."):
+                moves = load_game(game_id_input.strip())
+            if moves:
+                st.session_state.game_moves = moves
+                st.session_state.move_index = 0
+            else:
+                st.session_state.game_moves = []
+                st.error("Game not found in the database.")
+        except Exception as e:
+            st.session_state.game_moves = []
+            st.error(f"Error loading game: {e}")
 
     if st.session_state.game_moves:
         moves = st.session_state.game_moves
@@ -136,8 +164,12 @@ with tab_explorer:
             </div>
         """, unsafe_allow_html=True)
 
-        with st.spinner("Evaluating position..."):
-            eval_result   = eval_fen(cur["fen"])
+        try:
+            with st.spinner("Evaluating position..."):
+                eval_result = eval_fen(cur["fen"])
+        except Exception:
+            eval_result = None
+
         suggested_move = eval_result.get("best_move") if eval_result else None
         last_move      = moves[idx - 1]["move"] if idx > 0 else None
         board_svg      = render_board(cur["fen"], last_move, suggested_move)
@@ -164,7 +196,6 @@ with tab_explorer:
 
         with col_info:
             st.markdown("#### Position Analysis")
-
             st.markdown(f"""
                 <div style='background:#f9f9f9; border-left:4px solid #4a90e2;
                             padding:10px 14px; border-radius:4px; margin-bottom:12px'>
@@ -176,21 +207,18 @@ with tab_explorer:
             if eval_result:
                 cp   = eval_result.get("cp")
                 mate = eval_result.get("mate")
-
                 if mate is not None:
                     label = f"Mate in {abs(mate)}"
                     color = "#cc0000"
                 else:
                     label = cp_to_label(cp)
                     color = "#2e7d32" if cp and cp > 0 else "#c62828" if cp and cp < 0 else "#555"
-
                 st.markdown(f"""
                     <div style='background:#fff; border:1px solid #ddd; border-radius:6px;
                                 padding:10px 14px; margin-bottom:10px'>
                         Eval: <span style='color:{color}; font-weight:bold'>{label}</span>
                     </div>
                 """, unsafe_allow_html=True)
-
                 if suggested_move:
                     st.markdown(f"""
                         <div style='background:#e8f5e9; border-left:4px solid #00cc44;
@@ -216,40 +244,299 @@ with tab_explorer:
             )
 
 
-with tab_coach:
-    st.subheader("Ask Your AI Chess Coach")
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — PLAYER DASHBOARD
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_dashboard:
+    st.subheader("Player Performance Dashboard")
 
-    username_input = st.text_input(
-        "Lichess Username",
-        placeholder="Enter your Lichess username",
-        help="The coach will use your game history to answer questions."
-    )
-
-    if username_input:
-        st.markdown(
-            f"<div style='color:#1565c0; font-size:0.9em; margin-bottom:8px'>"
-            f"Coaching session for: <b>{username_input}</b></div>",
-            unsafe_allow_html=True,
+    col_u, col_b = st.columns([4, 1])
+    with col_u:
+        dash_username = st.text_input(
+            "Username", placeholder="Enter Lichess username",
+            label_visibility="collapsed", key="dash_username_input"
         )
+    with col_b:
+        dash_go = st.button("Analyze", use_container_width=True, key="dash_go")
 
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+    if dash_go and dash_username:
+        pid = dash_username.strip()
+        st.session_state.dashboard_username = pid
+        try:
+            with st.spinner(f"Loading stats for {pid}..."):
+                overview_rows = query_starrocks(f"""
+                    SELECT speed,
+                        COUNT(DISTINCT game_id) AS total_games,
+                        SUM(CASE WHEN winner = CASE WHEN white_id='{pid}' THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) AS wins,
+                        SUM(CASE WHEN winner IS NOT NULL AND winner != CASE WHEN white_id='{pid}' THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) AS losses,
+                        SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END) AS draws,
+                        ROUND(AVG(CASE WHEN white_id='{pid}' THEN white_rating ELSE black_rating END), 0) AS avg_rating
+                    FROM {TABLE}
+                    WHERE (white_id='{pid}' OR black_id='{pid}') AND move_number=1
+                    GROUP BY speed ORDER BY total_games DESC
+                """)
+                if not overview_rows:
+                    st.session_state.dashboard_data = None
+                    st.error(f"No data found for player '{pid}'.")
+                else:
+                    color_rows = query_starrocks(f"""
+                        SELECT CASE WHEN white_id='{pid}' THEN 'White' ELSE 'Black' END AS color,
+                            COUNT(DISTINCT game_id) AS games,
+                            ROUND(SUM(CASE WHEN winner = CASE WHEN white_id='{pid}' THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_pct
+                        FROM {TABLE}
+                        WHERE (white_id='{pid}' OR black_id='{pid}') AND move_number=1
+                        GROUP BY color
+                    """)
+                    opening_rows = query_starrocks(f"""
+                        SELECT opening_eco, opening_name,
+                            COUNT(DISTINCT game_id) AS games,
+                            ROUND(SUM(CASE WHEN winner = CASE WHEN white_id='{pid}' THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_pct
+                        FROM {TABLE}
+                        WHERE (white_id='{pid}' OR black_id='{pid}') AND move_number=1 AND opening_eco IS NOT NULL
+                        GROUP BY opening_eco, opening_name HAVING games >= 3
+                        ORDER BY games DESC LIMIT 10
+                    """)
+                    clock_rows = query_starrocks(f"""
+                        SELECT CASE WHEN move_number<=10 THEN 'Opening' WHEN move_number<=30 THEN 'Middlegame' ELSE 'Endgame' END AS phase,
+                            ROUND(AVG(clock_remaining)/100.0, 1) AS avg_clock_s
+                        FROM {TABLE}
+                        WHERE (white_id='{pid}' OR black_id='{pid}') AND clock_remaining IS NOT NULL
+                        GROUP BY phase ORDER BY phase
+                    """)
+                    vs_rating_rows = query_starrocks(f"""
+                        SELECT CASE
+                            WHEN (CASE WHEN white_id='{pid}' THEN black_rating ELSE white_rating END) < (CASE WHEN white_id='{pid}' THEN white_rating ELSE black_rating END) - 100 THEN 'Lower rated'
+                            WHEN (CASE WHEN white_id='{pid}' THEN black_rating ELSE white_rating END) > (CASE WHEN white_id='{pid}' THEN white_rating ELSE black_rating END) + 100 THEN 'Higher rated'
+                            ELSE 'Equal rated' END AS opponent,
+                            COUNT(DISTINCT game_id) AS games,
+                            ROUND(SUM(CASE WHEN winner = CASE WHEN white_id='{pid}' THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_pct
+                        FROM {TABLE}
+                        WHERE (white_id='{pid}' OR black_id='{pid}') AND move_number=1
+                        GROUP BY opponent
+                    """)
+                    recent_rows = query_starrocks(f"""
+                        SELECT game_id,
+                            CASE WHEN white_id='{pid}' THEN black_id ELSE white_id END AS opponent,
+                            CASE WHEN white_id='{pid}' THEN white_rating ELSE black_rating END AS my_rating,
+                            CASE WHEN white_id='{pid}' THEN black_rating ELSE white_rating END AS opp_rating,
+                            opening_eco, opening_name, speed,
+                            CASE WHEN winner IS NULL THEN 'Draw'
+                                 WHEN winner = CASE WHEN white_id='{pid}' THEN 'white' ELSE 'black' END THEN 'Win'
+                                 ELSE 'Loss' END AS result,
+                            date
+                        FROM {TABLE}
+                        WHERE (white_id='{pid}' OR black_id='{pid}') AND move_number=1
+                        ORDER BY date DESC LIMIT 15
+                    """)
+                    st.session_state.dashboard_data = {
+                        "pid": pid,
+                        "overview": overview_rows,
+                        "color": color_rows,
+                        "opening": opening_rows,
+                        "clock": clock_rows,
+                        "vs_rating": vs_rating_rows,
+                        "recent": recent_rows,
+                    }
+        except Exception as e:
+            st.session_state.dashboard_data = None
+            st.error(f"Error loading player data: {e}")
 
-    user_input = st.chat_input("Ask anything about your chess performance...")
+    data = st.session_state.dashboard_data
+    if data:
+        pid           = data["pid"]
+        overview_rows = data["overview"]
+        color_rows    = data["color"]
+        opening_rows  = data["opening"]
+        clock_rows    = data["clock"]
+        vs_rating_rows= data["vs_rating"]
+        recent_rows   = data["recent"]
 
-    if user_input:
-        prompt = user_input
-        if username_input and username_input.lower() not in user_input.lower():
-            prompt = f"[Player: {username_input}] {user_input}"
+        total_games = sum(r["total_games"] for r in overview_rows)
+        total_wins  = sum(r["wins"]        for r in overview_rows)
+        total_losses= sum(r["losses"]      for r in overview_rows)
+        total_draws = sum(r["draws"]       for r in overview_rows)
+        avg_rating  = round(sum(r["avg_rating"] * r["total_games"] for r in overview_rows) / total_games)
+        win_pct     = round(total_wins * 100 / total_games, 1) if total_games else 0
 
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.write(user_input)
+        st.markdown(f"### {pid} — Overview")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total Games", f"{total_games:,}")
+        m2.metric("Win Rate",    f"{win_pct}%")
+        m3.metric("Wins",        f"{total_wins:,}")
+        m4.metric("Losses",      f"{total_losses:,}")
+        m5.metric("Avg Rating",  f"{avg_rating}")
 
-        with st.chat_message("assistant"):
-            with st.spinner("Analyzing your games..."):
-                reply = st.session_state.agent.ask(prompt)
-            st.write(reply)
+        st.divider()
 
-        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        row1_l, row1_r = st.columns(2)
+
+        with row1_l:
+            st.markdown("##### Result Distribution")
+            fig = go.Figure(go.Pie(
+                labels=["Wins", "Losses", "Draws"],
+                values=[total_wins, total_losses, total_draws],
+                hole=0.55,
+                marker_colors=["#2e7d32", "#c62828", "#9e9e9e"],
+            ))
+            fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=280)
+            st.plotly_chart(fig, use_container_width=True)
+
+        with row1_r:
+            st.markdown("##### Win Rate by Color")
+            if color_rows:
+                df_c = pd.DataFrame(color_rows)
+                fig = px.bar(df_c, x="color", y="win_pct", text="win_pct",
+                             color="color",
+                             color_discrete_map={"White": "#bdbdbd", "Black": "#424242"},
+                             labels={"win_pct": "Win %", "color": ""})
+                fig.update_traces(texttemplate="%{text}%", textposition="outside")
+                fig.update_layout(margin=dict(t=10, b=10), height=280, showlegend=False, yaxis_range=[0, 100])
+                st.plotly_chart(fig, use_container_width=True)
+
+        row2_l, row2_r = st.columns(2)
+
+        with row2_l:
+            st.markdown("##### Top Openings (Win Rate)")
+            if opening_rows:
+                df_o = pd.DataFrame(opening_rows)
+                df_o["label"] = df_o["opening_eco"] + " — " + df_o["opening_name"].str[:25]
+                fig = px.bar(df_o, x="win_pct", y="label", orientation="h",
+                             text="win_pct", color="win_pct",
+                             color_continuous_scale=["#c62828", "#ffd54f", "#2e7d32"],
+                             range_color=[30, 70],
+                             labels={"win_pct": "Win %", "label": ""})
+                fig.update_traces(texttemplate="%{text}%", textposition="outside")
+                fig.update_layout(margin=dict(t=10, b=10), height=340, coloraxis_showscale=False, yaxis={"autorange": "reversed"})
+                st.plotly_chart(fig, use_container_width=True)
+
+        with row2_r:
+            st.markdown("##### Avg Clock Remaining by Phase")
+            if clock_rows:
+                df_cl = pd.DataFrame(clock_rows)
+                fig = px.bar(df_cl, x="phase", y="avg_clock_s", text="avg_clock_s",
+                             color="phase",
+                             color_discrete_map={"Opening": "#1565c0", "Middlegame": "#f57c00", "Endgame": "#6a1b9a"},
+                             labels={"avg_clock_s": "Avg seconds left", "phase": ""})
+                fig.update_traces(texttemplate="%{text}s", textposition="outside")
+                fig.update_layout(margin=dict(t=10, b=10), height=340, showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("##### Performance vs Opponent Strength")
+        if vs_rating_rows:
+            df_vr = pd.DataFrame(vs_rating_rows)
+            fig = px.bar(df_vr, x="opponent", y="win_pct", text="win_pct",
+                         color="win_pct",
+                         color_continuous_scale=["#c62828", "#ffd54f", "#2e7d32"],
+                         range_color=[30, 70],
+                         labels={"win_pct": "Win %", "opponent": ""})
+            fig.update_traces(texttemplate="%{text}%", textposition="outside")
+            fig.update_layout(margin=dict(t=10, b=10), height=260, coloraxis_showscale=False, yaxis_range=[0, 100])
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("##### Recent Games")
+        if recent_rows:
+            df_r = pd.DataFrame(recent_rows)
+            def color_result(val):
+                if val == "Win":  return "background-color:#e8f5e9; color:#2e7d32; font-weight:bold"
+                if val == "Loss": return "background-color:#ffebee; color:#c62828; font-weight:bold"
+                return "background-color:#f5f5f5; color:#555"
+            st.dataframe(
+                df_r.style.map(color_result, subset=["result"]),
+                use_container_width=True, hide_index=True
+            )
+
+        # ── AI Coach popup ────────────────────────────────────────────────────
+        st.divider()
+
+        # Toggle button
+        btn_label = "💬 Close AI Coach" if st.session_state.chat_open else "💬 Ask AI Coach"
+        if st.button(btn_label, key="toggle_chat"):
+            st.session_state.chat_open = not st.session_state.chat_open
+            st.rerun()
+
+        if st.session_state.chat_open:
+            st.markdown("""
+            <div style='background:#f8f9fa; border:1px solid #dee2e6; border-radius:12px;
+                        padding:20px; margin-top:8px;'>
+                <h4 style='margin:0 0 12px 0'>🤖 AI Chess Coach</h4>
+            """, unsafe_allow_html=True)
+
+            coach_name = st.text_input(
+                "Coach for player:",
+                value=pid,
+                key="chat_player_name",
+            )
+
+            chat_container = st.container(height=400)
+            with chat_container:
+                for msg in st.session_state.chat_history:
+                    with st.chat_message(msg["role"]):
+                        st.write(msg["content"])
+
+            user_input = st.chat_input("Ask your coach...", key="coach_input")
+
+            if user_input:
+                prompt = user_input
+                uname  = coach_name.strip()
+                if uname and uname.lower() not in user_input.lower():
+                    prompt = f"[Player: {uname}] {user_input}"
+
+                st.session_state.chat_history.append({"role": "user", "content": user_input})
+                with chat_container:
+                    with st.chat_message("user"):
+                        st.write(user_input)
+                    with st.chat_message("assistant"):
+                        with st.spinner("Analyzing..."):
+                            reply = st.session_state.agent.ask(prompt)
+                        st.write(reply)
+                st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                st.rerun()
+
+            if st.button("🗑 Clear chat", key="clear_chat"):
+                st.session_state.chat_history = []
+                st.session_state.agent = ChessCoachAgent()
+                st.rerun()
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — SQL EXPLORER
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_sql:
+    st.subheader("SQL Explorer")
+    st.caption(f"Query against `{TABLE}`")
+
+    default_sql = f"""SELECT date, COUNT(DISTINCT game_id) AS games, COUNT(*) AS moves
+FROM {TABLE}
+GROUP BY date
+ORDER BY date DESC"""
+
+    sql_input = st.text_area("SQL Query", value=default_sql, height=160, key="sql_input")
+
+    col_run, col_hint = st.columns([1, 5])
+    with col_run:
+        run_sql = st.button("▶ Run", use_container_width=True)
+    with col_hint:
+        st.caption("⚠️ SELECT only. Results capped at 500 rows.")
+
+    if run_sql and sql_input.strip():
+        upper = sql_input.strip().upper()
+        if not upper.startswith("SELECT") and not upper.startswith("WITH"):
+            st.error("Only SELECT queries are allowed.")
+        else:
+            safe_sql = sql_input.strip()
+            if "LIMIT" not in upper:
+                safe_sql += " LIMIT 500"
+            try:
+                with st.spinner("Running query..."):
+                    rows = query_starrocks(safe_sql)
+                if rows:
+                    df = pd.DataFrame(rows)
+                    st.success(f"{len(df):,} rows returned")
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.download_button("⬇ Download CSV", df.to_csv(index=False).encode(), "result.csv", "text/csv")
+                else:
+                    st.info("Query returned no rows.")
+            except Exception as e:
+                st.error(f"Query error: {e}")

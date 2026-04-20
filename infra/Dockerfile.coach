@@ -5,6 +5,8 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     fastapi uvicorn \
     streamlit \
+    plotly \
+    pandas \
     mysql-connector-python \
     google-cloud-aiplatform \
     google-auth \
