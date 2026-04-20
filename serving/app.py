@@ -8,7 +8,9 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from dotenv import load_dotenv
-from agent import ChessCoachAgent
+from agent import ChessCoachAgent, analyze_game as agent_analyze_game
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
 load_dotenv()
 
@@ -19,6 +21,8 @@ SR_PORT         = int(os.getenv("STARROCKS_PORT", "9030"))
 SR_USER         = os.getenv("STARROCKS_USER", "root")
 SR_PASS         = os.getenv("STARROCKS_PASSWORD", "")
 TABLE           = "polaris_catalog.prod.chess_move_events"
+GCP_PROJECT     = os.getenv("GCP_PROJECT", "")
+GCP_LOCATION    = os.getenv("GCP_LOCATION", "us-central1")
 
 
 def query_starrocks(sql):
@@ -85,10 +89,45 @@ def cp_to_label(cp):
     return f"{cp/100:+.1f} — Balanced"
 
 
+def get_ai_game_analysis(game_id: str, moves: list, evals: dict) -> str:
+    lines = [f"Game ID: {game_id}"]
+    meta = moves[0]
+    lines.append(f"Players: {meta['white_id']} (White, {meta['white_rating']}) vs {meta['black_id']} (Black, {meta['black_rating']})")
+    lines.append(f"Opening: {meta['opening_name']} ({meta['opening_eco']}), Speed: {meta['speed']}")
+    winner = meta['winner']
+    lines.append(f"Result: {'Draw' if not winner else winner.capitalize() + ' wins'}")
+    lines.append("")
+    lines.append("Move-by-move evaluations (centipawns, positive = White advantage):")
+
+    for i, m in enumerate(moves):
+        ev = evals.get(i)
+        if ev:
+            cp   = ev.get("cp")
+            mate = ev.get("mate")
+            eval_str = f"Mate in {abs(mate)}" if mate is not None else (f"{cp/100:+.2f}" if cp is not None else "?")
+        else:
+            eval_str = "?"
+        lines.append(f"  Move {m['move_number']} ({m['whose_moved'][0].upper()}) {m['move']}: eval={eval_str}")
+
+    prompt = "\n".join(lines) + """
+
+Based on the above evaluation data, identify the critical turning points of this game:
+- Which moves were blunders or serious mistakes (large eval swings)?
+- Where did one player gain a decisive advantage?
+- What was the key moment that decided the game?
+- Any notable tactical or strategic themes?
+
+Be specific about move numbers and the magnitude of eval changes. Keep the analysis concise but insightful."""
+
+    vertexai.init(project=GCP_PROJECT, location=GCP_LOCATION)
+    model = GenerativeModel("gemini-2.5-flash")
+    response = model.generate_content(prompt)
+    return response.text
+
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Chess Coach", page_icon="♟", layout="wide", initial_sidebar_state="collapsed")
 
-# Hide sidebar arrow entirely
 st.markdown("""
 <style>
 [data-testid="collapsedControl"] { display: none; }
@@ -108,9 +147,14 @@ for key, default in [
     ("chat_history", []),
     ("game_moves", []),
     ("move_index", 0),
-    ("chat_open", False),
+    ("game_id_loaded", ""),
+    ("game_evals", {}),
+    ("game_ai_analysis", None),
     ("dashboard_username", ""),
     ("dashboard_data", None),
+    ("sql_result", None),
+    ("sql_last_query", ""),
+    ("coach_username", ""),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -119,7 +163,9 @@ if st.session_state.agent is None:
     st.session_state.agent = ChessCoachAgent()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_explorer, tab_dashboard, tab_sql = st.tabs(["♟ Game Explorer", "📊 Player Dashboard", "🗄️ SQL Explorer"])
+tab_explorer, tab_dashboard, tab_coach, tab_sql = st.tabs([
+    "♟ Game Explorer", "📊 Player Dashboard", "🤖 AI Coach", "🗄️ SQL Explorer"
+])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -135,18 +181,23 @@ with tab_explorer:
         load_clicked = st.button("Load Game", use_container_width=True)
 
     if load_clicked and game_id_input:
-        try:
-            with st.spinner("Loading game..."):
-                moves = load_game(game_id_input.strip())
-            if moves:
-                st.session_state.game_moves = moves
-                st.session_state.move_index = 0
-            else:
+        gid = game_id_input.strip()
+        if gid != st.session_state.game_id_loaded:
+            try:
+                with st.spinner("Loading game..."):
+                    moves = load_game(gid)
+                if moves:
+                    st.session_state.game_moves    = moves
+                    st.session_state.move_index    = 0
+                    st.session_state.game_id_loaded = gid
+                    st.session_state.game_evals    = {}
+                    st.session_state.game_ai_analysis = None
+                else:
+                    st.session_state.game_moves = []
+                    st.error("Game not found in the database.")
+            except Exception as e:
                 st.session_state.game_moves = []
-                st.error("Game not found in the database.")
-        except Exception as e:
-            st.session_state.game_moves = []
-            st.error(f"Error loading game: {e}")
+                st.error(f"Error loading game: {e}")
 
     if st.session_state.game_moves:
         moves = st.session_state.game_moves
@@ -164,12 +215,15 @@ with tab_explorer:
             </div>
         """, unsafe_allow_html=True)
 
-        try:
-            with st.spinner("Evaluating position..."):
-                eval_result = eval_fen(cur["fen"])
-        except Exception:
-            eval_result = None
+        # Eval current position (cached per move index)
+        if idx not in st.session_state.game_evals:
+            try:
+                with st.spinner("Evaluating position..."):
+                    st.session_state.game_evals[idx] = eval_fen(cur["fen"])
+            except Exception:
+                st.session_state.game_evals[idx] = None
 
+        eval_result   = st.session_state.game_evals[idx]
         suggested_move = eval_result.get("best_move") if eval_result else None
         last_move      = moves[idx - 1]["move"] if idx > 0 else None
         board_svg      = render_board(cur["fen"], last_move, suggested_move)
@@ -242,6 +296,66 @@ with tab_explorer:
                 f"border-radius:6px; padding:6px'>{''.join(move_rows)}</div>",
                 unsafe_allow_html=True,
             )
+
+        # ── AI Game Analysis ──────────────────────────────────────────────────
+        st.divider()
+        st.markdown("#### AI Critical Point Analysis")
+
+        analyze_btn = st.button("🔍 Analyze Full Game with AI", key="analyze_game_btn")
+        if analyze_btn:
+            gid = st.session_state.game_id_loaded
+            with st.spinner("Evaluating all moves and analyzing with AI..."):
+                for i, m in enumerate(moves):
+                    if i not in st.session_state.game_evals:
+                        st.session_state.game_evals[i] = eval_fen(m["fen"])
+                try:
+                    analysis = get_ai_game_analysis(gid, moves, st.session_state.game_evals)
+                    st.session_state.game_ai_analysis = analysis
+                except Exception as e:
+                    st.session_state.game_ai_analysis = f"Error: {e}"
+
+        # Show eval chart if we have enough evals
+        cached_evals = st.session_state.game_evals
+        if len(cached_evals) > 1:
+            eval_points = []
+            for i, m in enumerate(moves):
+                ev = cached_evals.get(i)
+                if ev:
+                    cp_val = ev.get("cp")
+                    mate   = ev.get("mate")
+                    if mate is not None:
+                        cp_val = 3000 * (1 if mate > 0 else -1)
+                    eval_points.append({"move": m["move_number"], "eval": cp_val / 100.0 if cp_val is not None else 0})
+
+            if eval_points:
+                df_eval = pd.DataFrame(eval_points)
+                prev_vals = [0] + df_eval["eval"].tolist()[:-1]
+                swings = [abs(cur - prev) for cur, prev in zip(df_eval["eval"].tolist(), prev_vals)]
+                colors = ["#c62828" if s > 2.0 else "#2e7d32" if s > 0.5 else "#1565c0" for s in swings]
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=df_eval["move"], y=df_eval["eval"],
+                    mode="lines+markers",
+                    line=dict(color="#555", width=1.5),
+                    marker=dict(color=colors, size=6),
+                    name="Eval",
+                ))
+                fig.add_hline(y=0, line_dash="dash", line_color="#aaa")
+                fig.update_layout(
+                    title="Evaluation Chart (red = big swing, green = small swing)",
+                    xaxis_title="Move", yaxis_title="Eval (pawns)",
+                    height=280, margin=dict(t=40, b=20),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        if st.session_state.game_ai_analysis:
+            st.markdown(f"""
+                <div style='background:#f8f9fa; border-left:4px solid #4a90e2;
+                            padding:14px 18px; border-radius:6px; white-space:pre-wrap'>
+                    {st.session_state.game_ai_analysis}
+                </div>
+            """, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -445,63 +559,55 @@ with tab_dashboard:
                 use_container_width=True, hide_index=True
             )
 
-        # ── AI Coach popup ────────────────────────────────────────────────────
-        st.divider()
 
-        # Toggle button
-        btn_label = "💬 Close AI Coach" if st.session_state.chat_open else "💬 Ask AI Coach"
-        if st.button(btn_label, key="toggle_chat"):
-            st.session_state.chat_open = not st.session_state.chat_open
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — AI COACH
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_coach:
+    st.subheader("🤖 AI Chess Coach")
+    st.caption("Ask anything about your game — openings, tactics, time management, improvement areas.")
+
+    col_name, col_clear = st.columns([4, 1])
+    with col_name:
+        coach_username = st.text_input(
+            "Analyzing player:", placeholder="Enter Lichess username",
+            label_visibility="collapsed", key="coach_username_input",
+            value=st.session_state.coach_username,
+        )
+        if coach_username:
+            st.session_state.coach_username = coach_username.strip()
+    with col_clear:
+        if st.button("🗑 Clear", use_container_width=True, key="clear_coach"):
+            st.session_state.chat_history = []
+            st.session_state.agent = ChessCoachAgent()
             st.rerun()
 
-        if st.session_state.chat_open:
-            st.markdown("""
-            <div style='background:#f8f9fa; border:1px solid #dee2e6; border-radius:12px;
-                        padding:20px; margin-top:8px;'>
-                <h4 style='margin:0 0 12px 0'>🤖 AI Chess Coach</h4>
-            """, unsafe_allow_html=True)
+    chat_container = st.container(height=500)
+    with chat_container:
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
 
-            coach_name = st.text_input(
-                "Coach for player:",
-                value=pid,
-                key="chat_player_name",
-            )
+    user_input = st.chat_input("Ask your coach...", key="coach_input")
 
-            chat_container = st.container(height=400)
-            with chat_container:
-                for msg in st.session_state.chat_history:
-                    with st.chat_message(msg["role"]):
-                        st.write(msg["content"])
+    if user_input:
+        uname  = st.session_state.coach_username
+        prompt = f"[Player: {uname}] {user_input}" if uname and uname.lower() not in user_input.lower() else user_input
 
-            user_input = st.chat_input("Ask your coach...", key="coach_input")
-
-            if user_input:
-                prompt = user_input
-                uname  = coach_name.strip()
-                if uname and uname.lower() not in user_input.lower():
-                    prompt = f"[Player: {uname}] {user_input}"
-
-                st.session_state.chat_history.append({"role": "user", "content": user_input})
-                with chat_container:
-                    with st.chat_message("user"):
-                        st.write(user_input)
-                    with st.chat_message("assistant"):
-                        with st.spinner("Analyzing..."):
-                            reply = st.session_state.agent.ask(prompt)
-                        st.write(reply)
-                st.session_state.chat_history.append({"role": "assistant", "content": reply})
-                st.rerun()
-
-            if st.button("🗑 Clear chat", key="clear_chat"):
-                st.session_state.chat_history = []
-                st.session_state.agent = ChessCoachAgent()
-                st.rerun()
-
-            st.markdown("</div>", unsafe_allow_html=True)
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        with chat_container:
+            with st.chat_message("user"):
+                st.write(user_input)
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing..."):
+                    reply = st.session_state.agent.ask(prompt)
+                st.write(reply)
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — SQL EXPLORER
+# TAB 4 — SQL EXPLORER
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_sql:
     st.subheader("SQL Explorer")
@@ -532,11 +638,17 @@ ORDER BY date DESC"""
                 with st.spinner("Running query..."):
                     rows = query_starrocks(safe_sql)
                 if rows:
-                    df = pd.DataFrame(rows)
-                    st.success(f"{len(df):,} rows returned")
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-                    st.download_button("⬇ Download CSV", df.to_csv(index=False).encode(), "result.csv", "text/csv")
+                    st.session_state.sql_result     = rows
+                    st.session_state.sql_last_query = sql_input.strip()
                 else:
+                    st.session_state.sql_result = []
                     st.info("Query returned no rows.")
             except Exception as e:
+                st.session_state.sql_result = None
                 st.error(f"Query error: {e}")
+
+    if st.session_state.sql_result:
+        df = pd.DataFrame(st.session_state.sql_result)
+        st.success(f"{len(df):,} rows returned")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.download_button("⬇ Download CSV", df.to_csv(index=False).encode(), "result.csv", "text/csv")
