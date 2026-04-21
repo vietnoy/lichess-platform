@@ -412,9 +412,23 @@ def game_adder_loop(game_queue, streams, export_queue, producer):
         except queue.Empty:
             pass
 
-        if pending:
-            current = streams[-1]
+        current = streams[-1]
 
+        # Restart stream thread if it died
+        if not current.thread.is_alive():
+            logger.warning(f"[Stream {current.stream_id}] Thread dead — restarting")
+            active_ids = current.active_ids()
+            current.stop()
+            stream_counter += 1
+            new_id     = f"{STREAM_ID_BASE}-{stream_counter}"
+            new_stream = GameStream(new_id, producer, export_queue)
+            new_stream.start()
+            streams.append(new_stream)
+            if active_ids:
+                new_stream.add_games(active_ids)
+            current = new_stream
+
+        if pending:
             if current.needs_rotation():
                 active_ids = current.active_ids()
                 current.stop()
@@ -430,7 +444,7 @@ def game_adder_loop(game_queue, streams, export_queue, producer):
 
             current.add_games(pending)
 
-        time.sleep(60)
+        time.sleep(5)
 
 
 def run():

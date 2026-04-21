@@ -132,6 +132,15 @@ spec:
               value: "2"
           ports:
             - containerPort: 8081
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "curl -sf http://spark-master:8080/ | grep -q $(hostname -i)"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
           volumeMounts:
             - name: git-data
               mountPath: /git
