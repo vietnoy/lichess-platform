@@ -186,19 +186,24 @@ class GameStream:
 
     def add_games(self, game_ids):
         if not game_ids:
-            return
-        r = requests.post(
-            f"https://lichess.org/api/stream/games/{self.stream_id}/add",
-            headers=HDR_NDJSON,
-            data=",".join(game_ids),
-            timeout=10,
-        )
+            return False
+        try:
+            r = requests.post(
+                f"https://lichess.org/api/stream/games/{self.stream_id}/add",
+                headers=HDR_NDJSON,
+                data=",".join(game_ids),
+                timeout=10,
+            )
+        except Exception as e:
+            logger.warning(f"[Stream {self.stream_id}] Add error: {e}")
+            return False
         if r.status_code == 200:
             with self._lock:
                 self.active.update(game_ids)
             logger.info(f"[Stream {self.stream_id}] Added {len(game_ids)} — total: {self.total()}")
-        else:
-            logger.warning(f"[Stream {self.stream_id}] Add failed: HTTP {r.status_code}")
+            return True
+        logger.warning(f"[Stream {self.stream_id}] Add failed: HTTP {r.status_code}")
+        return False
 
     def _handle_event(self, ev):
         gid         = ev.get("id")
@@ -403,33 +408,22 @@ def status_poller_loop(game_queue):
 
 def game_adder_loop(game_queue, streams, export_queue, producer):
     stream_counter = len(streams)
+    pending_carry  = []  # active games from rotated stream waiting to be re-added
 
     while not _shutdown.is_set():
-        pending = []
         try:
-            while True:
-                pending.append(game_queue.get_nowait())
-        except queue.Empty:
-            pass
+            pending = list(pending_carry)
+            pending_carry = []
+            try:
+                while True:
+                    pending.append(game_queue.get_nowait())
+            except queue.Empty:
+                pass
 
-        current = streams[-1]
+            current = streams[-1]
 
-        # Restart stream thread if it died
-        if not current.thread.is_alive():
-            logger.warning(f"[Stream {current.stream_id}] Thread dead — restarting")
-            active_ids = current.active_ids()
-            current.stop()
-            stream_counter += 1
-            new_id     = f"{STREAM_ID_BASE}-{stream_counter}"
-            new_stream = GameStream(new_id, producer, export_queue)
-            new_stream.start()
-            streams.append(new_stream)
-            if active_ids:
-                new_stream.add_games(active_ids)
-            current = new_stream
-
-        if pending:
-            if current.needs_rotation():
+            if not current.thread.is_alive():
+                logger.warning(f"[Stream {current.stream_id}] Thread dead — restarting")
                 active_ids = current.active_ids()
                 current.stop()
                 stream_counter += 1
@@ -437,12 +431,29 @@ def game_adder_loop(game_queue, streams, export_queue, producer):
                 new_stream = GameStream(new_id, producer, export_queue)
                 new_stream.start()
                 streams.append(new_stream)
-                logger.info(f"Stream rotated to {new_id}, carrying {len(active_ids)} active games")
-                if active_ids:
-                    new_stream.add_games(active_ids)
+                pending = active_ids + pending
                 current = new_stream
 
-            current.add_games(pending)
+            if pending:
+                if current.needs_rotation():
+                    active_ids = current.active_ids()
+                    current.stop()
+                    stream_counter += 1
+                    new_id     = f"{STREAM_ID_BASE}-{stream_counter}"
+                    new_stream = GameStream(new_id, producer, export_queue)
+                    new_stream.start()
+                    streams.append(new_stream)
+                    logger.info(f"Stream rotated to {new_id}, carrying {len(active_ids)} active games")
+                    pending = active_ids + pending
+                    current = new_stream
+                    time.sleep(2)  # let new stream connect before adding
+
+                if not current.add_games(pending):
+                    pending_carry = pending  # retry next iteration
+
+        except Exception as e:
+            logger.error(f"[game-adder] Unexpected error: {e}")
+            time.sleep(5)
 
         time.sleep(5)
 
