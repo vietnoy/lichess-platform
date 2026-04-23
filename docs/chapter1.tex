@@ -1,0 +1,421 @@
+\documentclass[14pt,a4paper]{extarticle}
+
+% ── Encoding & Language ───────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T5]{fontenc}
+\usepackage{lmodern}
+\usepackage[vietnamese]{babel}
+
+% ── Layout ────────────────────────────────────────────────────────────────────
+\usepackage[top=3cm, bottom=3cm, left=3.5cm, right=2cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% ── Typography ────────────────────────────────────────────────────────────────
+\usepackage{microtype}
+\usepackage{parskip}
+\setlength{\parskip}{6pt}
+
+% ── Graphics & Color ──────────────────────────────────────────────────────────
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{tikz}
+
+% ── Tables & Lists ────────────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\setlist[itemize]{noitemsep, topsep=4pt}
+
+% ── Code / Mono ───────────────────────────────────────────────────────────────
+\usepackage{listings}
+\usepackage{fancyvrb}
+
+% ── Boxes ─────────────────────────────────────────────────────────────────────
+\usepackage{tcolorbox}
+\tcbuselibrary{skins, breakable}
+
+\newtcolorbox{insightbox}[1][]{
+  enhanced, breakable,
+  colback=blue!4!white,
+  colframe=blue!40!black,
+  fonttitle=\bfseries,
+  title={#1},
+  left=6pt, right=6pt, top=4pt, bottom=4pt,
+}
+
+\newtcolorbox{uibox}[1][]{
+  enhanced, breakable,
+  colback=gray!6!white,
+  colframe=gray!50!black,
+  fonttitle=\bfseries\ttfamily,
+  title={#1},
+  left=8pt, right=8pt, top=6pt, bottom=6pt,
+}
+
+\newtcolorbox{highlightbox}{
+  enhanced,
+  colback=orange!8!white,
+  colframe=orange!60!black,
+  left=6pt, right=6pt, top=4pt, bottom=4pt,
+  fontupper=\itshape,
+}
+
+% ── Hyperlinks ────────────────────────────────────────────────────────────────
+\usepackage[hidelinks]{hyperref}
+
+% ── Section style ─────────────────────────────────────────────────────────────
+\usepackage{titlesec}
+\titleformat{\section}{\normalfont\large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries}{\thesubsection}{1em}{}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+\begin{center}
+  {\Large\bfseries CHƯƠNG 1: GIỚI THIỆU}
+\end{center}
+\vspace{1em}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Bối cảnh và động lực nghiên cứu}
+
+Trong lịch sử phát triển của trí tuệ nhân tạo, cờ vua luôn là một trong những
+thử thách biểu tượng nhất --- từ Deep Blue đánh bại Garry Kasparov năm 1997,
+đến AlphaZero tự học từ đầu và vượt qua Stockfish chỉ sau 4 giờ huấn luyện
+năm 2017. Tuy nhiên, nghịch lý là dù AI đã chinh phục cờ vua ở tầm thế giới,
+hàng triệu người chơi bình thường vẫn không có công cụ thực sự phù hợp để cải
+thiện trình độ của chính mình.
+
+Lichess.org --- nền tảng cờ trực tuyến mã nguồn mở lớn nhất thế giới --- xử
+lý trung bình hơn \textbf{500.000 ván đấu mỗi ngày}, tạo ra một khối lượng dữ
+liệu khổng lồ chứa đựng toàn bộ hành vi, sai lầm và pattern tư duy của người
+chơi ở mọi cấp độ. Đặc biệt, mỗi ván đấu được ghi nhận đến cấp độ \emph{từng
+nước đi} --- bao gồm trạng thái bàn cờ, đồng hồ còn lại tính đến từng
+centi-giây, khai cuộc, và kết quả. Dữ liệu này hoàn toàn công khai --- nhưng
+gần như chưa được khai thác có hệ thống để phục vụ mục tiêu huấn luyện cá nhân
+hóa.
+
+\begin{highlightbox}
+Đề tài này xuất phát từ một quan sát đơn giản: \textbf{khoảng cách giữa dữ
+liệu đang tồn tại và insight có thể hành động được là rất lớn} --- và đó chính
+xác là bài toán mà kỹ thuật dữ liệu và trí tuệ nhân tạo hiện đại có thể giải
+quyết.
+\end{highlightbox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Đặt vấn đề}
+
+\subsection{Vấn đề của người chơi nghiệp dư}
+
+Một người chơi cờ ở mức rating 1200--1600 trên Lichess thường trải qua một
+vòng lặp không tiến bộ: chơi nhiều, thua nhiều, nhưng không biết mình sai ở
+đâu. Họ biết kết quả --- thua --- nhưng không có cơ chế phản hồi có cấu trúc
+để hiểu \emph{nguyên nhân sâu xa}:
+
+\begin{itemize}
+  \item Lỗi sai xảy ra nhất quán ở giai đoạn nào của ván đấu?
+  \item Chất lượng nước đi giảm như thế nào khi đồng hồ cạn dần?
+  \item Khai cuộc nào đang thực sự bị hiểu sai về mặt chiến lược?
+  \item Pattern tư duy nào đang lặp đi lặp lại xuyên suốt hàng trăm ván?
+\end{itemize}
+
+Công cụ phân tích hiện tại --- kể cả công cụ tích hợp của Lichess --- chỉ phân
+tích \textbf{từng ván riêng lẻ}. Người chơi biết họ mắc blunder ở nước 23 của
+ván hôm nay, nhưng không ai tổng hợp và nói với họ rằng: \textit{``trong 3
+tháng qua, 71\% blunder của bạn xảy ra ở middlegame khi đồng hồ xuống dưới 20
+giây.''}
+
+\subsection{Khoảng trống kỹ thuật}
+
+Từ góc độ hệ thống, bài toán chia thành ba lớp:
+
+\begin{description}[leftmargin=2cm, style=nextline]
+  \item[\textbf{Lớp thu thập.}]
+    Lichess cung cấp API streaming theo thời gian thực, nhưng không có hệ
+    thống nào thu thập liên tục, xử lý và lưu trữ dữ liệu theo cấu trúc phù
+    hợp cho phân tích sâu --- đặc biệt là dữ liệu đồng hồ ở cấp độ từng nước
+    đi.
+
+  \item[\textbf{Lớp xử lý.}]
+    Dữ liệu thô từ Lichess là chuỗi ký hiệu SAN (Standard Algebraic
+    Notation) --- cần được giải mã thành từng trạng thái bàn cờ (FEN), gán
+    nhãn giai đoạn ván đấu, và liên kết với metadata người chơi trước khi có
+    thể phân tích.
+
+  \item[\textbf{Lớp trí tuệ.}]
+    Ngay cả khi có dữ liệu sạch, việc chuyển đổi con số thống kê thành lời
+    khuyên cụ thể, có ngữ cảnh, bằng ngôn ngữ tự nhiên --- đòi hỏi sự kết hợp
+    giữa truy vấn dữ liệu thực tế và mô hình ngôn ngữ lớn (LLM).
+\end{description}
+
+\subsection{Câu hỏi nghiên cứu}
+
+\begin{highlightbox}
+\textbf{Làm thế nào để thiết kế và triển khai một hệ thống kỹ thuật dữ liệu
+end-to-end --- từ thu thập streaming thời gian thực đến phân tích AI --- có khả
+năng biến dữ liệu ván cờ thô thành insight cá nhân hóa, giúp người chơi hiểu
+và cải thiện trình độ một cách có căn cứ?}
+\end{highlightbox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Mục tiêu đề tài}
+
+\begin{enumerate}[label=\textbf{MT\arabic*.}, leftmargin=2.2cm]
+
+  \item \textbf{Pipeline thu thập dữ liệu thời gian thực.}
+    Xây dựng hệ thống streaming kết nối trực tiếp với Lichess API, thu thập
+    liên tục sự kiện ván đấu (game start, game end, từng nước đi kèm đồng hồ),
+    đưa vào message queue (Kafka) và lưu trữ dạng columnar trên object storage.
+
+  \item \textbf{Kho dữ liệu phân tích (Data Warehouse).}
+    Xử lý dữ liệu thô qua Apache Spark, tạo bảng phân tích phẳng ở cấp độ
+    từng nước đi --- mỗi bản ghi chứa đầy đủ context: trạng thái bàn cờ
+    (FEN), thời gian còn lại, thông tin người chơi, khai cuộc, giai đoạn ván,
+    kết quả. Lưu trữ định dạng Apache Iceberg trên Polaris REST catalog.
+
+  \item \textbf{Phân tích hành vi người chơi xuyên nhiều ván.}
+    Khai thác dữ liệu clock ở cấp từng nước đi để phát hiện các pattern hành
+    vi: điểm thoát lý thuyết khai cuộc, ngưỡng áp lực thời gian, phân phối
+    sai lầm theo giai đoạn, và dấu hiệu tilt sau chuỗi ván thua.
+
+  \item \textbf{Phân tích ván đấu từng nước với Stockfish.}
+    Tích hợp Stockfish engine để đánh giá thế cờ tại từng nước đi, xây dựng
+    biểu đồ eval xuyên suốt ván, và sử dụng LLM để xác định khoảnh khắc then
+    chốt quyết định kết quả.
+
+  \item \textbf{Hệ thống bài tập cá nhân hóa.}
+    Tự động trích xuất các vị trí bàn cờ từ ván thua của người chơi, tái lập
+    đúng điều kiện áp lực thời gian, và tổ chức thành chuỗi bài tập tương tác
+    có hướng dẫn từng bước.
+
+  \item \textbf{AI Coach tương tác.}
+    Xây dựng tác nhân AI kết hợp LLM (Gemini 2.5 Flash qua Vertex AI) với
+    function calling để truy vấn dữ liệu thực tế, trả lời câu hỏi tự nhiên
+    của người chơi bằng nhận định có căn cứ từ dữ liệu.
+
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Phạm vi và giới hạn}
+
+\textbf{Đề tài tập trung vào:}
+\begin{itemize}
+  \item Người chơi trên nền tảng Lichess.org (dữ liệu công khai, API mở).
+  \item Các loại ván có đồng hồ: Bullet, Blitz, Rapid --- vì dữ liệu clock là
+    yếu tố phân tích cốt lõi.
+  \item Phân tích hành vi và pattern của người chơi nghiệp dư (rating
+    800--2000).
+\end{itemize}
+
+\textbf{Đề tài không bao gồm:}
+\begin{itemize}
+  \item Xây dựng chess engine mới hay huấn luyện model AI chơi cờ.
+  \item Phân tích ván đấu của Grandmaster hay giải đấu thế giới.
+  \item Chức năng chơi cờ trực tiếp với AI trong thời gian thực.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Các kịch bản sử dụng và thiết kế tương tác}
+
+\subsection{Game Explorer --- Khám nghiệm một ván thua}
+
+Người chơi nhập Game ID vào ô tìm kiếm. Thay vì tải thẳng bàn cờ, UI trình
+bày một màn hình tóm tắt ngắn:
+
+\begin{uibox}[Màn hình tóm tắt ván đấu]
+\begin{Verbatim}[fontsize=\small]
+  Van #RPJr6MMX  |  Blitz 5+0  |  Sicilian Defense
+  Ban (Den, 1487)  vs.  Doi thu (Trang, 1512)  |  Thua
+
+  [!] Phat hien 1 blunder nghiem trong o nuoc 26
+      The co lat nguoc hoan toan chi sau 1 nuoc di
+
+  [ Xem toan bo van ]   [ Nhay den diem mau chot ]
+\end{Verbatim}
+\end{uibox}
+
+Khi người chơi chọn \textit{``Nhảy đến điểm mấu chốt''}, bàn cờ mở ra tại
+nước trước blunder --- không tô đỏ nước sai ngay mà hiển thị câu hỏi dẫn dắt:
+
+\begin{uibox}[Hướng dẫn tương tác]
+\begin{Verbatim}[fontsize=\small]
+  Đây là thế cờ ở nước 25. Bạn đang chơi Đen,
+  đồng hồ còn 8 giây.
+
+  Nhìn vào bàn cờ — bạn thấy gì đáng chú ý không?
+
+  [ Gợi ý 1 ]  [ Gợi ý 2 ]  [ Xem đáp án ]
+\end{Verbatim}
+\end{uibox}
+
+Hệ thống cung cấp ba cấp gợi ý theo thứ tự từ mơ hồ đến cụ thể:
+
+\begin{enumerate}
+  \item \textit{``Quét nhanh các quân Trắng --- quân nào đang không có quân
+    bảo vệ?''}
+  \item \textit{``Mã Đen đang ở e4. Nó có thể với tới ô nào trong 1 nước?''}
+  \item Hiển thị mũi tên xanh trực tiếp lên nước đúng.
+\end{enumerate}
+
+Sau khi người chơi đã hiểu, UI chuyển sang biểu đồ eval xuyên suốt ván và nút
+\textbf{``Phân tích với AI''} --- gọi Gemini tổng hợp toàn bộ dữ liệu để xác
+định chuỗi sai lầm dẫn đến blunder quyết định.
+
+\subsection{What If Machine --- Cỗ máy thời gian}
+
+Đây là tính năng nổi bật nhất về mặt trải nghiệm người dùng. Từ vị trí blunder
+vừa phân tích, người chơi có thể chọn một nước đi khác --- hệ thống lập tức
+hiển thị \textbf{hai dòng thời gian song song}: ván đấu thực tế đã xảy ra và
+ván đấu lẽ ra có thể xảy ra nếu chọn nước đúng.
+
+\begin{uibox}[Giao diện hai dòng thời gian song song]
+\begin{Verbatim}[fontsize=\small]
+  +------------------+------------------+
+  |  THUC TE DA XAY  |  NEU DI Nxd2...  |
+  |  RA              |                  |
+  |  [ban co]        |  [ban co]        |
+  |  eval: -2.8      |  eval: +1.2      |
+  |  Xac suat thang: |  Xac suat thang: |
+  |       12%        |       71%        |
+  |                  |                  |
+  |  -> Trang chieu  |  -> Den bat Xe,  |
+  |     Vua, Den thua|     loi vat chat |
+  +------------------+------------------+
+
+  [ Tu choi tiep tu nhanh nay ]
+\end{Verbatim}
+\end{uibox}
+
+Stockfish tự động chơi tiếp cả hai nhánh song song, cho người dùng thấy trực
+quan ``tương lai'' của từng lựa chọn. Người chơi có thể click \textit{``Tự chơi
+tiếp từ nhánh này''} để cầm Đen trong nhánh nước đúng --- trải nghiệm cảm giác
+đang thắng từ vị trí mà trong thực tế họ đã thua, tạo tác động tâm lý và học
+tập rất mạnh.
+
+Chỉ số \textit{xác suất thắng} được tính từ eval của Stockfish theo công thức
+chuẩn trong lý thuyết chess engine, không phải ước tính tùy ý.
+
+\subsection{Pressure Drill --- Luyện tập dưới áp lực thực tế}
+
+Dữ liệu \texttt{clock\_remaining} trong hệ thống ghi nhận chính xác số giây
+còn lại tại mỗi nước đi. Kịch bản này khai thác trường dữ liệu đó để tái lập
+đúng áp lực thời gian của ván thật --- không phải luyện với thời gian vô hạn,
+mà luyện đúng điều kiện khắc nghiệt đã xảy ra.
+
+\begin{uibox}[Giao diện bài tập có đồng hồ đếm ngược]
+\begin{Verbatim}[fontsize=\small]
+  Bai 3 / 7  --  Trich tu van ngay 20/04, nuoc 31
+  ---------------------------------------------
+  [Ban co]                    [!] 12 giay
+
+                   Den di. Tim nuoc tot nhat.
+
+                   [ Goi y ]   [ Bo qua ]
+\end{Verbatim}
+\end{uibox}
+
+Khi hết giờ mà chưa đi, hệ thống phản hồi:
+
+\begin{uibox}[Phản hồi hết thời gian]
+\begin{Verbatim}[fontsize=\small]
+  Het gio -- dung nhu van that.
+
+  Khi bi ap luc, nao ban chon nuoc an toan thay
+  vi nuoc tot nhat. Nuoc dung la Nxd2 -- bat Xe
+  khong duoc bao ve, loi 2 diem vat chat.
+
+  [ Thu lai ]   [ Bai tiep theo ]
+\end{Verbatim}
+\end{uibox}
+
+Sau mỗi phiên luyện, hệ thống tổng kết hiệu suất và so sánh trực tiếp với kết
+quả trong ván thật, cho người chơi thấy mức độ cải thiện cụ thể.
+
+\subsection{Phân tích hành vi xuyên nhiều ván}
+
+Đây là lớp phân tích sâu nhất, khai thác toàn bộ lịch sử ván đấu đã thu thập.
+Từ dữ liệu clock ở cấp từng nước đi, hệ thống có thể rút ra các insight không
+thể có nếu chỉ lưu kết quả ván:
+
+\begin{insightbox}[Điểm thoát lý thuyết khai cuộc]
+Trong opening, người chơi đi nhanh vì đang theo lý thuyết. Có một nước cụ thể
+mà thời gian suy nghĩ đột ngột tăng gấp 3--4 lần --- đó là nước họ ``ra khỏi
+sách'' và bắt đầu tự tư duy. Hệ thống xác định nước đó và tạo bài tập huấn
+luyện \emph{khả năng định hướng chiến lược} ngay tại điểm chuyển tiếp --- kỹ
+năng mà hầu hết người nghiệp dư thiếu nhất.
+\end{insightbox}
+
+\begin{insightbox}[Ngưỡng áp lực cá nhân]
+Mỗi người chơi có một ngưỡng đồng hồ riêng: dưới bao nhiêu giây thì chất
+lượng nước đi bắt đầu sụp. Ngưỡng này không giống nhau giữa các người chơi ---
+một số người bắt đầu mắc lỗi ở 30 giây, số khác vẫn ổn định đến 10 giây. Hệ
+thống xác định ngưỡng cá nhân và tạo bài tập tập trung đúng vào điểm nguy hiểm
+đó.
+\end{insightbox}
+
+\begin{insightbox}[Winning position syndrome]
+Truy vấn các ván mà eval từng vượt +2.0 nhưng kết quả là thua hoặc hòa. Đây là
+những ván mà người chơi \emph{đang thắng nhưng không biết cách kết thúc} ---
+hoặc bị cạn thời gian đúng lúc cần tính toán nhiều nhất. Bài tập tương ứng bắt
+đầu từ thế đang thắng đó và yêu cầu người chơi tự tìm ra con đường chiến thắng.
+\end{insightbox}
+
+\begin{insightbox}[Tilt detection --- phát hiện trạng thái mất bình tĩnh]
+So sánh thời gian suy nghĩ per move của ván sau chuỗi thua 3 ván liên tiếp với
+ván bình thường. Người chơi bị tilt thường đi nhanh hơn 40--60\% --- dấu hiệu
+rõ ràng của quyết định cảm xúc thay vì lý trí. Khi phát hiện pattern này, hệ
+thống không tạo bài tập mà đưa ra cảnh báo trực tiếp và gợi ý nghỉ ngơi.
+\end{insightbox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Đóng góp của đề tài}
+
+Đề tài có ba đóng góp chính:
+
+\textbf{Về kỹ thuật dữ liệu.} Thiết kế và triển khai một pipeline dữ liệu
+end-to-end hoàn chỉnh --- từ streaming real-time (Kafka), object storage
+(MinIO), batch processing (Apache Spark + Iceberg/Polaris), analytical serving
+layer (StarRocks), đến AI agent (Vertex AI) --- trên môi trường Kubernetes. Đây
+là kiến trúc hiện đại tương đương các hệ thống data platform ở quy mô
+production, được triển khai thực tế chứ không chỉ thiết kế trên lý thuyết.
+
+\textbf{Về ứng dụng AI.} Xây dựng AI agent kết hợp function calling với truy
+vấn dữ liệu thực tế, tạo ra câu trả lời dựa trên bằng chứng thay vì kiến thức
+chung của LLM --- một pattern ngày càng quan trọng trong các hệ thống AI doanh
+nghiệp. Việc tích hợp Stockfish để tính xác suất thắng và so sánh hai dòng
+thời gian ván đấu là ứng dụng trực tiếp của AI phân tích vào trải nghiệm người
+dùng.
+
+\textbf{Về giá trị người dùng.} Cung cấp cho người chơi nghiệp dư loại insight
+mà trước đây chỉ có thể có được từ huấn luyện viên cá nhân --- đặc biệt là các
+phân tích dựa trên dữ liệu clock ở cấp từng nước đi, thứ không thể rút ra từ
+việc chỉ xem lại ván đấu thông thường.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Cấu trúc luận văn}
+
+Phần còn lại của luận văn được tổ chức như sau:
+
+\begin{description}[leftmargin=2.5cm, style=nextline]
+  \item[\textbf{Chương 2.}]
+    Tổng quan lý thuyết và công trình liên quan --- kiến trúc Lambda/Kappa,
+    Apache Iceberg table format, LLM agent với function calling, và các hệ
+    thống phân tích cờ hiện có.
+
+  \item[\textbf{Chương 3.}]
+    Kiến trúc tổng thể của hệ thống --- thiết kế từng thành phần và luồng dữ
+    liệu từ Lichess API đến giao diện người dùng.
+
+  \item[\textbf{Chương 4.}]
+    Cài đặt và triển khai --- chi tiết kỹ thuật của streaming pipeline, batch
+    processing, AI agent, và môi trường Kubernetes.
+
+  \item[\textbf{Chương 5.}]
+    Kết quả thực nghiệm và đánh giá hệ thống.
+
+  \item[\textbf{Chương 6.}]
+    Kết luận và hướng phát triển tiếp theo.
+\end{description}
+
+\end{document}
