@@ -98,7 +98,7 @@ with DAG(
 
     setup_catalog = BashOperator(
         task_id="setup_polaris_catalog",
-        bash_command="""mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -p$STARROCKS_PASSWORD -e "
+        bash_command="""mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -e "
 DROP CATALOG IF EXISTS polaris_catalog;
 CREATE EXTERNAL CATALOG IF NOT EXISTS polaris_catalog
 PROPERTIES (
@@ -120,7 +120,7 @@ PROPERTIES (
 
     refresh_catalog = BashOperator(
         task_id="refresh_polaris_catalog",
-        bash_command="mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -p$STARROCKS_PASSWORD -e \"REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;\"",
+        bash_command="mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -e \"REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;\"",
     )
 
     setup_catalog >> refresh_catalog
