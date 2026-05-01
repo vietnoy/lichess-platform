@@ -240,7 +240,7 @@ spec:
               memory: 512Mi
               cpu: 250m
             limits:
-              memory: 4Gi
+              memory: 5Gi
               cpu: 500m
           volumeMounts:
             - name: git-data
