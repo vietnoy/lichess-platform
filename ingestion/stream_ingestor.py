@@ -152,6 +152,8 @@ class GameStream:
         self.stop_event   = threading.Event()
         self._response    = None
         self._resp_lock   = threading.Lock()
+        self._consec_400  = 0
+        self._dead        = False
         self.thread       = threading.Thread(
             target=self._run,
             name=f"stream-{stream_id}",
@@ -178,7 +180,7 @@ class GameStream:
             return len(self.active) + len(self.finished)
 
     def needs_rotation(self):
-        return self.total() >= STREAM_ROTATE_AT
+        return self._dead or self.total() >= STREAM_ROTATE_AT
 
     def active_ids(self):
         with self._lock:
@@ -200,9 +202,21 @@ class GameStream:
         if r.status_code == 200:
             with self._lock:
                 self.active.update(game_ids)
+            self._consec_400 = 0
             logger.info(f"[Stream {self.stream_id}] Added {len(game_ids)} — total: {self.total()}")
             return True
         logger.warning(f"[Stream {self.stream_id}] Add failed: HTTP {r.status_code}")
+        if r.status_code == 400:
+            self._consec_400 += 1
+            if self._consec_400 >= 3 and not self._dead:
+                logger.error(f"[Stream {self.stream_id}] Marking dead after {self._consec_400} consecutive 400s — forcing rotation")
+                self._dead = True
+                with self._resp_lock:
+                    if self._response:
+                        try:
+                            self._response.close()
+                        except Exception:
+                            pass
         return False
 
     def _handle_event(self, ev):
