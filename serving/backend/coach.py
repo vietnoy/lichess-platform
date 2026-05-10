@@ -295,8 +295,12 @@ def _short_summary(name: str, raw_json: str, max_len: int = 220) -> str:
     return f"{name} → ok"
 
 
+class SessionBusy(Exception):
+    pass
+
+
 class CoachSession:
-    """One conversation with the AI coach."""
+    """One conversation with the AI coach. The lock serializes turns on the same session."""
 
     def __init__(self):
         _init_vertex()
@@ -307,6 +311,7 @@ class CoachSession:
         )
         self.chat = self.model.start_chat()
         self.last_used = time.time()
+        self.lock = threading.Lock()
 
     def _dispatch(self, name: str, args: dict) -> str:
         fn = _TOOL_FNS.get(name)
@@ -319,17 +324,28 @@ class CoachSession:
             return json.dumps({"error": str(e)})
 
     def ask_stream(self, message: str) -> Iterator[dict]:
-        self.last_used = time.time()
+        # Non-blocking lock acquire — if another turn is in flight on the same session,
+        # tell the caller instead of corrupting the chat history with interleaved turns.
+        if not self.lock.acquire(blocking=False):
+            yield {"type": "error", "message": "Another request is in flight on this session"}
+            return
         try:
-            yield from self._round(message)
-        except Exception as e:
-            log.exception("agent stream failed")
-            yield {"type": "error", "message": str(e)}
+            self.last_used = time.time()
+            try:
+                yield from self._round(message)
+            except Exception as e:
+                log.exception("agent stream failed")
+                yield {"type": "error", "message": str(e)}
+        finally:
+            self.lock.release()
 
     def _round(self, payload) -> Iterator[dict]:
         # Vertex returns an iterable when stream=True; chunks may carry text or function_call parts.
+        # Some SDK versions emit the same function_call across multiple chunks while assembling args;
+        # dedupe by (name, json(args)) before dispatching.
         stream = self.chat.send_message(payload, stream=True)
-        function_calls = []
+        function_calls: list = []
+        seen_keys: set[str] = set()
         for chunk in stream:
             try:
                 parts = chunk.candidates[0].content.parts
@@ -338,6 +354,13 @@ class CoachSession:
             for p in parts:
                 fc = getattr(p, "function_call", None)
                 if fc and fc.name:
+                    try:
+                        key = f"{fc.name}::{json.dumps(dict(fc.args), sort_keys=True, default=str)}"
+                    except Exception:
+                        key = f"{fc.name}::{id(fc)}"
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
                     function_calls.append(fc)
                     continue
                 text = getattr(p, "text", None)

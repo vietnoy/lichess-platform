@@ -76,6 +76,9 @@ spec:
         - name: gcp-sa
           secret:
             secretName: gcp-sa-secret
+            # Optional: pod still starts and serves /api/games + /api/players even if Vertex creds are absent.
+            # /api/coach will respond 5xx until creds are mounted.
+            optional: true
 ---
 apiVersion: v1
 kind: Service

@@ -49,12 +49,16 @@ export default function CoachPage() {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Generation counter: each new send/clear bumps it. Late events from an aborted stream are dropped.
+  const genRef = useRef(0);
 
   useEffect(() => { setSessionId(loadSession()); }, []);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [messages]);
 
   function clearConversation() {
+    genRef.current += 1;
     abortRef.current?.abort();
+    abortRef.current = null;
     const sid = newSessionId();
     window.localStorage.setItem(SESSION_KEY, sid);
     setSessionId(sid);
@@ -76,6 +80,7 @@ export default function CoachPage() {
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const myGen = ++genRef.current;
     try {
       const stream = sseStream(
         "/api/coach",
@@ -87,14 +92,18 @@ export default function CoachPage() {
         ctrl.signal,
       );
       for await (const { event, data } of stream) {
+        if (genRef.current !== myGen) return;     // stream was superseded; drop late events
         applyEvent(event, data);
       }
     } catch (e) {
+      if (genRef.current !== myGen) return;
       const msg = e instanceof Error ? e.message : String(e);
       if (!ctrl.signal.aborted) setError(msg);
     } finally {
-      setBusy(false);
-      finalizeStreaming();
+      if (genRef.current === myGen) {
+        setBusy(false);
+        finalizeStreaming();
+      }
     }
   }
 
