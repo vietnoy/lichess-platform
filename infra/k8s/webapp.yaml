@@ -1,0 +1,136 @@
+# Chess Coach web app — backend (FastAPI) + frontend (Next.js).
+# Both pulled into pods via git-sync, built from /git/repo/serving/{backend,frontend}.
+# Backend image and frontend image are built externally and pushed to a registry;
+# update image: refs below before kubectl apply.
+
+# ─── Backend ──────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-backend
+  namespace: chess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webapp-backend
+  template:
+    metadata:
+      labels:
+        app: webapp-backend
+    spec:
+      containers:
+        - name: backend
+          image: vietnoy/chess-webapp-backend:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: STARROCKS_HOST
+              value: starrocks-fe
+            - name: STARROCKS_PORT
+              value: "9030"
+            - name: STARROCKS_USER
+              value: root
+            - name: STOCKFISH_URL
+              value: http://stockfish:8001/eval
+            - name: STOCKFISH_DEPTH
+              value: "12"
+            - name: CORS_ORIGINS
+              value: "*"
+          envFrom:
+            - secretRef:
+                name: chess-secrets
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-backend
+  namespace: chess
+spec:
+  selector:
+    app: webapp-backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+
+# ─── Frontend ─────────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-frontend
+  namespace: chess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webapp-frontend
+  template:
+    metadata:
+      labels:
+        app: webapp-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: vietnoy/chess-webapp-frontend:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NEXT_PUBLIC_API_BASE
+              value: /api
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 96Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-frontend
+  namespace: chess
+spec:
+  selector:
+    app: webapp-frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+
+# ─── External access (NodePort for now; swap for Ingress later) ──────────────
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-frontend-external
+  namespace: chess
+spec:
+  type: NodePort
+  selector:
+    app: webapp-frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30900
