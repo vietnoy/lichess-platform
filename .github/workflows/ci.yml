@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install backend dependencies
+        working-directory: serving/backend
+        run: pip install -r requirements.txt
+      - name: Run backend tests
+        working-directory: serving/backend
+        run: pytest -q
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install frontend dependencies
+        working-directory: serving/frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: serving/frontend
+        run: npm run build
