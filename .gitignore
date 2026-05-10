@@ -11,3 +11,8 @@ logs/
 node_modules/
 .next/
 serving/frontend/tsconfig.tsbuildinfo
+
+# Playwright snapshots and ad-hoc screenshots
+.playwright-mcp/
+*.png
+ACCESS.txt
