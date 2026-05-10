@@ -137,22 +137,24 @@ export default function DrillPage() {
     <>
       <Header subtitle={username ? `Pressure drill · ${username}` : "Pressure drill"} />
       <main className="max-w-5xl mx-auto px-6 py-6 space-y-4">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
           <StatusPill tone={status.tone}>{status.label}</StatusPill>
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") loadNext(username.trim()); }}
-            placeholder="Lichess username"
-            className="flex-1 max-w-xs bg-surface border border-border rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent"
-          />
-          <button
-            onClick={() => loadNext(username.trim())}
-            disabled={!username.trim() || loading}
-            className="bg-accent text-bg font-medium px-4 py-1.5 rounded-md hover:opacity-90 disabled:opacity-40 text-sm"
-          >
-            {exercise ? "Next drill" : "Start"}
-          </button>
+          <div className="flex gap-2 sm:flex-1">
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") loadNext(username.trim()); }}
+              placeholder="Lichess username"
+              className="flex-1 sm:max-w-xs bg-surface border border-border rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent"
+            />
+            <button
+              onClick={() => loadNext(username.trim())}
+              disabled={!username.trim() || loading}
+              className="bg-accent text-bg font-medium px-4 py-1.5 rounded-md hover:opacity-90 disabled:opacity-40 text-sm shrink-0"
+            >
+              {exercise ? "Next drill" : "Start"}
+            </button>
+          </div>
         </div>
 
         {!exercise && !error && !loading && (

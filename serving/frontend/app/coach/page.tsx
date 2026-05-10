@@ -159,20 +159,22 @@ export default function CoachPage() {
     <>
       <Header subtitle={username ? `Coach for ${username}` : "AI Coach"} />
       <main className="max-w-3xl mx-auto px-6 py-6 flex flex-col h-[calc(100vh-3.5rem)]">
-        <div className="flex items-center gap-3 mb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mb-3">
           <StatusPill tone={status.tone}>{status.label}</StatusPill>
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="Lichess username (optional)"
-            className="flex-1 bg-surface border border-border rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent"
-          />
-          <button
-            onClick={clearConversation}
-            className="px-3 py-1.5 rounded-md border border-border text-sm text-muted hover:text-text hover:border-accent"
-          >
-            New chat
-          </button>
+          <div className="flex gap-2 sm:flex-1">
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Lichess username (optional)"
+              className="flex-1 bg-surface border border-border rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent"
+            />
+            <button
+              onClick={clearConversation}
+              className="px-3 py-1.5 rounded-md border border-border text-sm text-muted hover:text-text hover:border-accent shrink-0 whitespace-nowrap"
+            >
+              New chat
+            </button>
+          </div>
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-4 pr-1">
