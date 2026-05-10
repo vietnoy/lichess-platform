@@ -1,6 +1,7 @@
 """StarRocks connection + query helpers."""
 
 import os
+import time
 import logging
 import threading
 from contextlib import contextmanager
@@ -11,6 +12,12 @@ log = logging.getLogger("db")
 
 TABLE = "polaris_catalog.prod.chess_move_events"
 EVAL_TABLE = "polaris_catalog.prod.move_evaluations"
+
+
+# Tiny TTL cache so the slow profile query doesn't hit StarRocks on every page load.
+_PROFILE_TTL = 120
+_profile_cache: dict[str, tuple[float, dict | None]] = {}
+_profile_lock = threading.Lock()
 
 
 class StarRocks:
@@ -102,6 +109,18 @@ def query_game(game_id: str) -> list[dict]:
 
 
 def query_player_profile(username: str) -> dict | None:
+    now = time.time()
+    with _profile_lock:
+        cached = _profile_cache.get(username)
+        if cached and now - cached[0] < _PROFILE_TTL:
+            return cached[1]
+    profile = _query_player_profile_uncached(username)
+    with _profile_lock:
+        _profile_cache[username] = (now, profile)
+    return profile
+
+
+def _query_player_profile_uncached(username: str) -> dict | None:
     # chess_move_events has duplicate rows per (game_id, move_number) due to upstream retries;
     # GROUP BY game_id collapses each game to one record. The 60-day bound prunes Iceberg partitions
     # so we don't scan all historical move events on every page load (no index on white_id/black_id).
