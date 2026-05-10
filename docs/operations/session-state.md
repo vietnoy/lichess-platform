@@ -1,72 +1,62 @@
-# Session resume state — 2026-05-10
+# Session resume state — last updated 2026-05-10
 
-Working notes so a fresh Claude Code session can pick up cleanly.
+Working notes so a fresh Claude Code session (any machine) can pick up cleanly.
 
-## What's shipped (uncommitted) in the working tree
+## Current shipped state (live on VPS)
 
-### Frontend (`serving/frontend/`)
-- `app/page.tsx` — home redesign: bigger hero, helper text under inputs, both buttons primary, header rendered, favicon
-- `app/icon.svg` — knight glyph favicon (kills 404 on `/favicon.ico`)
-- `app/player/[name]/page.tsx` — 7 fixes: top-openings label fix, clickable rows, white/black contrast, draws KPI, vs-rating games count, Player subtitle, opening name truncation
-- `app/game/[id]/page.tsx` — board off-by-one fix using chess.js, last-move highlight, eval/arrow polish
-- `app/whatif/[id]/[ply]/page.tsx` — actual-move off-by-one fix, "Awaiting input" idle state, helper text moved up, **wired to new `/api/whatif`** batched endpoint
-- `app/coach/page.tsx` — react-markdown rendering for AI responses, example player updated to `temporalmente`
-- `components/Header.tsx` — fetches `/api/freshness` and shows "data through YYYY-MM-DD" subtle text on lg+ screens
-- `components/EvalBar.tsx` — bigger signed eval text (+0.3 not 0.3)
-- `tailwind.config.ts` — added `@tailwindcss/typography` plugin
-- `package.json` — added `react-markdown`, `remark-gfm`, `@tailwindcss/typography`
+All UI/backend renovation work is **deployed and committed to `main`** as `vietnoy`.
 
-### Backend (`serving/backend/`)
-- `main.py` — added `/metrics` (prometheus text), `/api/freshness` (cached 5m), `/api/whatif` (batched twin-line), coach rate limit (10 req / 60s per session_id), middleware that records request latency
-- `coach.py` — Codex fixed all 6 SQL functions: replaced nested `CASE WHEN winner = CASE WHEN white_id=...` with explicit `(white_id=%s AND winner='white') OR (black_id=%s AND winner='black')`, wrapped each in `SELECT DISTINCT game_id` subquery to dedupe leftover duplicate rows
-- `requirements.txt` — added `pytest==8.3.3`, `chess==1.11.1`
-- `tests/` — Codex created: `__init__.py`, `conftest.py`, `test_metrics.py`, `test_rate_limit.py`, `test_whatif.py`, `test_stockfish.py`
+- Frontend: http://160.187.0.108:30900 — home, /player/[name], /patterns/[name], /game/[id], /whatif/[id]/[ply], /coach all live
+- Backend: http://160.187.0.108:30900/api — adds `/metrics`, `/api/freshness`, `/api/whatif`, `/api/games/{id}/evaluations`, `/api/players/{name}/patterns`, `/api/games/{id}/analyze` (24h cache, Groq-backed)
+- StarRocks MySQL: `mysql -h 160.187.0.108 -P 30930 -u root` (no password after chess-secrets reset)
+- Airflow: http://160.187.0.108:30808 (admin / `kubectl get secret chess-secrets -n chess -o jsonpath='{.data.AIRFLOW_ADMIN_PASSWORD}' | base64 -d`)
+- Streamlit (legacy): http://160.187.0.108:30051
 
-### CI
-- `.github/workflows/ci.yml` — backend pytest + frontend `npm run build` on push & PR
+## Test data known good
 
-### Docs
-- `docs/operations/backups.md` — backup story (3 tiers: secrets/postgres, MinIO bulk, k3s state) with cron snippets
-- `docs/operations/session-state.md` — this file
+- Player: `diamonddoll` — has analyzed games, patterns dashboard populated (25 games, 38 blunders, 66 mistakes, 94 inaccuracies)
+- Player: `temporalmente` — 64 games, canonical example
+- Game ID: `0jBgxOKP` — eval timeline + AI analyze verified
+- Game ID: `aqXZphC1` — older known-good ID
+- Analyzed date partition: `2026-04-18` (only one currently backfilled)
 
-## What's done but not deployed
+## Load-bearing gotchas (do not re-discover)
 
-The dev server (npm run dev) ran on localhost:3000 with `BACKEND_URL=http://160.187.0.108:30900`. Everything was visually verified locally. **The VPS still runs the old images.**
+1. **Stockfish service is GET-only.** `POST /eval` returns 405. Use `session.get(STOCKFISH_URL, params={"fen":..., "depth":12})`. See `processing/analyze_blunders.py:140`.
+2. **Idempotency in analyze_blunders.** Treat NULL-eval rows as not-yet-evaluated so a failed run doesn't poison the partition. Output unions `successful` rows + freshly-evaluated rows; this drops the poison. See `processing/analyze_blunders.py:259`.
+3. **Patterns query must scope by game_ids first.** `chess_move_events` is ~17M rows; joining evals against the full table OOMs the backend pod. Two-pass: find user's games (small, indexed by date), then `WHERE game_id IN (...)` on both sides of the join. See `serving/backend/db.py` `query_player_patterns`.
+4. **Win-rate SQL pattern.** Never use nested `CASE WHEN winner = CASE WHEN white_id=...` — produced 150% win rates in the old app. Use explicit `(white_id=%s AND winner='white') OR (black_id=%s AND winner='black')` with `SELECT DISTINCT game_id` subquery to dedupe. See `serving/backend/coach.py`.
+5. **Off-by-one on game board.** `moves[ply].fen` is the position **before** ply N. Use `chess.js`-derived `fenAfter(moves, ply)` to get the position **after** ply N. See `serving/frontend/app/game/[id]/page.tsx`.
+6. **Cross-arch Docker builds on M-Mac via QEMU take 30+ min.** Build on the VPS (native amd64, ~2 min) via SSH instead.
+7. **Disk pressure on k3s.** Evicted spark-worker pods accumulate. Periodic cleanup: `kubectl delete pod -n chess --field-selector=status.phase=Failed && k3s crictl rmi --prune`.
 
-## Todo to actually ship
+## Cross-account git push (this repo specifically)
 
-1. **Build + push backend image:** `docker build --platform linux/amd64 -t vietnoy/chess-webapp-backend:latest serving/backend/` then push, then `kubectl scale deployment webapp-backend -n chess --replicas=0 && sleep 3 && --replicas=1`
-2. **Build + push frontend image:** same dance for `vietnoy/chess-webapp-frontend:latest`. Note: cross-compile via QEMU on Mac is 10–30 min; consider building on the VPS instead.
-3. **Verify on VPS:** snapshot http://160.187.0.108:30900 with Playwright MCP (browser tools listed below).
-4. **Commit:** several conventional commits per change-area (feat(webapp): ..., feat(backend): ..., test(backend): ..., chore(ci): ..., docs(ops): ...).
-
-## Still on the punchlist (NOT done)
-
-| # | Item | Why deferred |
-|---|------|--------------|
-| 1 | Pattern Analysis dashboard `/patterns/[name]` | Depends on `move_evaluations` table; DAG hasn't run successfully |
-| 2 | Game features 2/3/4 (eval chart, AI Analyze button, move quality coloring) | Same dependency |
-| 3 | `analyze_blunders` DAG runs are stuck in `queued` state | Separate Airflow scheduler issue — needs investigation |
-| 4 | Mobile responsive sweep across all routes | Home + player verified OK; remaining 4 routes unchecked |
-| 5 | (none) | — |
-
-## How to resume locally
+User has two GitHub accounts: `khangdv-sonat` (default) and `vietnoy` (target for this repo). After `gh auth login` for both, push as vietnoy via:
 
 ```bash
-# Restart dev server with backend proxy
-cd serving/frontend && BACKEND_URL=http://160.187.0.108:30900 npm run dev
-
-# Then point Playwright MCP browser at http://localhost:3000
+~/git-push-as vietnoy main
 ```
 
-## Live URLs
+Or `gh auth switch -u vietnoy && git push origin main`.
 
-- Frontend (live VPS): http://160.187.0.108:30900
-- Streamlit (legacy coach): http://160.187.0.108:30051
-- Airflow: http://160.187.0.108:30808 (admin / `kubectl get secret chess-secrets -n chess -o jsonpath='{.data.AIRFLOW_ADMIN_PASSWORD}' | base64 -d`)
-- StarRocks MySQL: `mysql -h 160.187.0.108 -P 30930 -u root` (no password after the recent chess-secrets reset)
+## How to resume on a new machine
 
-## Test players known to have data
+1. Install: Claude Code, Codex CLI, Docker, kubectl, gh, Node 20, Python 3.13.
+2. Clone this repo. Read `CLAUDE.md`, then this file.
+3. `gh auth login` for both accounts. `gh auth setup-git`.
+4. Copy VPS kubeconfig to `~/.kube/config` (or merge as a context).
+5. Recreate `.env` from the secrets in k3s: `kubectl get secret chess-secrets -n chess -o yaml`.
+6. `chmod +x ./codex-agent.sh`.
+7. To resume frontend dev: `BACKEND_URL=http://160.187.0.108:30900 npm --prefix serving/frontend run dev`.
 
-- `temporalmente` — 64 games across speeds, used as canonical example everywhere
-- A real game ID: `aqXZphC1`
+## Deferred / known-but-not-doing
+
+- Backfill `analyze_blunders` for dates other than 2026-04-18. User said "we gonna backfill more data later" — do not initiate.
+- Airflow scheduler doesn't auto-promote queued runs to running; manual `airflow tasks test` works. Root cause unknown.
+- Optional polish: date filter on patterns, deep links to blunder ply, i18n toggle, auth.
+
+## Notes on the workflow
+
+- See `CLAUDE.md` (project root) and `~/.claude/CLAUDE.md` (user-level) for the Claude-as-architect / Codex-as-sidekick rules.
+- Codex track record this session: 2/3 tasks clean (coach.py SQL fix, tests+CI). 1 had a perf bug (patterns endpoint full-table scan) — caught in inspection. Specs that touch large tables must state row counts.
