@@ -10,6 +10,7 @@ from mysql.connector import pooling
 log = logging.getLogger("db")
 
 TABLE = "polaris_catalog.prod.chess_move_events"
+EVAL_TABLE = "polaris_catalog.prod.move_evaluations"
 
 
 class StarRocks:
@@ -194,4 +195,49 @@ def query_player_profile(username: str) -> dict | None:
         "clock_by_phase": clock,
         "vs_rating": vs_rating,
         "recent_games": recent,
+    }
+
+
+def query_exercise(username: str) -> dict | None:
+    # Pick a random blunder/mistake the user committed and join the source position.
+    rows = _run(
+        f"""
+        SELECT e.game_id, e.ply, e.fen, e.played_move, e.best_move,
+               e.eval_cp, e.eval_swing_cp_from_prev, e.classification,
+               m.clock_remaining, m.whose_moved, m.move_number,
+               g.opening_name, g.opening_eco, g.speed
+        FROM {EVAL_TABLE} e
+        JOIN {TABLE} m
+          ON e.game_id = m.game_id AND e.ply = m.move_number
+        JOIN (
+          SELECT DISTINCT game_id, opening_name, opening_eco, speed,
+                 white_id, black_id
+          FROM {TABLE} WHERE move_number = 1
+        ) g ON g.game_id = e.game_id
+        WHERE e.classification IN ('blunder', 'mistake')
+          AND ((m.whose_moved='white' AND g.white_id=%s)
+               OR (m.whose_moved='black' AND g.black_id=%s))
+        ORDER BY RAND()
+        LIMIT 1
+        """,
+        (username, username),
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "game_id": r["game_id"],
+        "ply": r["ply"],
+        "fen_before": r["fen"],
+        "played_move": r["played_move"],
+        "best_move": r["best_move"],
+        "eval_cp": r["eval_cp"],
+        "eval_swing_cp": r["eval_swing_cp_from_prev"],
+        "classification": r["classification"],
+        "clock_remaining_s": round((r["clock_remaining"] or 0) / 100.0, 1),
+        "side_to_move": r["whose_moved"],
+        "move_number": r["move_number"],
+        "opening_name": r["opening_name"],
+        "opening_eco": r["opening_eco"],
+        "speed": r["speed"],
     }

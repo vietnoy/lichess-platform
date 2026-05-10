@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from db import StarRocks, query_game, query_player_profile
+from db import StarRocks, query_game, query_player_profile, query_exercise
 from stockfish import eval_fen
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -110,6 +110,19 @@ def get_player_profile(username: str):
     if profile is None:
         raise HTTPException(404, f"No data for player '{username}'")
     return profile
+
+
+@app.get("/api/exercise/{username}")
+def get_exercise(username: str):
+    try:
+        exercise = query_exercise(username)
+    except Exception as e:
+        # move_evaluations table likely doesn't exist yet — analyzer hasn't run.
+        log.warning("exercise query failed for %s: %s", username, e)
+        raise HTTPException(503, "Blunder analyzer has not run yet for this player")
+    if exercise is None:
+        raise HTTPException(404, f"No exercises available for '{username}'")
+    return exercise
 
 
 class CoachRequest(BaseModel):
