@@ -10,3 +10,4 @@ credentials.txt
 logs/
 node_modules/
 .next/
+serving/frontend/tsconfig.tsbuildinfo
