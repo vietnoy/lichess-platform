@@ -7,9 +7,10 @@ import type { Config } from "chessground/config";
 import type { Key } from "chessground/types";
 import { Chess, SQUARES } from "chess.js";
 
-import "chessground/assets/chessground.base.css";
-import "chessground/assets/chessground.brown.css";
-import "chessground/assets/chessground.cburnett.css";
+// chessground v9 doesn't export its CSS via its package.json; we vendor the files.
+import "@/styles/chessground/chessground.base.css";
+import "@/styles/chessground/chessground.brown.css";
+import "@/styles/chessground/chessground.cburnett.css";
 
 export interface BoardProps {
   fen: string;

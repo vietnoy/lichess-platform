@@ -30,6 +30,9 @@ spec:
               value: "9030"
             - name: STARROCKS_USER
               value: root
+            # FE reverts to passwordless on restart; explicit empty overrides chess-secrets STARROCKS_PASSWORD.
+            - name: STARROCKS_PASSWORD
+              value: ""
             - name: STOCKFISH_URL
               value: http://stockfish:8001/eval
             - name: STOCKFISH_DEPTH
