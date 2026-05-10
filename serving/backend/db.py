@@ -75,14 +75,26 @@ def _run(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def query_game(game_id: str) -> list[dict]:
+    # Same upstream-duplicates issue: dedupe at (game_id, move_number) granularity.
     return _run(
         f"""
-        SELECT move_number, whose_moved, move, fen,
-               ROUND(clock_remaining / 100.0, 1) AS clock_s,
-               white_id, black_id, white_rating, black_rating,
-               opening_eco, opening_name, speed, winner, end_status
+        SELECT move_number,
+               MAX(whose_moved)        AS whose_moved,
+               MAX(move)               AS move,
+               MAX(fen)                AS fen,
+               ROUND(MAX(clock_remaining) / 100.0, 1) AS clock_s,
+               MAX(white_id)           AS white_id,
+               MAX(black_id)           AS black_id,
+               MAX(white_rating)       AS white_rating,
+               MAX(black_rating)       AS black_rating,
+               MAX(opening_eco)        AS opening_eco,
+               MAX(opening_name)       AS opening_name,
+               MAX(speed)              AS speed,
+               MAX(winner)             AS winner,
+               MAX(end_status)         AS end_status
         FROM {TABLE}
         WHERE game_id = %s
+        GROUP BY move_number
         ORDER BY move_number
         """,
         (game_id,),
@@ -90,94 +102,137 @@ def query_game(game_id: str) -> list[dict]:
 
 
 def query_player_profile(username: str) -> dict | None:
-    overview = _run(
+    # chess_move_events has duplicate rows per (game_id, move_number) due to upstream retries;
+    # GROUP BY game_id collapses each game to one record. The 60-day bound prunes Iceberg partitions
+    # so we don't scan all historical move events on every page load (no index on white_id/black_id).
+    games = _run(
         f"""
-        SELECT speed,
-               COUNT(DISTINCT game_id) AS total_games,
-               SUM(CASE WHEN winner = CASE WHEN white_id=%s THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) AS wins,
-               SUM(CASE WHEN winner IS NOT NULL AND winner != CASE WHEN white_id=%s THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) AS losses,
-               SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END) AS draws,
-               ROUND(AVG(CASE WHEN white_id=%s THEN white_rating ELSE black_rating END), 0) AS avg_rating
+        SELECT
+          game_id,
+          MAX(white_id)      AS white_id,
+          MAX(black_id)      AS black_id,
+          MAX(white_rating)  AS white_rating,
+          MAX(black_rating)  AS black_rating,
+          MAX(speed)         AS speed,
+          MAX(opening_eco)   AS opening_eco,
+          MAX(opening_name)  AS opening_name,
+          MAX(winner)        AS winner,
+          MAX(end_status)    AS end_status,
+          MAX(date)          AS date
         FROM {TABLE}
-        WHERE (white_id=%s OR black_id=%s) AND move_number=1
-        GROUP BY speed ORDER BY total_games DESC
-        """,
-        (username, username, username, username, username),
-    )
-    if not overview:
-        return None
-
-    color = _run(
-        f"""
-        SELECT CASE WHEN white_id=%s THEN 'White' ELSE 'Black' END AS color,
-               COUNT(DISTINCT game_id) AS games,
-               ROUND(SUM(CASE WHEN winner = CASE WHEN white_id=%s THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_pct
-        FROM {TABLE}
-        WHERE (white_id=%s OR black_id=%s) AND move_number=1
-        GROUP BY color
-        """,
-        (username, username, username, username),
-    )
-    openings = _run(
-        f"""
-        SELECT opening_eco, opening_name,
-               COUNT(DISTINCT game_id) AS games,
-               ROUND(SUM(CASE WHEN winner = CASE WHEN white_id=%s THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_pct
-        FROM {TABLE}
-        WHERE (white_id=%s OR black_id=%s) AND move_number=1 AND opening_eco IS NOT NULL
-        GROUP BY opening_eco, opening_name HAVING games >= 3
-        ORDER BY games DESC LIMIT 10
-        """,
-        (username, username, username),
-    )
-    clock = _run(
-        f"""
-        SELECT CASE WHEN move_number<=10 THEN 'Opening' WHEN move_number<=30 THEN 'Middlegame' ELSE 'Endgame' END AS phase,
-               ROUND(AVG(clock_remaining)/100.0, 1) AS avg_clock_s
-        FROM {TABLE}
-        WHERE (white_id=%s OR black_id=%s) AND clock_remaining IS NOT NULL
-        GROUP BY phase ORDER BY phase
+        WHERE move_number=1
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+          AND (white_id=%s OR black_id=%s)
+        GROUP BY game_id
         """,
         (username, username),
     )
-    vs_rating = _run(
+    if not games:
+        return None
+
+    # Clock-by-phase: scope to this user's known game IDs to avoid a full-table scan.
+    game_ids = [g["game_id"] for g in games]
+    placeholders = ",".join(["%s"] * len(game_ids))
+    clock_rows = _run(
         f"""
-        SELECT CASE
-                 WHEN (CASE WHEN white_id=%s THEN black_rating ELSE white_rating END) < (CASE WHEN white_id=%s THEN white_rating ELSE black_rating END) - 100 THEN 'Lower rated'
-                 WHEN (CASE WHEN white_id=%s THEN black_rating ELSE white_rating END) > (CASE WHEN white_id=%s THEN white_rating ELSE black_rating END) + 100 THEN 'Higher rated'
-                 ELSE 'Equal rated' END AS opponent,
-               COUNT(DISTINCT game_id) AS games,
-               ROUND(SUM(CASE WHEN winner = CASE WHEN white_id=%s THEN 'white' ELSE 'black' END THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT game_id), 1) AS win_pct
-        FROM {TABLE}
-        WHERE (white_id=%s OR black_id=%s) AND move_number=1
-        GROUP BY opponent
+        SELECT phase, ROUND(AVG(clock_remaining)/100.0, 1) AS avg_clock_s
+        FROM (
+          SELECT
+            CASE WHEN move_number<=10 THEN 'Opening'
+                 WHEN move_number<=30 THEN 'Middlegame'
+                 ELSE 'Endgame' END AS phase,
+            MAX(clock_remaining) AS clock_remaining
+          FROM {TABLE}
+          WHERE game_id IN ({placeholders}) AND clock_remaining IS NOT NULL
+          GROUP BY game_id, move_number
+        ) t
+        GROUP BY phase
+        ORDER BY phase
         """,
-        (username, username, username, username, username, username, username),
-    )
-    recent = _run(
-        f"""
-        SELECT game_id,
-               CASE WHEN white_id=%s THEN black_id ELSE white_id END AS opponent,
-               CASE WHEN white_id=%s THEN white_rating ELSE black_rating END AS my_rating,
-               CASE WHEN white_id=%s THEN black_rating ELSE white_rating END AS opp_rating,
-               opening_eco, opening_name, speed,
-               CASE WHEN winner IS NULL THEN 'Draw'
-                    WHEN winner = CASE WHEN white_id=%s THEN 'white' ELSE 'black' END THEN 'Win'
-                    ELSE 'Loss' END AS result,
-               date
-        FROM {TABLE}
-        WHERE (white_id=%s OR black_id=%s) AND move_number=1
-        ORDER BY date DESC LIMIT 15
-        """,
-        (username, username, username, username, username, username),
+        tuple(game_ids),
     )
 
-    total_games = sum(r["total_games"] for r in overview)
-    total_wins = sum(r["wins"] for r in overview)
-    total_losses = sum(r["losses"] for r in overview)
-    total_draws = sum(r["draws"] for r in overview)
-    avg_rating = round(sum(r["avg_rating"] * r["total_games"] for r in overview) / total_games)
-    win_pct = round(total_wins * 100 / total_games, 1) if total_games else 0
+    # ── aggregate in Python ──────────────────────────────────────────────────
+    def my_color(g):     return "white" if g["white_id"] == username else "black"
+    def my_color_cap(g): return my_color(g).capitalize()
+    def my_rating(g):    return g["white_rating"] if my_color(g) == "white" else g["black_rating"]
+    def opp_rating(g):   return g["black_rating"] if my_color(g) == "white" else g["white_rating"]
+    def opponent(g):     return g["black_id"]    if my_color(g) == "white" else g["white_id"]
+    def result(g):
+        if g["winner"] is None: return "Draw"
+        return "Win" if g["winner"] == my_color(g) else "Loss"
+
+    by_speed: dict[str, dict] = {}
+    for g in games:
+        s = g["speed"]
+        b = by_speed.setdefault(s, {"speed": s, "total_games": 0, "wins": 0, "losses": 0, "draws": 0, "rating_sum": 0})
+        b["total_games"] += 1
+        b["rating_sum"] += my_rating(g) or 0
+        r = result(g)
+        if r == "Win": b["wins"] += 1
+        elif r == "Loss": b["losses"] += 1
+        else: b["draws"] += 1
+    overview = []
+    for b in sorted(by_speed.values(), key=lambda x: -x["total_games"]):
+        b["avg_rating"] = round(b["rating_sum"] / b["total_games"]) if b["total_games"] else 0
+        b.pop("rating_sum", None)
+        overview.append(b)
+
+    by_color: dict[str, dict] = {"White": {"color": "White", "games": 0, "wins": 0}, "Black": {"color": "Black", "games": 0, "wins": 0}}
+    for g in games:
+        c = my_color_cap(g)
+        by_color[c]["games"] += 1
+        if result(g) == "Win": by_color[c]["wins"] += 1
+    color = []
+    for c in ("White", "Black"):
+        e = by_color[c]
+        if e["games"]:
+            color.append({"color": c, "games": e["games"], "win_pct": round(e["wins"] * 100 / e["games"], 1)})
+
+    open_acc: dict[tuple, dict] = {}
+    for g in games:
+        if not g["opening_eco"]: continue
+        k = (g["opening_eco"], g["opening_name"])
+        e = open_acc.setdefault(k, {"opening_eco": k[0], "opening_name": k[1], "games": 0, "wins": 0})
+        e["games"] += 1
+        if result(g) == "Win": e["wins"] += 1
+    openings = sorted(
+        ({**v, "win_pct": round(v["wins"] * 100 / v["games"], 1)} for v in open_acc.values() if v["games"] >= 3),
+        key=lambda x: -x["games"],
+    )[:10]
+
+    vs_acc: dict[str, dict] = {}
+    for g in games:
+        my_r, opp_r = my_rating(g), opp_rating(g)
+        if my_r is None or opp_r is None: continue
+        if   opp_r < my_r - 100: bucket = "Lower rated"
+        elif opp_r > my_r + 100: bucket = "Higher rated"
+        else: bucket = "Equal rated"
+        e = vs_acc.setdefault(bucket, {"opponent": bucket, "games": 0, "wins": 0})
+        e["games"] += 1
+        if result(g) == "Win": e["wins"] += 1
+    vs_rating = [{**v, "win_pct": round(v["wins"] * 100 / v["games"], 1)} for v in vs_acc.values()]
+
+    recent = sorted(games, key=lambda g: g["date"] or "", reverse=True)[:15]
+    recent_out = [{
+        "game_id":      g["game_id"],
+        "opponent":     opponent(g),
+        "my_rating":    my_rating(g),
+        "opp_rating":   opp_rating(g),
+        "opening_eco":  g["opening_eco"],
+        "opening_name": g["opening_name"],
+        "speed":        g["speed"],
+        "result":       result(g),
+        "date":         g["date"],
+    } for g in recent]
+
+    total_games  = len(games)
+    total_wins   = sum(1 for g in games if result(g) == "Win")
+    total_losses = sum(1 for g in games if result(g) == "Loss")
+    total_draws  = total_games - total_wins - total_losses
+    ratings      = [my_rating(g) for g in games if my_rating(g) is not None]
+    avg_rating   = round(sum(ratings) / len(ratings)) if ratings else 0
+    win_pct      = round(total_wins * 100 / total_games, 1) if total_games else 0
 
     return {
         "username": username,
@@ -192,9 +247,9 @@ def query_player_profile(username: str) -> dict | None:
         "by_speed": overview,
         "by_color": color,
         "openings": openings,
-        "clock_by_phase": clock,
+        "clock_by_phase": clock_rows,
         "vs_rating": vs_rating,
-        "recent_games": recent,
+        "recent_games": recent_out,
     }
 
 
