@@ -292,44 +292,63 @@ def _query_player_profile_uncached(username: str) -> dict | None:
 
 
 def query_player_patterns(username: str) -> dict | None:
-    rows = _run(
+    # Two-pass to avoid scanning the entire 17M-row chess_move_events:
+    # 1) find this user's games in the last 60d (small set, indexed-ish via date partition)
+    # 2) join evals + per-move metadata only for those game IDs
+    games = _run(
         f"""
-        SELECT e.game_id,
-               e.ply,
-               e.classification,
-               COALESCE(m.move_number, e.ply) AS move_number,
-               m.clock_remaining,
-               g.opening_eco,
-               g.opening_name,
-               g.white_id,
-               g.black_id,
-               g.date,
-               SUM(CASE WHEN e.classification='blunder' THEN 1 ELSE 0 END)
-                 OVER (PARTITION BY e.game_id) AS game_blunders,
-               SUM(CASE WHEN e.classification='mistake' THEN 1 ELSE 0 END)
-                 OVER (PARTITION BY e.game_id) AS game_mistakes
-        FROM {EVAL_TABLE} e
-        JOIN (
-          SELECT game_id,
-                 move_number,
-                 MAX(whose_moved)      AS whose_moved,
-                 MAX(clock_remaining)  AS clock_remaining
-          FROM {TABLE}
-          GROUP BY game_id, move_number
-        ) m
-          ON e.game_id = m.game_id AND e.ply = m.move_number
-        JOIN (
-          SELECT DISTINCT game_id, opening_name, opening_eco, white_id, black_id, date
-          FROM {TABLE}
-          WHERE move_number = 1
-            AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-        ) g ON g.game_id = e.game_id
-        WHERE ((m.whose_moved='white' AND g.white_id=%s)
-               OR (m.whose_moved='black' AND g.black_id=%s))
-        ORDER BY g.date DESC, e.game_id, e.ply
+        SELECT DISTINCT game_id, opening_name, opening_eco, white_id, black_id, date
+        FROM {TABLE}
+        WHERE move_number = 1
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+          AND (white_id=%s OR black_id=%s)
         """,
         (username, username),
     )
+    if not games:
+        return None
+
+    game_ids = [g["game_id"] for g in games]
+    placeholders = ",".join(["%s"] * len(game_ids))
+    games_by_id = {g["game_id"]: g for g in games}
+
+    rows = _run(
+        f"""
+        SELECT e.game_id, e.ply, e.classification, m.whose_moved, m.clock_remaining
+        FROM {EVAL_TABLE} e
+        JOIN (
+          SELECT game_id, move_number,
+                 MAX(whose_moved)     AS whose_moved,
+                 MAX(clock_remaining) AS clock_remaining
+          FROM {TABLE}
+          WHERE game_id IN ({placeholders})
+          GROUP BY game_id, move_number
+        ) m
+          ON e.game_id = m.game_id AND e.ply = m.move_number
+        WHERE e.game_id IN ({placeholders})
+        """,
+        tuple(game_ids) + tuple(game_ids),
+    )
+    if not rows:
+        return None
+
+    # Stitch in opening + side info from the games map.
+    for r in rows:
+        g = games_by_id.get(r["game_id"], {})
+        r["opening_eco"] = g.get("opening_eco")
+        r["opening_name"] = g.get("opening_name")
+        r["white_id"] = g.get("white_id")
+        r["black_id"] = g.get("black_id")
+        r["date"] = g.get("date")
+        r["move_number"] = r["ply"]
+        # Filter to the player's own moves only.
+    rows = [
+        r for r in rows
+        if (r["whose_moved"] == "white" and r["white_id"] == username)
+        or (r["whose_moved"] == "black" and r["black_id"] == username)
+    ]
+    if not rows:
+        return None
     if not rows:
         return None
 
@@ -428,13 +447,17 @@ def query_player_patterns(username: str) -> dict | None:
             game_id,
             {
                 "game_id": game_id,
-                "blunders": int(r["game_blunders"] or 0),
-                "mistakes": int(r["game_mistakes"] or 0),
+                "blunders": 0,
+                "mistakes": 0,
                 "date": str(r["date"]) if r["date"] else None,
                 "opponent": r["black_id"] if r["white_id"] == username else r["white_id"],
                 "opening_name": r["opening_name"],
             },
         )
+        if classification == "blunder":
+            worst["blunders"] += 1
+        elif classification == "mistake":
+            worst["mistakes"] += 1
         worst["score"] = worst["blunders"] * 3 + worst["mistakes"]
 
     totals["games_analyzed"] = len(game_ids)

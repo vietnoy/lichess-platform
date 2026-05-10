@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Chess } from "chess.js";
+import {
+  ResponsiveContainer, LineChart, Line, ReferenceLine, XAxis, YAxis, Tooltip,
+} from "recharts";
 
 import Link from "next/link";
 
@@ -10,9 +15,26 @@ import Header from "@/components/Header";
 import Board from "@/components/Board";
 import EvalBar from "@/components/EvalBar";
 import StatusPill from "@/components/StatusPill";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type { Game, EvalResult } from "@/lib/types";
 import type { Key } from "chessground/types";
+
+interface MoveEval {
+  ply: number;
+  played_move: string | null;
+  best_move: string | null;
+  eval_cp: number | null;
+  mate: number | null;
+  eval_swing_cp_from_prev: number | null;
+  classification: "blunder" | "mistake" | "inaccuracy" | "good" | string;
+}
+
+const CLASS_COLOR: Record<string, string> = {
+  blunder: "#f43f5e",
+  mistake: "#f59e0b",
+  inaccuracy: "#facc15",
+  good: "#10b981",
+};
 
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -68,6 +90,14 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   const [userTry, setUserTry] = useState<{ san: string; verdict: Verdict; userEval: EvalResult; bestMove: string | null } | null>(null);
   const evalCache = useRef<Map<number, EvalResult>>(new Map());
 
+  // Per-ply Stockfish evaluation timeline (from move_evaluations, populated by the daily DAG).
+  const [evals, setEvals] = useState<MoveEval[]>([]);
+  const [evalsAvailable, setEvalsAvailable] = useState<"unknown" | "yes" | "no">("unknown");
+  // AI narrative analysis state.
+  const [analysis, setAnalysis] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+
   // Load game on mount.
   useEffect(() => {
     let alive = true;
@@ -77,6 +107,45 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
       .catch((e) => { if (alive) setError(String(e.message ?? e)); });
     return () => { alive = false; };
   }, [gameId]);
+
+  // Load per-ply evaluations (best-effort; 404 if DAG hasn't run for this date).
+  useEffect(() => {
+    let alive = true;
+    api<{ evaluations: MoveEval[] }>(`/games/${encodeURIComponent(gameId)}/evaluations`)
+      .then((r) => { if (alive) { setEvals(r.evaluations); setEvalsAvailable("yes"); } })
+      .catch((e) => {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 404) setEvalsAvailable("no");
+        else setEvalsAvailable("no");
+      });
+    return () => { alive = false; };
+  }, [gameId]);
+
+  const evalsByPly = useMemo(() => {
+    const m = new Map<number, MoveEval>();
+    for (const e of evals) m.set(e.ply, e);
+    return m;
+  }, [evals]);
+
+  const evalChart = useMemo(() => {
+    return evals.map((e) => ({
+      ply: e.ply,
+      // Cap at +-10 so a single mate-in-1 doesn't swamp the rest of the chart.
+      eval: e.mate !== null
+        ? (e.mate > 0 ? 10 : -10)
+        : Math.max(-10, Math.min(10, (e.eval_cp ?? 0) / 100)),
+      classification: e.classification,
+    }));
+  }, [evals]);
+
+  function runAnalyze() {
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    api<{ narrative: string }>(`/games/${encodeURIComponent(gameId)}/analyze`, { method: "POST", body: "{}" })
+      .then((r) => setAnalysis(r.narrative))
+      .catch((e) => setAnalyzeError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setAnalyzing(false));
+  }
 
   const moves = game?.moves ?? [];
   const fen = useMemo(() => fenAfter(moves, ply), [moves, ply]);
@@ -140,17 +209,71 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
       <Header subtitle={game ? subtitle : `Game ${gameId}`} />
 
       <main className="max-w-6xl mx-auto px-6 py-6">
-        <div className="flex items-center gap-3 mb-4">
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
           {!game && !error && <StatusPill tone="loading">Loading game</StatusPill>}
           {error && <StatusPill tone="error">{error}</StatusPill>}
           {game && (
             <>
               <StatusPill tone="ok">Loaded · {moves.length} moves</StatusPill>
+              {evalsAvailable === "yes" && (
+                <StatusPill tone="ok">{evals.length} positions analyzed</StatusPill>
+              )}
               {evalLoading && <StatusPill tone="loading">Evaluating</StatusPill>}
               {playMode && <StatusPill tone="warn">Play-from-here mode</StatusPill>}
+              {evalsAvailable === "yes" && (
+                <button
+                  onClick={runAnalyze}
+                  disabled={analyzing}
+                  className="ml-auto bg-accent text-bg font-medium px-3 py-1.5 rounded-md text-sm hover:opacity-90 disabled:opacity-40"
+                >
+                  {analyzing ? "Analyzing…" : analysis ? "Re-analyze with AI" : "Analyze with AI"}
+                </button>
+              )}
             </>
           )}
         </div>
+
+        {game && evalsAvailable === "yes" && evalChart.length > 0 && (
+          <section className="bg-surface border border-border rounded-md p-4 mb-4">
+            <h3 className="text-xs uppercase tracking-wider text-muted mb-2">Evaluation timeline</h3>
+            <ResponsiveContainer width="100%" height={140}>
+              <LineChart data={evalChart} margin={{ left: 0, right: 12, top: 8, bottom: 0 }}>
+                <XAxis dataKey="ply" stroke="#666" fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis
+                  domain={[-10, 10]}
+                  stroke="#666"
+                  fontSize={10}
+                  width={24}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => v === 0 ? "0" : v > 0 ? `+${v}` : `${v}`}
+                />
+                <ReferenceLine y={0} stroke="#444" />
+                <Tooltip
+                  contentStyle={{ background: "rgb(22 22 26)", border: "1px solid rgb(38 38 44)", borderRadius: 6, fontSize: 12 }}
+                  formatter={(v: number, _n, p: any) => [`${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}  (${p?.payload?.classification ?? "—"})`, "eval"]}
+                  labelFormatter={(v) => `ply ${v}`}
+                />
+                <Line type="monotone" dataKey="eval" stroke="#f59e0b" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </section>
+        )}
+
+        <AnimatePresence>
+          {(analysis || analyzeError) && (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="bg-surface border border-border rounded-md p-4 mb-4 prose prose-invert prose-sm max-w-none prose-p:my-2 prose-ol:my-2 prose-ul:my-2 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1.5"
+            >
+              {analyzeError && <p className="text-rose-400 not-prose">{analyzeError}</p>}
+              {analysis && <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis}</ReactMarkdown>}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {game && (
           <div className="grid grid-cols-1 md:grid-cols-[1fr_320px] gap-6">
@@ -235,13 +358,19 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                 {Array.from({ length: Math.ceil(moves.length / 2) }).map((_, i) => {
                   const w = moves[i * 2];
                   const b = moves[i * 2 + 1];
+                  const wEval = w ? evalsByPly.get(w.ply) : undefined;
+                  const bEval = b ? evalsByPly.get(b.ply) : undefined;
+                  const wColor = wEval && wEval.classification !== "good" ? CLASS_COLOR[wEval.classification] : undefined;
+                  const bColor = bEval && bEval.classification !== "good" ? CLASS_COLOR[bEval.classification] : undefined;
                   return (
                     <div key={i} className="contents">
                       <span className="text-muted">{i + 1}.</span>
                       {w ? (
                         <button
                           onClick={() => jumpTo(w.ply)}
+                          title={wEval ? `${wEval.classification}${wEval.eval_cp != null ? ` · eval ${(wEval.eval_cp/100).toFixed(2)}` : ""}` : undefined}
                           className={`text-left px-1.5 rounded ${ply === w.ply ? "bg-accent/15 text-accent" : "hover:bg-border/40"}`}
+                          style={wColor && ply !== w.ply ? { color: wColor } : undefined}
                         >
                           {w.san}
                         </button>

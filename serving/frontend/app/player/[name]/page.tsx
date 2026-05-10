@@ -78,6 +78,14 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
           {!profile && !error && <StatusPill tone="loading">Loading profile</StatusPill>}
           {error && <StatusPill tone="error">{error}</StatusPill>}
           {profile && <StatusPill tone="ok">Loaded · {profile.totals.games.toLocaleString()} games</StatusPill>}
+          {profile && (
+            <a
+              href={`/patterns/${encodeURIComponent(username)}`}
+              className="ml-auto text-xs px-3 py-1 rounded-md border border-border hover:border-accent text-muted hover:text-text"
+            >
+              Mistake patterns →
+            </a>
+          )}
         </div>
 
         {profile && (
