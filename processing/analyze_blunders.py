@@ -133,10 +133,11 @@ def top_players_for_day(spark: SparkSession, date_str: str) -> list[str]:
 
 
 def stockfish_eval(session: requests.Session, fen: str) -> dict[str, Any] | None:
-    payload = {"fen": fen, "depth": 12}
+    # The Stockfish service exposes GET /eval?fen=...&depth=... — POST returns 405.
+    params = {"fen": fen, "depth": 12}
     for attempt in range(2):
         try:
-            response = session.post(STOCKFISH_URL, json=payload, timeout=30)
+            response = session.get(STOCKFISH_URL, params=params, timeout=30)
             if response.status_code < 500:
                 response.raise_for_status()
                 return response.json()
