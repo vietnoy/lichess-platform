@@ -12,10 +12,12 @@ Endpoints:
 """
 
 import os
+import json
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from db import StarRocks, query_game, query_player_profile
@@ -108,3 +110,31 @@ def get_player_profile(username: str):
     if profile is None:
         raise HTTPException(404, f"No data for player '{username}'")
     return profile
+
+
+class CoachRequest(BaseModel):
+    session_id: str
+    message: str
+    username: str | None = None
+    reset: bool = False
+
+
+@app.post("/api/coach")
+def post_coach(req: CoachRequest):
+    # Imported lazily so the rest of the API still boots if Vertex isn't configured.
+    from coach import SESSIONS
+
+    if req.reset:
+        SESSIONS.reset(req.session_id)
+    session = SESSIONS.get(req.session_id)
+    msg = f"[Player: {req.username}] {req.message}" if req.username else req.message
+
+    def gen():
+        try:
+            for event in session.ask_stream(msg):
+                yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+        except Exception as e:
+            log.exception("coach stream crashed")
+            yield f"event: error\ndata: {json.dumps({'type':'error','message':str(e)})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

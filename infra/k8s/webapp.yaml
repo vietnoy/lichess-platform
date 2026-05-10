@@ -36,9 +36,19 @@ spec:
               value: "12"
             - name: CORS_ORIGINS
               value: "*"
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /secrets/gcp/service_account.json
+            - name: GCP_PROJECT
+              value: sonat-game-new-installs-dash
+            - name: GCP_LOCATION
+              value: us-central1
           envFrom:
             - secretRef:
                 name: chess-secrets
+          volumeMounts:
+            - name: gcp-sa
+              mountPath: /secrets/gcp
+              readOnly: true
           ports:
             - containerPort: 8000
           readinessProbe:
@@ -60,8 +70,12 @@ spec:
               memory: 128Mi
               cpu: 100m
             limits:
-              memory: 256Mi
+              memory: 384Mi
               cpu: 500m
+      volumes:
+        - name: gcp-sa
+          secret:
+            secretName: gcp-sa-secret
 ---
 apiVersion: v1
 kind: Service
