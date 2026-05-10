@@ -3,4 +3,6 @@ uvicorn[standard]==0.32.1
 mysql-connector-python==9.1.0
 requests==2.32.3
 pydantic==2.9.2
+pytest==8.3.3
 openai==1.99.9
+chess==1.11.1
