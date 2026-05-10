@@ -256,10 +256,13 @@ def run(date_str: str) -> None:
         )
     )
 
+    # Treat NULL-eval rows as not-yet-evaluated so a previously-failed run (e.g. Stockfish 5xx
+    # or a wrong HTTP method) doesn't poison the partition forever.
     existing = spark.table("polaris.prod.move_evaluations").where(col("date") == to_date(lit(date_str)))
+    successful = existing.where(col("eval_cp").isNotNull())
     remaining = (
         moves
-        .join(existing.select("game_id", "ply"), on=["game_id", "ply"], how="left_anti")
+        .join(successful.select("game_id", "ply"), on=["game_id", "ply"], how="left_anti")
         .orderBy("game_id", "ply")
     )
 
@@ -269,13 +272,14 @@ def run(date_str: str) -> None:
     if rows:
         existing_cp_by_ply = {
             (row.game_id, row.ply): row.eval_cp
-            for row in existing.select("game_id", "ply", "eval_cp").collect()
+            for row in successful.select("game_id", "ply", "eval_cp").collect()
         }
         result_rows = analyze_rows(rows, date_str, existing_cp_by_ply)
         new_results = spark.createDataFrame(result_rows, evaluation_schema)
-        output = existing.unionByName(new_results)
+        # Only keep successful prior rows + the freshly-evaluated ones; drops the NULL-eval poison.
+        output = successful.unionByName(new_results)
     else:
-        output = existing
+        output = successful
 
     output.writeTo("polaris.prod.move_evaluations").overwritePartitions()
     logger.info(f"Done - date={date_str} written to Polaris move_evaluations")
