@@ -1,14 +1,14 @@
 """
 Streaming AI Coach.
 
-Exposes a generator that yields event dicts:
+Uses Groq's OpenAI-compatible API. Yields event dicts for SSE:
   {"type": "token", "text": "..."}        partial text from the model
   {"type": "tool_start", "name", "args"}  about to run a tool
   {"type": "tool_result", "name", "summary"}
   {"type": "done"}                        end of turn
   {"type": "error", "message"}            fatal error this turn
 
-A small in-memory session store keeps per-conversation chat history so multi-turn works.
+A small in-memory session store keeps per-conversation message history so multi-turn works.
 Tools query StarRocks via the same connection pool as the rest of the API and accept
 parameter bindings (the legacy agent.py uses string-interpolated SQL — we don't).
 """
@@ -22,36 +22,27 @@ import threading
 import time
 from typing import Any, Iterator
 
-import vertexai
-from google.oauth2 import service_account
-from vertexai.generative_models import GenerativeModel, Part, Tool, FunctionDeclaration
+from openai import OpenAI
 
 from db import StarRocks, TABLE
 from stockfish import eval_fen
 
 log = logging.getLogger("coach")
 
-_GCP_PROJECT  = os.getenv("GCP_PROJECT", "")
-_GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
-_GCP_CREDS    = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-_vertex_initialized = False
+_client: OpenAI | None = None
 
 
-def _init_vertex():
-    global _vertex_initialized
-    if _vertex_initialized:
-        return
-    if not _GCP_PROJECT:
-        raise RuntimeError("GCP_PROJECT not set; coach disabled")
-    if _GCP_CREDS and os.path.exists(_GCP_CREDS):
-        creds = service_account.Credentials.from_service_account_file(
-            _GCP_CREDS, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        vertexai.init(project=_GCP_PROJECT, location=_GCP_LOCATION, credentials=creds)
-    else:
-        vertexai.init(project=_GCP_PROJECT, location=_GCP_LOCATION)
-    _vertex_initialized = True
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        if not GROQ_API_KEY:
+            raise RuntimeError("GROQ_API_KEY not set; coach disabled")
+        _client = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
+    return _client
 
 
 # ─── tools ────────────────────────────────────────────────────────────────────
@@ -243,26 +234,33 @@ _TOOL_FNS: dict[str, Any] = {
     "analyze_game":              analyze_game,
 }
 
-_PLAYER_PARAM = {"player_id": {"type_": "STRING", "description": "Lichess username"}}
 
-_TOOLS = Tool(function_declarations=[
-    FunctionDeclaration(name="get_player_overview", description="Total games, wins/losses/draws and average rating by time control.",
-                        parameters={"type_": "OBJECT", "properties": _PLAYER_PARAM, "required": ["player_id"]}),
-    FunctionDeclaration(name="get_time_pressure_stats", description="Win rate when clock is under 10 seconds vs normal.",
-                        parameters={"type_": "OBJECT", "properties": _PLAYER_PARAM, "required": ["player_id"]}),
-    FunctionDeclaration(name="get_opening_stats", description="Win rate by opening ECO. Identifies structural opening weaknesses.",
-                        parameters={"type_": "OBJECT", "properties": {**_PLAYER_PARAM, "top_n": {"type_": "INTEGER", "description": "Top N openings (default 10)"}}, "required": ["player_id"]}),
-    FunctionDeclaration(name="get_clock_usage_by_phase", description="Average clock remaining in opening, middlegame, endgame.",
-                        parameters={"type_": "OBJECT", "properties": _PLAYER_PARAM, "required": ["player_id"]}),
-    FunctionDeclaration(name="get_performance_by_color", description="Win rate as white vs black.",
-                        parameters={"type_": "OBJECT", "properties": _PLAYER_PARAM, "required": ["player_id"]}),
-    FunctionDeclaration(name="get_performance_vs_rating", description="Win rate vs lower, equal and higher rated opponents.",
-                        parameters={"type_": "OBJECT", "properties": _PLAYER_PARAM, "required": ["player_id"]}),
-    FunctionDeclaration(name="get_recent_games", description="Last N games with opponent, opening, result and time control.",
-                        parameters={"type_": "OBJECT", "properties": {**_PLAYER_PARAM, "limit": {"type_": "INTEGER", "description": "Number of games (default 10)"}}, "required": ["player_id"]}),
-    FunctionDeclaration(name="analyze_game", description="Move-by-move Stockfish analysis of a specific game; returns eval, best move, blunder/mistake/inaccuracy classification per move.",
-                        parameters={"type_": "OBJECT", "properties": {"game_id": {"type_": "STRING", "description": "Lichess game ID"}}, "required": ["game_id"]}),
-])
+def _tool(name: str, description: str, props: dict, required: list[str]) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {"type": "object", "properties": props, "required": required},
+        },
+    }
+
+
+_PLAYER_PROP = {"player_id": {"type": "string", "description": "Lichess username"}}
+
+_OPENAI_TOOLS: list[dict] = [
+    _tool("get_player_overview", "Total games, wins/losses/draws and average rating by time control.", _PLAYER_PROP, ["player_id"]),
+    _tool("get_time_pressure_stats", "Win rate when clock is under 10 seconds vs normal.", _PLAYER_PROP, ["player_id"]),
+    _tool("get_opening_stats", "Win rate by opening ECO. Identifies structural opening weaknesses.",
+          {**_PLAYER_PROP, "top_n": {"type": "integer", "description": "Top N openings (default 10)"}}, ["player_id"]),
+    _tool("get_clock_usage_by_phase", "Average clock remaining in opening, middlegame, endgame.", _PLAYER_PROP, ["player_id"]),
+    _tool("get_performance_by_color", "Win rate as white vs black.", _PLAYER_PROP, ["player_id"]),
+    _tool("get_performance_vs_rating", "Win rate vs lower, equal and higher rated opponents.", _PLAYER_PROP, ["player_id"]),
+    _tool("get_recent_games", "Last N games with opponent, opening, result and time control.",
+          {**_PLAYER_PROP, "limit": {"type": "integer", "description": "Number of games (default 10)"}}, ["player_id"]),
+    _tool("analyze_game", "Move-by-move Stockfish analysis of a specific game; returns eval, best move, blunder/mistake/inaccuracy classification per move.",
+          {"game_id": {"type": "string", "description": "Lichess game ID"}}, ["game_id"]),
+]
 
 _SYSTEM_PROMPT = """You are an elite AI Chess Coach with access to a statistical database of real Lichess games.
 You think like a grandmaster analyst combined with a sports psychologist. You diagnose, you don't just report.
@@ -287,7 +285,6 @@ def _short_summary(name: str, raw_json: str, max_len: int = 220) -> str:
         return raw_json[:max_len]
     if isinstance(obj, dict) and "error" in obj:
         return f"error: {obj['error']}"
-    # Pick the most informative top-level list and report its length.
     for key in ("overview", "opening_stats", "recent_games", "by_color", "vs_rating", "time_pressure", "clock_by_phase", "moves"):
         v = obj.get(key) if isinstance(obj, dict) else None
         if isinstance(v, list):
@@ -295,21 +292,11 @@ def _short_summary(name: str, raw_json: str, max_len: int = 220) -> str:
     return f"{name} → ok"
 
 
-class SessionBusy(Exception):
-    pass
-
-
 class CoachSession:
-    """One conversation with the AI coach. The lock serializes turns on the same session."""
+    """One conversation. The lock serializes turns; messages are the chat history."""
 
     def __init__(self):
-        _init_vertex()
-        self.model = GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=_SYSTEM_PROMPT,
-            tools=[_TOOLS],
-        )
-        self.chat = self.model.start_chat()
+        self.messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
         self.last_used = time.time()
         self.lock = threading.Lock()
 
@@ -324,60 +311,82 @@ class CoachSession:
             return json.dumps({"error": str(e)})
 
     def ask_stream(self, message: str) -> Iterator[dict]:
-        # Non-blocking lock acquire — if another turn is in flight on the same session,
-        # tell the caller instead of corrupting the chat history with interleaved turns.
         if not self.lock.acquire(blocking=False):
             yield {"type": "error", "message": "Another request is in flight on this session"}
             return
         try:
             self.last_used = time.time()
+            self.messages.append({"role": "user", "content": message})
             try:
-                yield from self._round(message)
+                yield from self._loop()
             except Exception as e:
                 log.exception("agent stream failed")
                 yield {"type": "error", "message": str(e)}
         finally:
             self.lock.release()
 
-    def _round(self, payload) -> Iterator[dict]:
-        # Vertex returns an iterable when stream=True; chunks may carry text or function_call parts.
-        # Some SDK versions emit the same function_call across multiple chunks while assembling args;
-        # dedupe by (name, json(args)) before dispatching.
-        stream = self.chat.send_message(payload, stream=True)
-        function_calls: list = []
-        seen_keys: set[str] = set()
-        for chunk in stream:
-            try:
-                parts = chunk.candidates[0].content.parts
-            except Exception:
-                continue
-            for p in parts:
-                fc = getattr(p, "function_call", None)
-                if fc and fc.name:
-                    try:
-                        key = f"{fc.name}::{json.dumps(dict(fc.args), sort_keys=True, default=str)}"
-                    except Exception:
-                        key = f"{fc.name}::{id(fc)}"
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    function_calls.append(fc)
+    def _loop(self) -> Iterator[dict]:
+        # OpenAI-style agent loop: stream tokens; if the assistant emits tool_calls, dispatch and round-trip.
+        client = _get_client()
+        while True:
+            stream = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=self.messages,
+                tools=_OPENAI_TOOLS,
+                stream=True,
+            )
+            assistant_text = ""
+            # tool_calls arrive as deltas with index, accumulate by index.
+            tool_calls: dict[int, dict] = {}
+            for chunk in stream:
+                if not chunk.choices:
                     continue
-                text = getattr(p, "text", None)
-                if text:
-                    yield {"type": "token", "text": text}
-        if not function_calls:
-            yield {"type": "done"}
-            return
-        responses = []
-        for fc in function_calls:
-            name = fc.name
-            args = dict(fc.args)
-            yield {"type": "tool_start", "name": name, "args": args}
-            result_json = self._dispatch(name, args)
-            yield {"type": "tool_result", "name": name, "summary": _short_summary(name, result_json)}
-            responses.append(Part.from_function_response(name=name, response={"result": result_json}))
-        yield from self._round(responses)
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    assistant_text += delta.content
+                    yield {"type": "token", "text": delta.content}
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        slot = tool_calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if tc.id:
+                            slot["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            slot["name"] = tc.function.name
+                        if tc.function and tc.function.arguments:
+                            slot["arguments"] += tc.function.arguments
+
+            if not tool_calls:
+                # Plain text response, conversation turn complete.
+                self.messages.append({"role": "assistant", "content": assistant_text})
+                yield {"type": "done"}
+                return
+
+            # Record the assistant's tool-call message so the next round has correct history.
+            self.messages.append({
+                "role": "assistant",
+                "content": assistant_text or None,
+                "tool_calls": [
+                    {"id": v["id"], "type": "function", "function": {"name": v["name"], "arguments": v["arguments"]}}
+                    for _, v in sorted(tool_calls.items())
+                ],
+            })
+
+            for _, tc in sorted(tool_calls.items()):
+                name = tc["name"]
+                try:
+                    args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                except Exception:
+                    args = {}
+                yield {"type": "tool_start", "name": name, "args": args}
+                result_json = self._dispatch(name, args)
+                yield {"type": "tool_result", "name": name, "summary": _short_summary(name, result_json)}
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": name,
+                    "content": result_json,
+                })
 
 
 class SessionStore:

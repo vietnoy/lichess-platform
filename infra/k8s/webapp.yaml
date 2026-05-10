@@ -22,7 +22,7 @@ spec:
       containers:
         - name: backend
           image: vietnoy/chess-webapp-backend:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           env:
             - name: STARROCKS_HOST
               value: starrocks-fe
@@ -115,7 +115,7 @@ spec:
       containers:
         - name: frontend
           image: vietnoy/chess-webapp-frontend:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           env:
             - name: NEXT_PUBLIC_API_BASE
               value: /api
