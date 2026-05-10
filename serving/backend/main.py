@@ -24,9 +24,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, PlainTextResponse
+from openai import OpenAI
 from pydantic import BaseModel
 
-from db import StarRocks, TABLE, query_game, query_player_profile, query_exercise
+from db import (
+    StarRocks,
+    TABLE,
+    query_exercise,
+    query_game,
+    query_game_evaluations,
+    query_player_patterns,
+    query_player_profile,
+)
 from stockfish import eval_fen
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -156,6 +165,24 @@ _freshness_cache: dict[str, tuple[float, dict]] = {}
 _freshness_lock = threading.Lock()
 _FRESHNESS_TTL_S = 300
 
+_analyze_cache: dict[str, tuple[float, dict]] = {}
+_analyze_lock = threading.Lock()
+_ANALYZE_TTL_S = 24 * 60 * 60
+_analyze_client: OpenAI | None = None
+
+
+def _get_analyze_client() -> OpenAI:
+    global _analyze_client
+    if _analyze_client is None:
+        groq_api_key = os.getenv("GROQ_API_KEY", "")
+        if not groq_api_key:
+            raise RuntimeError("GROQ_API_KEY not set; game analysis unavailable")
+        _analyze_client = OpenAI(
+            api_key=groq_api_key,
+            base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+        )
+    return _analyze_client
+
 
 @app.get("/api/freshness")
 def get_freshness():
@@ -213,6 +240,14 @@ def get_game(game_id: str):
             for r in rows
         ],
     }
+
+
+@app.get("/api/games/{game_id}/evaluations")
+def get_game_evaluations(game_id: str):
+    rows = query_game_evaluations(game_id)
+    if not rows:
+        raise HTTPException(404, "No evaluations for this game yet (analyzer DAG may not have run for its date).")
+    return {"game_id": game_id, "evaluations": rows}
 
 
 # ─── eval (single + batched whatif) ───────────────────────────────────────────
@@ -294,6 +329,14 @@ def get_player_profile(username: str):
     return profile
 
 
+@app.get("/api/players/{username}/patterns")
+def get_player_patterns(username: str):
+    patterns = query_player_patterns(username)
+    if patterns is None:
+        raise HTTPException(404, f"No analyzed games for player '{username}' yet.")
+    return patterns
+
+
 # ─── exercise ────────────────────────────────────────────────────────────────
 @app.get("/api/exercise/{username}")
 def get_exercise(username: str):
@@ -305,6 +348,72 @@ def get_exercise(username: str):
     if exercise is None:
         raise HTTPException(404, f"No exercises available for '{username}'")
     return exercise
+
+
+@app.post("/api/games/{game_id}/analyze")
+def post_game_analyze(game_id: str):
+    """Use Groq to write a turning-point narrative based on the eval timeline."""
+    now = time.monotonic()
+    with _analyze_lock:
+        cached = _analyze_cache.get(game_id)
+        if cached and now - cached[0] < _ANALYZE_TTL_S:
+            return cached[1]
+
+    evaluations = query_game_evaluations(game_id)
+    if not evaluations:
+        raise HTTPException(404, "No evaluations for this game yet (analyzer DAG may not have run for its date).")
+
+    game_rows = query_game(game_id)
+    if not game_rows:
+        raise HTTPException(404, f"Game {game_id} not found")
+    meta = game_rows[0]
+
+    eval_lines = []
+    for r in evaluations:
+        eval_lines.append(
+            f"ply {r['ply']}: class={r.get('classification') or 'n/a'}, "
+            f"played_move={r.get('played_move') or '-'}, "
+            f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}, "
+            f"best_move={r.get('best_move') or '-'}"
+        )
+
+    prompt = "\n".join(
+        [
+            "Phan tich van co co vua duoi day bang tieng Viet.",
+            "Hay viet markdown voi dung 5 muc: 1) Tong quan, 2) Buoc ngoat quan trong, 3) Sai lam then chot, 4) Co hoi bo lo, 5) Bai hoc hanh dong.",
+            "Giong van nhu mot HLV: truc dien, cu the, neu ro nuoc di va dao dong danh gia khi can.",
+            "Khong mo ta dai dong; tap trung vao cac turning point va ly do vi sao vi tri dao chieu.",
+            f"Game ID: {game_id}",
+            f"Trang: {meta.get('white_id')} vs {meta.get('black_id')}",
+            f"Khai cuoc: {meta.get('opening_eco') or '-'} {meta.get('opening_name') or ''}".strip(),
+            f"Toc do: {meta.get('speed') or '-'}",
+            "Timeline danh gia theo ply:",
+            *eval_lines,
+        ]
+    )
+
+    try:
+        client = _get_analyze_client()
+        response = client.chat.completions.create(
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            temperature=0.4,
+            max_tokens=800,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Ban la HLV co vua. Tra loi bang tieng Viet, markdown gon gang, uu tien turning point va bai hoc thuc chien.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        narrative = (response.choices[0].message.content or "").strip()
+        result = {"narrative": narrative}
+    except Exception as e:
+        raise HTTPException(503, str(e))
+
+    with _analyze_lock:
+        _analyze_cache[game_id] = (now, result)
+    return result
 
 
 # ─── coach ────────────────────────────────────────────────────────────────────

@@ -108,6 +108,25 @@ def query_game(game_id: str) -> list[dict]:
     )
 
 
+def query_game_evaluations(game_id: str) -> list[dict]:
+    """Return per-ply evaluation timeline for a game."""
+    return _run(
+        f"""
+        SELECT ply,
+               played_move,
+               best_move,
+               eval_cp,
+               mate,
+               eval_swing_cp_from_prev,
+               classification
+        FROM {EVAL_TABLE}
+        WHERE game_id = %s
+        ORDER BY ply
+        """,
+        (game_id,),
+    )
+
+
 def query_player_profile(username: str) -> dict | None:
     now = time.time()
     with _profile_lock:
@@ -269,6 +288,194 @@ def _query_player_profile_uncached(username: str) -> dict | None:
         "clock_by_phase": clock_rows,
         "vs_rating": vs_rating,
         "recent_games": recent_out,
+    }
+
+
+def query_player_patterns(username: str) -> dict | None:
+    rows = _run(
+        f"""
+        SELECT e.game_id,
+               e.ply,
+               e.classification,
+               COALESCE(m.move_number, e.ply) AS move_number,
+               m.clock_remaining,
+               g.opening_eco,
+               g.opening_name,
+               g.white_id,
+               g.black_id,
+               g.date,
+               SUM(CASE WHEN e.classification='blunder' THEN 1 ELSE 0 END)
+                 OVER (PARTITION BY e.game_id) AS game_blunders,
+               SUM(CASE WHEN e.classification='mistake' THEN 1 ELSE 0 END)
+                 OVER (PARTITION BY e.game_id) AS game_mistakes
+        FROM {EVAL_TABLE} e
+        JOIN (
+          SELECT game_id,
+                 move_number,
+                 MAX(whose_moved)      AS whose_moved,
+                 MAX(clock_remaining)  AS clock_remaining
+          FROM {TABLE}
+          GROUP BY game_id, move_number
+        ) m
+          ON e.game_id = m.game_id AND e.ply = m.move_number
+        JOIN (
+          SELECT DISTINCT game_id, opening_name, opening_eco, white_id, black_id, date
+          FROM {TABLE}
+          WHERE move_number = 1
+            AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+        ) g ON g.game_id = e.game_id
+        WHERE ((m.whose_moved='white' AND g.white_id=%s)
+               OR (m.whose_moved='black' AND g.black_id=%s))
+        ORDER BY g.date DESC, e.game_id, e.ply
+        """,
+        (username, username),
+    )
+    if not rows:
+        return None
+
+    totals = {"games_analyzed": 0, "blunders": 0, "mistakes": 0, "inaccuracies": 0}
+    phase_acc = {
+        "opening": {"phase": "opening", "blunders": 0, "mistakes": 0, "inaccuracies": 0},
+        "middlegame": {"phase": "middlegame", "blunders": 0, "mistakes": 0, "inaccuracies": 0},
+        "endgame": {"phase": "endgame", "blunders": 0, "mistakes": 0, "inaccuracies": 0},
+    }
+    move_bucket_acc = {
+        "1-10": {"bucket": "1-10", "blunders": 0, "mistakes": 0},
+        "11-20": {"bucket": "11-20", "blunders": 0, "mistakes": 0},
+        "21-30": {"bucket": "21-30", "blunders": 0, "mistakes": 0},
+        "31-40": {"bucket": "31-40", "blunders": 0, "mistakes": 0},
+        "41-50": {"bucket": "41-50", "blunders": 0, "mistakes": 0},
+        "51+": {"bucket": "51+", "blunders": 0, "mistakes": 0},
+    }
+    clock_acc = {
+        "under_10s": {"pressure": "under_10s", "blunders": 0, "mistakes": 0},
+        "under_30s": {"pressure": "under_30s", "blunders": 0, "mistakes": 0},
+        "normal": {"pressure": "normal", "blunders": 0, "mistakes": 0},
+    }
+    class_key = {"blunder": "blunders", "mistake": "mistakes", "inaccuracy": "inaccuracies"}
+    opening_acc: dict[tuple[str, str], dict] = {}
+    worst_games_acc: dict[str, dict] = {}
+    game_ids: set[str] = set()
+
+    for r in rows:
+        classification = r["classification"]
+        game_id = r["game_id"]
+        ply = int(r["ply"] or 0)
+        move_number = int(r["move_number"] or ply)
+        clock_remaining = r["clock_remaining"]
+
+        game_ids.add(game_id)
+        if classification == "blunder":
+            totals["blunders"] += 1
+        elif classification == "mistake":
+            totals["mistakes"] += 1
+        elif classification == "inaccuracy":
+            totals["inaccuracies"] += 1
+        else:
+            classification = None
+
+        if classification is not None:
+            if ply <= 20:
+                phase = "opening"
+            elif ply <= 60:
+                phase = "middlegame"
+            else:
+                phase = "endgame"
+            phase_acc[phase][class_key[classification]] += 1
+
+        if move_number <= 10:
+            bucket = "1-10"
+        elif move_number <= 20:
+            bucket = "11-20"
+        elif move_number <= 30:
+            bucket = "21-30"
+        elif move_number <= 40:
+            bucket = "31-40"
+        elif move_number <= 50:
+            bucket = "41-50"
+        else:
+            bucket = "51+"
+        if classification in ("blunder", "mistake"):
+            move_bucket_acc[bucket][class_key[classification]] += 1
+
+        if clock_remaining is not None and classification in ("blunder", "mistake"):
+            if clock_remaining < 1000:
+                pressure = "under_10s"
+            elif clock_remaining < 3000:
+                pressure = "under_30s"
+            else:
+                pressure = "normal"
+            clock_acc[pressure][class_key[classification]] += 1
+
+        opening_key = (r["opening_eco"] or "", r["opening_name"] or "")
+        opening_entry = opening_acc.setdefault(
+            opening_key,
+            {
+                "opening_eco": opening_key[0],
+                "opening_name": opening_key[1],
+                "blunders": 0,
+                "mistakes": 0,
+                "games": set(),
+            },
+        )
+        opening_entry["games"].add(game_id)
+        if classification == "blunder":
+            opening_entry["blunders"] += 1
+        elif classification == "mistake":
+            opening_entry["mistakes"] += 1
+
+        worst = worst_games_acc.setdefault(
+            game_id,
+            {
+                "game_id": game_id,
+                "blunders": int(r["game_blunders"] or 0),
+                "mistakes": int(r["game_mistakes"] or 0),
+                "date": str(r["date"]) if r["date"] else None,
+                "opponent": r["black_id"] if r["white_id"] == username else r["white_id"],
+                "opening_name": r["opening_name"],
+            },
+        )
+        worst["score"] = worst["blunders"] * 3 + worst["mistakes"]
+
+    totals["games_analyzed"] = len(game_ids)
+
+    by_opening = sorted(
+        (
+            {
+                "opening_eco": v["opening_eco"],
+                "opening_name": v["opening_name"],
+                "blunders": v["blunders"],
+                "mistakes": v["mistakes"],
+                "games": len(v["games"]),
+            }
+            for v in opening_acc.values()
+        ),
+        key=lambda x: (-x["blunders"], -x["mistakes"], -x["games"], x["opening_name"] or ""),
+    )[:5]
+
+    worst_games = sorted(
+        worst_games_acc.values(),
+        key=lambda x: (x["score"], x["date"] or "", x["game_id"]),
+        reverse=True,
+    )[:5]
+    for g in worst_games:
+        g.pop("score", None)
+
+    return {
+        "username": username,
+        "totals": totals,
+        "by_phase": [phase_acc["opening"], phase_acc["middlegame"], phase_acc["endgame"]],
+        "by_move_bucket": [
+            move_bucket_acc["1-10"],
+            move_bucket_acc["11-20"],
+            move_bucket_acc["21-30"],
+            move_bucket_acc["31-40"],
+            move_bucket_acc["41-50"],
+            move_bucket_acc["51+"],
+        ],
+        "by_clock": [clock_acc["under_10s"], clock_acc["under_30s"], clock_acc["normal"]],
+        "by_opening": by_opening,
+        "worst_games": worst_games,
     }
 
 
