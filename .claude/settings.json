@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl exec *)",
+      "Bash(kubectl scale *)",
+      "Bash(kubectl describe *)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Admin\\AppData\\Local\\Temp"
+    ]
+  }
+}

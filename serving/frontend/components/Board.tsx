@@ -38,6 +38,12 @@ function arrowFromUci(uci: string) {
 export default function Board({ fen, orientation = "white", lastMove, bestMove, movable = false, onUserMove }: BoardProps) {
   const ref = useRef<HTMLDivElement>(null);
   const apiRef = useRef<Api | null>(null);
+  // Latest fen + handler kept in refs so chessground's `after` callback always sees fresh values
+  // without re-running the effect (which would tear down/reinit the board on every render).
+  const fenRef = useRef(fen);
+  const onMoveRef = useRef(onUserMove);
+  fenRef.current = fen;
+  onMoveRef.current = onUserMove;
 
   useEffect(() => {
     if (!ref.current) return;
@@ -47,11 +53,28 @@ export default function Board({ fen, orientation = "white", lastMove, bestMove, 
       lastMove,
       coordinates: true,
       animation: { enabled: true, duration: 180 },
-      movable: { free: false, color: undefined, dests: new Map() },
+      movable: {
+        free: false,
+        color: undefined,
+        dests: new Map(),
+        events: {
+          after: (orig, dest) => {
+            const handler = onMoveRef.current;
+            if (!handler) return;
+            const chess = new Chess(fenRef.current);
+            const move = chess.move({ from: orig, to: dest, promotion: "q" });
+            if (!move) return;
+            handler(move.from + move.to + (move.promotion ?? ""), move.san, chess.fen());
+          },
+        },
+      },
       drawable: { enabled: false },
     };
     apiRef.current = Chessground(ref.current, config);
-    return () => apiRef.current?.destroy();
+    return () => {
+      apiRef.current?.destroy();
+      apiRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -65,20 +88,7 @@ export default function Board({ fen, orientation = "white", lastMove, bestMove, 
       orientation,
       lastMove,
       turnColor,
-      movable: {
-        free: false,
-        color: movable ? turnColor : undefined,
-        dests,
-        events: {
-          after: (orig, dest) => {
-            if (!onUserMove) return;
-            const chess = new Chess(fen);
-            const move = chess.move({ from: orig, to: dest, promotion: "q" });
-            if (!move) return;
-            onUserMove(move.from + move.to + (move.promotion ?? ""), move.san, chess.fen());
-          },
-        },
-      },
+      movable: { free: false, color: movable ? turnColor : undefined, dests },
       drawable: { enabled: false, autoShapes: shapes },
     });
   }, [fen, orientation, lastMove?.[0], lastMove?.[1], bestMove, movable]);

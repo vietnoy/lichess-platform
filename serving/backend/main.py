@@ -44,11 +44,17 @@ app.add_middleware(
 
 @app.get("/healthz")
 def healthz():
-    return {
-        "status": "ok",
-        "starrocks": StarRocks.healthy(),
-        "stockfish_url": os.getenv("STOCKFISH_URL", ""),
-    }
+    # Liveness: process is up. Always 200 so k8s does not restart on transient dep blips.
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz():
+    # Readiness: only serve traffic when dependencies we actually need are reachable.
+    sr = StarRocks.healthy()
+    if not sr:
+        raise HTTPException(503, "starrocks unreachable")
+    return {"starrocks": True}
 
 
 @app.get("/api/games/{game_id}")

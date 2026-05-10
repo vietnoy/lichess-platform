@@ -53,6 +53,11 @@ class StarRocks:
             cls.init()
         conn = cls._pool.get_connection()
         try:
+            # Pooled connections survive FE restarts as stale sockets; ping with reconnect to refresh.
+            try:
+                conn.ping(reconnect=True, attempts=2, delay=0)
+            except Exception:
+                pass
             cur = conn.cursor(dictionary=True)
             try:
                 yield cur

@@ -78,14 +78,7 @@
 \vspace{1em}
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{Bối cảnh và động lực nghiên cứu}
-
-Trong lịch sử phát triển của trí tuệ nhân tạo, cờ vua luôn là một trong những
-thử thách biểu tượng nhất --- từ Deep Blue đánh bại Garry Kasparov năm 1997,
-đến AlphaZero tự học từ đầu và vượt qua Stockfish chỉ sau 4 giờ huấn luyện
-năm 2017. Tuy nhiên, nghịch lý là dù AI đã chinh phục cờ vua ở tầm thế giới,
-hàng triệu người chơi bình thường vẫn không có công cụ thực sự phù hợp để cải
-thiện trình độ của chính mình.
+\section{Bối cảnh và động lực sản phẩm}
 
 Lichess.org --- nền tảng cờ trực tuyến mã nguồn mở lớn nhất thế giới --- xử
 lý trung bình hơn \textbf{500.000 ván đấu mỗi ngày}, tạo ra một khối lượng dữ
@@ -134,8 +127,7 @@ Từ góc độ hệ thống, bài toán chia thành ba lớp:
   \item[\textbf{Lớp thu thập.}]
     Lichess cung cấp API streaming theo thời gian thực, nhưng không có hệ
     thống nào thu thập liên tục, xử lý và lưu trữ dữ liệu theo cấu trúc phù
-    hợp cho phân tích sâu --- đặc biệt là dữ liệu đồng hồ ở cấp độ từng nước
-    đi.
+    hợp cho phân tích sâu
 
   \item[\textbf{Lớp xử lý.}]
     Dữ liệu thô từ Lichess là chuỗi ký hiệu SAN (Standard Algebraic
@@ -149,7 +141,7 @@ Từ góc độ hệ thống, bài toán chia thành ba lớp:
     giữa truy vấn dữ liệu thực tế và mô hình ngôn ngữ lớn (LLM).
 \end{description}
 
-\subsection{Câu hỏi nghiên cứu}
+\subsection{Câu hỏi đặt vấn đề}
 
 \begin{highlightbox}
 \textbf{Làm thế nào để thiết kế và triển khai một hệ thống kỹ thuật dữ liệu
@@ -168,7 +160,7 @@ và cải thiện trình độ một cách có căn cứ?}
     liên tục sự kiện ván đấu (game start, game end, từng nước đi kèm đồng hồ),
     đưa vào message queue (Kafka) và lưu trữ dạng columnar trên object storage.
 
-  \item \textbf{Kho dữ liệu phân tích (Data Warehouse).}
+  \item \textbf{Kho dữ liệu phân tích (Data Lakehouse).}
     Xử lý dữ liệu thô qua Apache Spark, tạo bảng phân tích phẳng ở cấp độ
     từng nước đi --- mỗi bản ghi chứa đầy đủ context: trạng thái bàn cờ
     (FEN), thời gian còn lại, thông tin người chơi, khai cuộc, giai đoạn ván,
@@ -269,6 +261,8 @@ vừa phân tích, người chơi có thể chọn một nước đi khác --- h
 hiển thị \textbf{hai dòng thời gian song song}: ván đấu thực tế đã xảy ra và
 ván đấu lẽ ra có thể xảy ra nếu chọn nước đúng.
 
+\newpage
+
 \begin{uibox}[Giao diện hai dòng thời gian song song]
 \begin{Verbatim}[fontsize=\small]
   +------------------+------------------+
@@ -303,6 +297,7 @@ còn lại tại mỗi nước đi. Kịch bản này khai thác trường dữ 
 đúng áp lực thời gian của ván thật --- không phải luyện với thời gian vô hạn,
 mà luyện đúng điều kiện khắc nghiệt đã xảy ra.
 
+\newpage
 \begin{uibox}[Giao diện bài tập có đồng hồ đếm ngược]
 \begin{Verbatim}[fontsize=\small]
   Bai 3 / 7  --  Trich tu van ngay 20/04, nuoc 31
@@ -368,54 +363,5 @@ rõ ràng của quyết định cảm xúc thay vì lý trí. Khi phát hiện p
 thống không tạo bài tập mà đưa ra cảnh báo trực tiếp và gợi ý nghỉ ngơi.
 \end{insightbox}
 
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Đóng góp của đề tài}
-
-Đề tài có ba đóng góp chính:
-
-\textbf{Về kỹ thuật dữ liệu.} Thiết kế và triển khai một pipeline dữ liệu
-end-to-end hoàn chỉnh --- từ streaming real-time (Kafka), object storage
-(MinIO), batch processing (Apache Spark + Iceberg/Polaris), analytical serving
-layer (StarRocks), đến AI agent (Vertex AI) --- trên môi trường Kubernetes. Đây
-là kiến trúc hiện đại tương đương các hệ thống data platform ở quy mô
-production, được triển khai thực tế chứ không chỉ thiết kế trên lý thuyết.
-
-\textbf{Về ứng dụng AI.} Xây dựng AI agent kết hợp function calling với truy
-vấn dữ liệu thực tế, tạo ra câu trả lời dựa trên bằng chứng thay vì kiến thức
-chung của LLM --- một pattern ngày càng quan trọng trong các hệ thống AI doanh
-nghiệp. Việc tích hợp Stockfish để tính xác suất thắng và so sánh hai dòng
-thời gian ván đấu là ứng dụng trực tiếp của AI phân tích vào trải nghiệm người
-dùng.
-
-\textbf{Về giá trị người dùng.} Cung cấp cho người chơi nghiệp dư loại insight
-mà trước đây chỉ có thể có được từ huấn luyện viên cá nhân --- đặc biệt là các
-phân tích dựa trên dữ liệu clock ở cấp từng nước đi, thứ không thể rút ra từ
-việc chỉ xem lại ván đấu thông thường.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Cấu trúc luận văn}
-
-Phần còn lại của luận văn được tổ chức như sau:
-
-\begin{description}[leftmargin=2.5cm, style=nextline]
-  \item[\textbf{Chương 2.}]
-    Tổng quan lý thuyết và công trình liên quan --- kiến trúc Lambda/Kappa,
-    Apache Iceberg table format, LLM agent với function calling, và các hệ
-    thống phân tích cờ hiện có.
-
-  \item[\textbf{Chương 3.}]
-    Kiến trúc tổng thể của hệ thống --- thiết kế từng thành phần và luồng dữ
-    liệu từ Lichess API đến giao diện người dùng.
-
-  \item[\textbf{Chương 4.}]
-    Cài đặt và triển khai --- chi tiết kỹ thuật của streaming pipeline, batch
-    processing, AI agent, và môi trường Kubernetes.
-
-  \item[\textbf{Chương 5.}]
-    Kết quả thực nghiệm và đánh giá hệ thống.
-
-  \item[\textbf{Chương 6.}]
-    Kết luận và hướng phát triển tiếp theo.
-\end{description}
 
 \end{document}
