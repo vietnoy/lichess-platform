@@ -47,11 +47,14 @@ export default function DrillPage() {
   const [outcome, setOutcome] = useState<Outcome>({ kind: "pending" });
   const [hintsShown, setHintsShown] = useState(0);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Generation counter fences out late results from concurrent loadNext calls.
+  const genRef = useRef(0);
 
   useEffect(() => () => { if (tickRef.current) clearInterval(tickRef.current); }, []);
 
   async function loadNext(name: string) {
     if (!name) return;
+    const myGen = ++genRef.current;
     setError(null);
     setLoading(true);
     setOutcome({ kind: "pending" });
@@ -59,10 +62,15 @@ export default function DrillPage() {
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
     try {
       const ex = await api<Exercise>(`/exercise/${encodeURIComponent(name)}`);
+      if (genRef.current !== myGen) return;        // a newer load superseded us
       setExercise(ex);
       const initial = Math.max(3, Math.round(ex.clock_remaining_s));
       setSecondsLeft(initial);
       tickRef.current = setInterval(() => {
+        if (genRef.current !== myGen) {
+          if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+          return;
+        }
         setSecondsLeft((s) => {
           if (s <= 1) {
             if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
@@ -73,6 +81,7 @@ export default function DrillPage() {
         });
       }, 1000);
     } catch (e) {
+      if (genRef.current !== myGen) return;
       const msg = e instanceof ApiError && e.status === 503
         ? "The blunder analyzer has not produced any drills yet for this player. Run the analyzer DAG to populate exercises."
         : e instanceof ApiError && e.status === 404
@@ -81,7 +90,7 @@ export default function DrillPage() {
       setExercise(null);
       setError(msg);
     } finally {
-      setLoading(false);
+      if (genRef.current === myGen) setLoading(false);
     }
   }
 

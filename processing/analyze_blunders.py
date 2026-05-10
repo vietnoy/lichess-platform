@@ -148,14 +148,17 @@ def stockfish_eval(session: requests.Session, fen: str) -> dict[str, Any] | None
     return None
 
 
-def classify_move(cp: int | None, prev_cp: int | None, whose_moved: str) -> tuple[int | None, str | None]:
-    if cp is None or prev_cp is None:
+def classify_move(cp_after: int | None, cp_before: int | None, mover: str) -> tuple[int | None, str | None]:
+    # Stockfish returns white-relative cp. To classify a move by `mover`, compute the drop
+    # from `mover`'s own perspective: positive `drop` = mover's position got worse.
+    if cp_after is None or cp_before is None:
         return None, None
-
-    if whose_moved == "white":
-        drop = -(cp - prev_cp)
+    if mover == "white":
+        drop = cp_before - cp_after
+        swing = cp_after - cp_before
     else:
-        drop = prev_cp - cp
+        drop = cp_after - cp_before
+        swing = cp_before - cp_after
 
     if drop >= 200:
         classification = "blunder"
@@ -165,7 +168,7 @@ def classify_move(cp: int | None, prev_cp: int | None, whose_moved: str) -> tupl
         classification = "inaccuracy"
     else:
         classification = "good"
-    return cp - prev_cp, classification
+    return swing, classification
 
 
 def analyze_rows(
@@ -173,41 +176,52 @@ def analyze_rows(
     date_str: str,
     existing_cp_by_ply: dict[tuple[str, int], int | None],
 ) -> list[tuple[Any, ...]]:
+    # First pass: evaluate every position serially against the single Stockfish replica.
     session = requests.Session()
     evaluated_at = datetime.utcnow()
-    results = []
-    prev_cp_by_game: dict[str, int | None] = {}
-    prev_ply_by_game: dict[str, int] = {}
-
+    raw: list[dict] = []
     for idx, row in enumerate(rows, start=1):
         ev = stockfish_eval(session, row.fen)
-        cp = ev.get("cp") if ev else None
-        mate = ev.get("mate") if ev else None
-        best_move = ev.get("best_move") if ev else None
-        if prev_ply_by_game.get(row.game_id) == row.ply - 1:
-            prev_cp = prev_cp_by_game.get(row.game_id)
-        else:
-            prev_cp = existing_cp_by_ply.get((row.game_id, row.ply - 1))
-        swing, classification = classify_move(cp, prev_cp, row.whose_moved)
+        raw.append({
+            "row": row,
+            "cp": ev.get("cp") if ev else None,
+            "mate": ev.get("mate") if ev else None,
+            "best_move": ev.get("best_move") if ev else None,
+        })
+        if idx % 100 == 0:
+            logger.info(f"Processed {idx} Stockfish evaluations")
+
+    # Combined cp lookup so we can find the position AFTER each move (= ply+1's pre-move eval).
+    cp_lookup: dict[tuple[str, int], int | None] = {
+        (r["row"].game_id, r["row"].ply): r["cp"] for r in raw
+    }
+    for key, cp in existing_cp_by_ply.items():
+        cp_lookup.setdefault(key, cp)
+
+    # Second pass: each row's classification describes its own played_move.
+    # row N stores fen=before-move-N, played_move=move-N, whose_moved=mover-of-N.
+    # Quality of move-N = eval-change from cp_before_N to cp_before_(N+1) in mover-N's perspective.
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    results: list[tuple[Any, ...]] = []
+    for r in raw:
+        row = r["row"]
+        cp_before = r["cp"]
+        cp_after = cp_lookup.get((row.game_id, row.ply + 1))
+        swing, classification = classify_move(cp_after, cp_before, row.whose_moved)
 
         results.append((
             row.game_id,
             row.ply,
-            datetime.strptime(date_str, "%Y-%m-%d").date(),
+            target_date,
             row.fen,
             row.played_move,
-            best_move,
-            cp,
-            mate,
+            r["best_move"],
+            cp_before,
+            r["mate"],
             swing,
             classification,
             evaluated_at,
         ))
-
-        prev_cp_by_game[row.game_id] = cp
-        prev_ply_by_game[row.game_id] = row.ply
-        if idx % 100 == 0:
-            logger.info(f"Processed {idx} Stockfish evaluations")
 
     return results
 
