@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Chess } from "chess.js";
 
 import Link from "next/link";
 
@@ -14,6 +15,25 @@ import type { Game, EvalResult } from "@/lib/types";
 import type { Key } from "chessground/types";
 
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+// The API returns `fen` as the *pre-move* position. To render the board after
+// move N is played, take moves[N-1].fen and replay its UCI move with chess.js.
+function fenAfter(moves: Game["moves"], ply: number): string {
+  if (ply === 0 || !moves[ply - 1]) return STARTING_FEN;
+  const m = moves[ply - 1];
+  const g = new Chess(m.fen);
+  try {
+    g.move({
+      from: m.san.slice(0, 2),
+      to: m.san.slice(2, 4),
+      promotion: m.san.length > 4 ? m.san[4] : undefined,
+    });
+  } catch {
+    // Fall back to pre-move FEN if the UCI parse fails.
+    return m.fen;
+  }
+  return g.fen();
+}
 
 type Verdict = {
   tone: "ok" | "warn" | "error";
@@ -59,12 +79,13 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   }, [gameId]);
 
   const moves = game?.moves ?? [];
-  const fen = ply === 0 ? STARTING_FEN : moves[ply - 1]?.fen ?? STARTING_FEN;
-  const lastMoveUci = useMemo(() => {
+  const fen = useMemo(() => fenAfter(moves, ply), [moves, ply]);
+  const lastMove = useMemo<[Key, Key] | undefined>(() => {
     if (ply === 0) return undefined;
-    // chessground last-move arrow: derived from chess.js? Easier: skip exact lastMove and let chessground compute none.
-    return undefined;
-  }, [ply]);
+    const uci = moves[ply - 1]?.san;
+    if (!uci || uci.length < 4) return undefined;
+    return [uci.slice(0, 2) as Key, uci.slice(2, 4) as Key];
+  }, [moves, ply]);
   const sideToMove: "white" | "black" = fen.split(" ")[1] === "w" ? "white" : "black";
 
   // Evaluate current position (cached).
@@ -138,7 +159,8 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
               <div className="flex-1 space-y-3">
                 <Board
                   fen={fen}
-                  bestMove={!playMode ? evalNow?.best_move ?? undefined : undefined}
+                  lastMove={lastMove}
+                  bestMove={!playMode && ply > 0 ? evalNow?.best_move ?? undefined : undefined}
                   movable={playMode}
                   onUserMove={playMode ? handleUserMove : undefined}
                 />
@@ -163,6 +185,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                   <div className="flex gap-2">
                     <button
                       onClick={() => { setPlayMode((v) => !v); setUserTry(null); }}
+                      title={playMode ? "Stop trying alternative moves and resume game review" : "Try your own move from this position. The engine will tell you if it's better or worse than what was played."}
                       className={`px-3 py-1.5 rounded-md text-sm border ${
                         playMode ? "border-accent text-accent" : "border-border hover:border-accent"
                       }`}
@@ -206,7 +229,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
               </div>
             </div>
 
-            <aside className="bg-surface border border-border rounded-md p-3 max-h-[600px] overflow-y-auto">
+            <aside className="bg-surface border border-border rounded-md p-3 max-h-[520px] overflow-y-auto self-start">
               <h3 className="text-xs uppercase tracking-wider text-muted mb-2">Moves</h3>
               <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 text-sm font-mono">
                 {Array.from({ length: Math.ceil(moves.length / 2) }).map((_, i) => {

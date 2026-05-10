@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import Header from "@/components/Header";
 import StatusPill from "@/components/StatusPill";
@@ -181,7 +183,7 @@ export default function CoachPage() {
                   Ask anything about a player&apos;s game. The coach will query your real Lichess data and answer with numbers, never guesses.
                 </p>
                 <p className="text-xs text-muted">
-                  Try: <em>&ldquo;What openings is khangdv-hub losing the most?&rdquo;</em>
+                  Try: <em>&ldquo;What openings is temporalmente losing the most?&rdquo;</em>
                 </p>
               </div>
             </div>
@@ -244,11 +246,22 @@ function Bubble({ msg }: { msg: ChatMessage }) {
           className={
             isUser
               ? "bg-accent/15 text-text rounded-md px-3.5 py-2 text-sm whitespace-pre-wrap"
-              : "bg-surface border border-border rounded-md px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap"
+              : "bg-surface border border-border rounded-md px-3.5 py-2.5 text-sm leading-relaxed prose prose-invert prose-sm max-w-none prose-p:my-2 prose-ol:my-2 prose-ul:my-2 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1.5"
           }
         >
-          {msg.text || (msg.streaming && msg.toolCalls.length === 0 ? <span className="text-muted">…</span> : null)}
-          {msg.streaming && msg.text && <span className="inline-block w-1.5 h-4 align-middle ml-0.5 bg-accent animate-pulse" />}
+          {isUser ? (
+            <>
+              {msg.text}
+              {msg.streaming && msg.text && <span className="inline-block w-1.5 h-4 align-middle ml-0.5 bg-accent animate-pulse" />}
+            </>
+          ) : msg.text ? (
+            <>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+              {msg.streaming && <span className="inline-block w-1.5 h-4 align-middle ml-0.5 bg-accent animate-pulse" />}
+            </>
+          ) : (
+            msg.streaming && msg.toolCalls.length === 0 ? <span className="text-muted">…</span> : null
+          )}
         </div>
       </div>
     </motion.div>

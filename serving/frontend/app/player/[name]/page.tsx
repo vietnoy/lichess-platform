@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, Legend,
@@ -57,6 +57,7 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 
 export default function PlayerPage({ params }: { params: { name: string } }) {
   const username = decodeURIComponent(params.name);
+  const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,7 +72,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
 
   return (
     <>
-      <Header subtitle={username} />
+      <Header subtitle={`Player · ${username}`} />
       <main className="max-w-6xl mx-auto px-6 py-6 space-y-4">
         <div className="flex items-center gap-3">
           {!profile && !error && <StatusPill tone="loading">Loading profile</StatusPill>}
@@ -82,11 +83,12 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
         {profile && (
           <>
             <Card>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
+              <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
                 <Metric label="Total games" value={profile.totals.games.toLocaleString()} />
                 <Metric label="Win rate" value={`${profile.totals.win_pct}%`} />
                 <Metric label="Wins" value={profile.totals.wins.toLocaleString()} />
                 <Metric label="Losses" value={profile.totals.losses.toLocaleString()} />
+                <Metric label="Draws" value={profile.totals.draws.toLocaleString()} />
                 <Metric label="Avg rating" value={profile.totals.avg_rating} />
               </div>
             </Card>
@@ -124,7 +126,12 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
                     <Tooltip contentStyle={TOOLTIP_STYLE} />
                     <Bar dataKey="win_pct" radius={[4, 4, 0, 0]}>
                       {profile.by_color.map((r) => (
-                        <Cell key={r.color} fill={r.color === "White" ? "#cbd5e1" : "#475569"} />
+                        <Cell
+                          key={r.color}
+                          fill={r.color === "White" ? "#f5f5f5" : "#0f172a"}
+                          stroke={r.color === "Black" ? "#475569" : undefined}
+                          strokeWidth={r.color === "Black" ? 1 : 0}
+                        />
                       ))}
                     </Bar>
                   </BarChart>
@@ -136,28 +143,39 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
               {profile.openings.length === 0 ? (
                 <p className="text-muted text-sm">Not enough games per opening yet.</p>
               ) : (
-                <ResponsiveContainer width="100%" height={Math.max(220, profile.openings.length * 28)}>
-                  <BarChart data={profile.openings} layout="vertical" margin={{ left: 100 }}>
-                    <XAxis type="number" stroke="#888" fontSize={12} domain={[0, 100]} />
-                    <YAxis
-                      dataKey="opening_eco"
-                      type="category"
-                      stroke="#888"
-                      fontSize={12}
-                      width={90}
-                      tickFormatter={(eco) => {
-                        const row = profile.openings.find((o) => o.opening_eco === eco);
-                        return row ? `${eco} ${row.opening_name.slice(0, 18)}` : eco;
-                      }}
-                    />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} />
-                    <Bar dataKey="win_pct" radius={[0, 4, 4, 0]}>
-                      {profile.openings.map((r) => (
-                        <Cell key={r.opening_eco} fill={r.win_pct >= 55 ? "#10b981" : r.win_pct >= 45 ? "#f59e0b" : "#f43f5e"} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                (() => {
+                  // Build unique labels: ECO codes can repeat (e.g. multiple A40 sub-variations).
+                  // YAxis dataKey must be unique per row or Recharts collapses them.
+                  const data = profile.openings.map((o) => ({
+                    ...o,
+                    label: `${o.opening_eco} · ${o.opening_name.length > 28 ? o.opening_name.slice(0, 27) + "…" : o.opening_name} (${o.games}g)`,
+                  }));
+                  return (
+                    <ResponsiveContainer width="100%" height={Math.max(240, data.length * 32)}>
+                      <BarChart data={data} layout="vertical" margin={{ left: 8, right: 24 }}>
+                        <XAxis type="number" stroke="#888" fontSize={12} domain={[0, 100]} />
+                        <YAxis
+                          dataKey="label"
+                          type="category"
+                          stroke="#aaa"
+                          fontSize={11}
+                          width={280}
+                          interval={0}
+                          tick={{ textAnchor: "end" }}
+                        />
+                        <Tooltip
+                          contentStyle={TOOLTIP_STYLE}
+                          formatter={(v: number) => [`${v}%`, "win rate"]}
+                        />
+                        <Bar dataKey="win_pct" radius={[0, 4, 4, 0]}>
+                          {data.map((r) => (
+                            <Cell key={r.label} fill={r.win_pct >= 55 ? "#10b981" : r.win_pct >= 45 ? "#f59e0b" : "#f43f5e"} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  );
+                })()
               )}
             </Card>
 
@@ -175,10 +193,13 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
 
               <Card title="Performance vs opponent strength">
                 <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={profile.vs_rating}>
-                    <XAxis dataKey="opponent" stroke="#888" fontSize={12} />
+                  <BarChart data={profile.vs_rating.map((r) => ({ ...r, label: `${r.opponent} (n=${r.games})` }))}>
+                    <XAxis dataKey="label" stroke="#888" fontSize={11} />
                     <YAxis stroke="#888" fontSize={12} domain={[0, 100]} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                    <Tooltip
+                      contentStyle={TOOLTIP_STYLE}
+                      formatter={(v: number) => [`${v}%`, "win rate"]}
+                    />
                     <Bar dataKey="win_pct" radius={[4, 4, 0, 0]}>
                       {profile.vs_rating.map((r) => (
                         <Cell key={r.opponent} fill={r.win_pct >= 55 ? "#10b981" : r.win_pct >= 45 ? "#f59e0b" : "#f43f5e"} />
@@ -204,19 +225,24 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
                   </thead>
                   <tbody>
                     {profile.recent_games.map((g) => (
-                      <tr key={g.game_id} className="border-t border-border hover:bg-border/30">
+                      <tr
+                        key={g.game_id}
+                        onClick={() => router.push(`/game/${encodeURIComponent(g.game_id)}`)}
+                        className="border-t border-border hover:bg-border/30 cursor-pointer transition-colors"
+                        style={{ transitionDuration: "180ms" }}
+                      >
                         <td className="py-2">
                           <span style={{ color: RESULT_COLORS[g.result] }} className="font-medium">{g.result}</span>
                         </td>
                         <td className="py-2 font-mono">{g.opponent}</td>
                         <td className="py-2 tabular-nums text-muted">{g.my_rating} vs {g.opp_rating}</td>
-                        <td className="py-2 text-muted">{g.opening_name?.slice(0, 30) ?? "—"}</td>
-                        <td className="py-2 text-muted capitalize">{g.speed}</td>
-                        <td className="py-2 text-muted tabular-nums">
-                          <Link href={`/game/${encodeURIComponent(g.game_id)}`} className="hover:text-accent">
-                            {g.date}
-                          </Link>
+                        <td className="py-2 text-muted max-w-[20rem]">
+                          <span className="block truncate" title={g.opening_name ?? ""}>
+                            {g.opening_name ?? "—"}
+                          </span>
                         </td>
+                        <td className="py-2 text-muted capitalize">{g.speed}</td>
+                        <td className="py-2 text-muted tabular-nums">{g.date}</td>
                       </tr>
                     ))}
                   </tbody>

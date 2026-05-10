@@ -18,19 +18,27 @@ export default function EvalBar({ cp, mate }: { cp: number | null; mate: number 
     label = "—";
   }
 
+  // Sign the label so users see who is ahead at a glance.
+  const signed =
+    mate !== null
+      ? `M${Math.abs(mate)}`
+      : cp !== null
+        ? `${cp >= 0 ? "+" : ""}${(cp / 100).toFixed(1)}`
+        : "—";
+
   return (
-    <div className="relative w-7 h-[520px] max-h-[80vh] rounded-md overflow-hidden bg-neutral-200 border border-border">
+    <div className="relative w-10 h-[520px] max-h-[80vh] rounded-md overflow-hidden bg-neutral-200 border border-border">
       <motion.div
         className="absolute bottom-0 left-0 right-0 bg-neutral-900"
         initial={{ height: "50%" }}
         animate={{ height: `${(1 - whiteShare) * 100}%` }}
         transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
       />
-      <div className="absolute inset-x-0 top-1 text-[10px] text-center text-neutral-700 font-mono">
-        {whiteShare > 0.5 ? label : ""}
+      <div className="absolute inset-x-0 top-1.5 text-xs text-center text-neutral-800 font-mono font-medium">
+        {whiteShare > 0.5 ? signed : ""}
       </div>
-      <div className="absolute inset-x-0 bottom-1 text-[10px] text-center text-neutral-100 font-mono">
-        {whiteShare <= 0.5 ? label : ""}
+      <div className="absolute inset-x-0 bottom-1.5 text-xs text-center text-neutral-100 font-mono font-medium">
+        {whiteShare <= 0.5 ? signed : ""}
       </div>
     </div>
   );
