@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
+import Link from "next/link";
+
 import Header from "@/components/Header";
 import Board from "@/components/Board";
 import EvalBar from "@/components/EvalBar";
@@ -158,14 +160,24 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                     </button>
                   </div>
                   <span className="text-xs text-muted">Move {ply} / {moves.length}</span>
-                  <button
-                    onClick={() => { setPlayMode((v) => !v); setUserTry(null); }}
-                    className={`px-3 py-1.5 rounded-md text-sm border ${
-                      playMode ? "border-accent text-accent" : "border-border hover:border-accent"
-                    }`}
-                  >
-                    {playMode ? "Exit play mode" : "Play from here"}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setPlayMode((v) => !v); setUserTry(null); }}
+                      className={`px-3 py-1.5 rounded-md text-sm border ${
+                        playMode ? "border-accent text-accent" : "border-border hover:border-accent"
+                      }`}
+                    >
+                      {playMode ? "Exit play mode" : "Play from here"}
+                    </button>
+                    {ply > 0 && ply < moves.length && (
+                      <Link
+                        href={`/whatif/${encodeURIComponent(gameId)}/${ply}`}
+                        className="px-3 py-1.5 rounded-md text-sm border border-border hover:border-accent"
+                      >
+                        What if?
+                      </Link>
+                    )}
+                  </div>
                 </div>
 
                 <AnimatePresence>
