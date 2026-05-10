@@ -85,7 +85,8 @@ def build_spark() -> SparkSession:
 
 
 def parse_tracked_players(raw_players: str) -> list[str]:
-    return [player.strip().lower() for player in raw_players.split(",") if player.strip()]
+    # Preserve original case — chess_move_events stores white_id/black_id verbatim and `isin` is case-sensitive.
+    return [player.strip() for player in raw_players.split(",") if player.strip()]
 
 
 def ensure_table(spark: SparkSession) -> None:
