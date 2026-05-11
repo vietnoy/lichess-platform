@@ -13,3 +13,4 @@ resources:
   - starrocks.yaml
   - airflow.yaml
   - stockfish.yaml
+  - kafka.yaml
