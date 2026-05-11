@@ -1,6 +1,7 @@
 """StarRocks connection + query helpers."""
 
 import os
+import random
 import time
 import logging
 import threading
@@ -503,18 +504,15 @@ def query_player_patterns(username: str) -> dict | None:
 
 
 def query_exercise(username: str) -> dict | None:
-    # Scope to 60 days so the chess_move_events scan prunes partitions; without this
-    # the move_number=1 subquery touches the entire 17M-row table and times out at 300s.
+    # Two-pass to avoid the giant move_evaluations × chess_move_events JOIN.
+    # Pass 1: pull all blunder/mistake candidates joined only with the (small) g subquery —
+    # who played determined by FEN active-color field, not by a JOIN to m. ~hundreds of rows.
+    # Pass 2: tiny point-lookup in m for the chosen row to fetch clock_remaining.
     rows = _run(
         f"""
         SELECT e.game_id, e.ply, e.fen, e.played_move, e.best_move,
-               e.eval_cp, e.eval_swing_cp_from_prev, e.classification,
-               MAX(m.clock_remaining) AS clock_remaining,
-               MAX(m.whose_moved) AS whose_moved,
-               m.move_number,
-               MAX(g.opening_name) AS opening_name,
-               MAX(g.opening_eco) AS opening_eco,
-               MAX(g.speed) AS speed
+               e.eval_cp, e.eval_swing_cp_from_prev, e.classification, e.date,
+               g.opening_name, g.opening_eco, g.speed, g.white_id, g.black_id
         FROM {EVAL_TABLE} e
         JOIN (
           SELECT game_id, opening_name, opening_eco, speed, white_id, black_id
@@ -524,24 +522,37 @@ def query_exercise(username: str) -> dict | None:
             AND (white_id = %s OR black_id = %s)
           GROUP BY game_id, opening_name, opening_eco, speed, white_id, black_id
         ) g ON g.game_id = e.game_id
-        JOIN {TABLE} m
-          ON e.game_id = m.game_id
-         AND e.ply = m.move_number
-         AND m.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
         WHERE e.classification IN ('blunder', 'mistake')
           AND e.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-          AND ((m.whose_moved = 'white' AND g.white_id = %s)
-               OR (m.whose_moved = 'black' AND g.black_id = %s))
-        GROUP BY e.game_id, e.ply, e.fen, e.played_move, e.best_move,
-                 e.eval_cp, e.eval_swing_cp_from_prev, e.classification, m.move_number
-        ORDER BY RAND()
-        LIMIT 1
+        LIMIT 500
         """,
-        (username, username, username, username),
+        (username, username),
     )
-    if not rows:
+    candidates = []
+    for r in rows:
+        parts = (r.get("fen") or "").split()
+        active = parts[1] if len(parts) >= 2 else ""
+        side = "white" if active == "w" else "black" if active == "b" else None
+        if not side:
+            continue
+        played_by_user = (
+            (side == "white" and r["white_id"] == username)
+            or (side == "black" and r["black_id"] == username)
+        )
+        if played_by_user:
+            candidates.append((r, side))
+    if not candidates:
         return None
-    r = rows[0]
+    r, side = random.choice(candidates)
+    move_rows = _run(
+        f"""
+        SELECT MAX(clock_remaining) AS clock_remaining
+        FROM {TABLE}
+        WHERE date = %s AND game_id = %s AND move_number = %s
+        """,
+        (r["date"], r["game_id"], r["ply"]),
+    )
+    clock = (move_rows[0]["clock_remaining"] if move_rows else 0) or 0
     return {
         "game_id": r["game_id"],
         "ply": r["ply"],
@@ -551,9 +562,9 @@ def query_exercise(username: str) -> dict | None:
         "eval_cp": r["eval_cp"],
         "eval_swing_cp": r["eval_swing_cp_from_prev"],
         "classification": r["classification"],
-        "clock_remaining_s": round((r["clock_remaining"] or 0) / 100.0, 1),
-        "side_to_move": r["whose_moved"],
-        "move_number": r["move_number"],
+        "clock_remaining_s": round(clock / 100.0, 1),
+        "side_to_move": side,
+        "move_number": r["ply"],
         "opening_name": r["opening_name"],
         "opening_eco": r["opening_eco"],
         "speed": r["speed"],
