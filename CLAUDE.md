@@ -4,34 +4,51 @@ These are standing orders for Claude Code in this repo. Read them at the start o
 
 ## Roles
 
-- **Claude Code (me)** — architect and inspector. Plan, read code, review, decide. I delegate substantial coding to Codex.
-- **Codex CLI (`./codex-agent.sh`)** — coding agent. Writes new files, refactors, implements features. Operates in `workspace-write` sandbox so it can only touch this repo.
+- **Claude Code (me)** — architect and inspector. Plan, read code, review, decide. I delegate substantial work to subagents.
+- **Subagents** (in `.claude/agents/`) — Claude instances I spawn via the Task tool. They share the Claude family but run on different models (Opus / Sonnet / Haiku) with restricted tool sets and their own context windows.
+- **Codex CLI (`./codex-agent.sh`)** — fallback delegate. Use only when subagents are unavailable or when an OpenAI second-opinion is specifically wanted.
 - **User** — reviews completed work and unblocks ambiguous decisions.
 
-## When I do work directly vs delegate to Codex
+## Available subagents
+
+| Agent | Model | Tools | Use for |
+|---|---|---|---|
+| `implementer` | Sonnet 4.6 | Read/Write/Edit/Glob/Grep/Bash | Multi-file features, refactors, bug fixes against precise specs |
+| `code-reviewer` | Opus 4.7 | Read/Grep/Glob/Bash | Reviewing diffs, hunting bugs, SQL/sign/race-condition audits |
+| `db-explorer` | Haiku 4.5 | Read/Bash | StarRocks queries, data shape / freshness / counts |
+
+Subagents are the **default delegation path**. They share my codebase access, cost less per token than I do, and keep their reads out of my context window.
+
+## When I do work directly vs delegate
 
 | Task | Who |
 |---|---|
-| Skeleton/config files (Dockerfile, package.json, simple manifests) | me — relay overhead would be slower |
+| Skeleton/config files (Dockerfile, package.json, simple manifests) | me — relay overhead is slower |
 | One-line edits, small fixes, IDE-driven changes | me |
-| Code review, security review, dependency audit | delegate (`--review` mode) |
-| New feature spanning multiple files (>~150 lines) | delegate |
-| Long-running implementations (Spark jobs, ETL, complex services) | delegate |
-| Decisions about architecture, schema, deployment | me, ask user when ambiguous |
+| Code review after I or another agent writes a change | `code-reviewer` subagent |
+| New feature spanning multiple files (>~100 lines) | `implementer` subagent |
+| Long-running implementations (Spark jobs, ETL, complex services) | `implementer` subagent |
+| Data exploration / "how many...", "which player..." | `db-explorer` subagent |
+| Architecture, schema, deployment decisions | me, ask user when ambiguous |
+| Deploy actions (kubectl, docker push, git push) | me — subagents are explicitly forbidden |
 
-I am still responsible for the final code regardless of who wrote it. Always read what Codex produces before committing.
+I am still responsible for the final code regardless of who wrote it. Always read what a subagent produced before committing.
 
-## How to invoke Codex
+## How to invoke
+
+```
+Task → subagent_type: implementer    # or code-reviewer / db-explorer
+```
+
+Specs sent to `implementer` must include exact file paths, function signatures, env vars, memory constraints, and a validation step. Vague specs produce vague code.
+
+## Fallback: codex CLI (`./codex-agent.sh`)
+
+Use only when subagents are quota-limited or when an OpenAI second opinion is specifically wanted:
 
 ```bash
-# Implementation (workspace-write, can edit files)
-./codex-agent.sh "<precise task description>"
-
-# Code review (read-only)
-./codex-agent.sh --review "<what to review>"
-
-# From stdin for long prompts
-cat prompt.txt | ./codex-agent.sh -
+./codex-agent.sh "<task>"          # workspace-write
+./codex-agent.sh --review "<task>" # read-only
 ```
 
 The wrapper runs codex non-interactively with `approval_policy=never`. On Windows it auto-resolves to `%APPDATA%\npm\codex.cmd`; on Linux/macOS it uses `codex` from PATH.
