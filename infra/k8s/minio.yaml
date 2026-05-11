@@ -42,6 +42,10 @@ spec:
                 secretKeyRef:
                   name: chess-secrets
                   key: MINIO_SECRET_KEY
+            # Lets MinIO accept virtual-host-style bucket subdomain requests
+            # (e.g. chess-prod.minio:9000) needed by Polaris's AWS SDK v2.
+            - name: MINIO_DOMAIN
+              value: minio
           volumeMounts:
             - name: data
               mountPath: /data
@@ -69,6 +73,8 @@ metadata:
   name: minio
   namespace: chess
 spec:
+  # Pinned so the Polaris hostAlias for chess-prod.minio survives Service recreation.
+  clusterIP: 10.43.181.216
   selector:
     app: minio
   ports:
