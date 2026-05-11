@@ -503,28 +503,41 @@ def query_player_patterns(username: str) -> dict | None:
 
 
 def query_exercise(username: str) -> dict | None:
-    # Pick a random blunder/mistake the user committed and join the source position.
+    # Scope to 60 days so the chess_move_events scan prunes partitions; without this
+    # the move_number=1 subquery touches the entire 17M-row table and times out at 300s.
     rows = _run(
         f"""
         SELECT e.game_id, e.ply, e.fen, e.played_move, e.best_move,
                e.eval_cp, e.eval_swing_cp_from_prev, e.classification,
-               m.clock_remaining, m.whose_moved, m.move_number,
-               g.opening_name, g.opening_eco, g.speed
+               MAX(m.clock_remaining) AS clock_remaining,
+               MAX(m.whose_moved) AS whose_moved,
+               m.move_number,
+               MAX(g.opening_name) AS opening_name,
+               MAX(g.opening_eco) AS opening_eco,
+               MAX(g.speed) AS speed
         FROM {EVAL_TABLE} e
-        JOIN {TABLE} m
-          ON e.game_id = m.game_id AND e.ply = m.move_number
         JOIN (
-          SELECT DISTINCT game_id, opening_name, opening_eco, speed,
-                 white_id, black_id
-          FROM {TABLE} WHERE move_number = 1
+          SELECT game_id, opening_name, opening_eco, speed, white_id, black_id
+          FROM {TABLE}
+          WHERE move_number = 1
+            AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+            AND (white_id = %s OR black_id = %s)
+          GROUP BY game_id, opening_name, opening_eco, speed, white_id, black_id
         ) g ON g.game_id = e.game_id
+        JOIN {TABLE} m
+          ON e.game_id = m.game_id
+         AND e.ply = m.move_number
+         AND m.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
         WHERE e.classification IN ('blunder', 'mistake')
-          AND ((m.whose_moved='white' AND g.white_id=%s)
-               OR (m.whose_moved='black' AND g.black_id=%s))
+          AND e.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+          AND ((m.whose_moved = 'white' AND g.white_id = %s)
+               OR (m.whose_moved = 'black' AND g.black_id = %s))
+        GROUP BY e.game_id, e.ply, e.fen, e.played_move, e.best_move,
+                 e.eval_cp, e.eval_swing_cp_from_prev, e.classification, m.move_number
         ORDER BY RAND()
         LIMIT 1
         """,
-        (username, username),
+        (username, username, username, username),
     )
     if not rows:
         return None
