@@ -9,6 +9,20 @@ spec:
     requests:
       storage: 5Gi
 ---
+# Mounted into airflow-scheduler at /home/airflow/.ivy2 so spark-submit's Maven
+# dependency cache (kafka-clients, hadoop-aws, etc.) survives pod restarts.
+# Empty ivy2 + intermittent Maven Central reachability = task failures.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: airflow-ivy-cache-pvc
+  namespace: chess
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
 # ─── Init Job ─────────────────────────────────────────────────────────────────
 apiVersion: batch/v1
 kind: Job
@@ -247,6 +261,8 @@ spec:
               mountPath: /git
             - name: logs
               mountPath: /opt/airflow/logs
+            - name: ivy-cache
+              mountPath: /home/airflow/.ivy2
         - name: git-sync
           image: registry.k8s.io/git-sync/git-sync:v4.2.1
           args:
@@ -272,6 +288,9 @@ spec:
         - name: logs
           persistentVolumeClaim:
             claimName: airflow-logs-pvc
+        - name: ivy-cache
+          persistentVolumeClaim:
+            claimName: airflow-ivy-cache-pvc
 ---
 apiVersion: v1
 kind: Service
