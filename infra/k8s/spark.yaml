@@ -96,7 +96,7 @@ metadata:
   name: spark-worker
   namespace: chess
 spec:
-  replicas: 2
+  replicas: 4
   selector:
     matchLabels:
       app: spark-worker
