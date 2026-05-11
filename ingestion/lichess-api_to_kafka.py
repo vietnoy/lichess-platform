@@ -36,12 +36,15 @@ logger = logging.getLogger(__name__)
 def create_producer() -> Producer:
     config = {
         "bootstrap.servers": BOOTSTRAP_SERVER,
-        "sasl.username":     CLUSTER_API_KEY,
-        "sasl.password":     CLUSTER_API_SECRET,
-        "security.protocol": "SASL_SSL",
-        "sasl.mechanisms":   "PLAIN",
-        "acks":              "all"
+        "acks":              "all",
     }
+    if CLUSTER_API_KEY:
+        config.update({
+            "sasl.username":     CLUSTER_API_KEY,
+            "sasl.password":     CLUSTER_API_SECRET,
+            "security.protocol": "SASL_SSL",
+            "sasl.mechanisms":   "PLAIN",
+        })
     return Producer(config)
 
 

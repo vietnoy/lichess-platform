@@ -19,15 +19,18 @@ BUCKET_DEV         = os.getenv("MINIO_BUCKET_DEV")
 
 KAFKA_OPTIONS = {
     "kafka.bootstrap.servers": BOOTSTRAP_SERVERS,
-    "kafka.security.protocol": "SASL_SSL",
-    "kafka.sasl.mechanism":    "PLAIN",
-    "kafka.sasl.jaas.config": (
-        "org.apache.kafka.common.security.plain.PlainLoginModule required "
-        f'username="{CLUSTER_API_KEY}" password="{CLUSTER_API_SECRET}";'
-    ),
     "startingOffsets": "earliest",
     "failOnDataLoss":  "false",
 }
+if CLUSTER_API_KEY:
+    KAFKA_OPTIONS.update({
+        "kafka.security.protocol": "SASL_SSL",
+        "kafka.sasl.mechanism":    "PLAIN",
+        "kafka.sasl.jaas.config": (
+            "org.apache.kafka.common.security.plain.PlainLoginModule required "
+            f'username="{CLUSTER_API_KEY}" password="{CLUSTER_API_SECRET}";'
+        ),
+    })
 
 SCHEMAS = {
     "lichess.game_start": StructType([
