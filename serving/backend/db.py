@@ -14,6 +14,7 @@ log = logging.getLogger("db")
 TABLE = "polaris_catalog.prod.chess_move_events"
 PLAYER_GAMES = "polaris_catalog.prod.player_games"
 EVAL_TABLE = "polaris_catalog.prod.move_evaluations"
+EVAL_TABLE_ONDEMAND = "polaris_catalog.prod.move_evaluations_ondemand"
 
 
 # Tiny TTL cache so the slow profile query doesn't hit StarRocks on every page load.
@@ -499,23 +500,46 @@ def query_exercise(username: str) -> dict | None:
     # Pass 2: tiny point-lookup in m for the chosen row to fetch clock_remaining.
     rows = _run(
         f"""
-        SELECT e.game_id, e.ply, e.fen, e.played_move, e.best_move,
-               e.eval_cp, e.eval_swing_cp_from_prev, e.classification, e.date,
-               g.opening_name, g.opening_eco, g.speed, g.white_id, g.black_id
-        FROM {EVAL_TABLE} e
-        JOIN (
-          SELECT game_id, opening_name, opening_eco, speed, white_id, black_id
-          FROM {TABLE}
-          WHERE move_number = 1
-            AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-            AND (white_id = %s OR black_id = %s)
-          GROUP BY game_id, opening_name, opening_eco, speed, white_id, black_id
-        ) g ON g.game_id = e.game_id
-        WHERE e.classification IN ('blunder', 'mistake')
-          AND e.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-        LIMIT 500
+        (
+          SELECT e.game_id, e.ply, e.fen, e.played_move, e.best_move,
+                 e.eval_cp, e.eval_swing_cp_from_prev AS eval_swing_cp,
+                 e.classification, e.date,
+                 g.opening_name, g.opening_eco, g.speed, g.white_id, g.black_id
+          FROM {EVAL_TABLE} e
+          JOIN (
+            SELECT game_id, opening_name, opening_eco, speed, white_id, black_id
+            FROM {TABLE}
+            WHERE move_number = 1
+              AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+              AND (white_id = %s OR black_id = %s)
+            GROUP BY game_id, opening_name, opening_eco, speed, white_id, black_id
+          ) g ON g.game_id = e.game_id
+          WHERE e.classification IN ('blunder', 'mistake')
+            AND e.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+          LIMIT 500
+        )
+        UNION ALL
+        (
+          SELECT e.game_id, e.ply, e.fen, e.played_move, e.best_move,
+                 e.eval_cp, e.eval_swing_cp,
+                 e.classification, e.date,
+                 g.opening_name, g.opening_eco, g.speed, g.white_id, g.black_id
+          FROM {EVAL_TABLE_ONDEMAND} e
+          JOIN (
+            SELECT game_id, opening_name, opening_eco, speed, white_id, black_id
+            FROM {TABLE}
+            WHERE move_number = 1
+              AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+              AND (white_id = %s OR black_id = %s)
+            GROUP BY game_id, opening_name, opening_eco, speed, white_id, black_id
+          ) g ON g.game_id = e.game_id
+          WHERE e.classification IN ('blunder', 'mistake')
+            AND e.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+            AND e.player_id = %s
+          LIMIT 500
+        )
         """,
-        (username, username),
+        (username, username, username, username, username),
     )
     candidates = []
     for r in rows:
@@ -549,7 +573,7 @@ def query_exercise(username: str) -> dict | None:
         "played_move": r["played_move"],
         "best_move": r["best_move"],
         "eval_cp": r["eval_cp"],
-        "eval_swing_cp": r["eval_swing_cp_from_prev"],
+        "eval_swing_cp": r["eval_swing_cp"],
         "classification": r["classification"],
         "clock_remaining_s": round(clock / 100.0, 1),
         "side_to_move": side,
