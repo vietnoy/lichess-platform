@@ -14,9 +14,9 @@ default_args = {
 with DAG(
     dag_id="kafka_to_minio",
     default_args={**default_args, "retries": 0},
-    description="Spark Structured Streaming — Kafka to MinIO chess-dev, micro-batch every 10 min",
+    description="Spark Structured Streaming — Kafka to MinIO chess-dev, micro-batch every 2 hours",
     start_date=datetime(2026, 4, 14),
-    schedule="0 * * * *",
+    schedule="0 */2 * * *",
     catchup=False,
     tags=["chess", "ingestion", "kafka", "minio", "spark"],
 ) as dag_ingest:
