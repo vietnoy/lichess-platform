@@ -160,7 +160,9 @@ def _query_player_profile_uncached(username: str) -> dict | None:
     # Clock-by-phase: also narrow by the dates this player actually played, so
     # chess_move_events partition pruning kicks in instead of scanning every day.
     game_ids = [g["game_id"] for g in games]
-    dates = sorted({g["date"] for g in games if g["date"]})
+    # chess_move_events.date is a STRING column (lit(date_str) in the writer);
+    # player_games.date is DATE, so cast to ISO strings before binding for IN.
+    dates = sorted({g["date"].isoformat() for g in games if g["date"]})
     game_ph = ",".join(["%s"] * len(game_ids))
     date_ph = ",".join(["%s"] * len(dates))
     clock_rows = _run(
