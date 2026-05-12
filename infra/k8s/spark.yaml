@@ -124,6 +124,10 @@ spec:
           image: vietnoy/chess-spark:latest
           command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
           env:
+            # Executors fork from this worker and inherit env; AWS SDK v2
+            # requires a region even though MinIO ignores it.
+            - name: AWS_REGION
+              value: us-east-1
             - name: SPARK_MASTER_PORT
               value: "7077"
             - name: SPARK_WORKER_MEMORY

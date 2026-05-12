@@ -48,13 +48,6 @@ def build_spark():
         .config("spark.sql.catalog.polaris.s3.access-key-id", MINIO_ACCESS_KEY)
         .config("spark.sql.catalog.polaris.s3.secret-access-key", MINIO_SECRET_KEY)
         .config("spark.sql.catalog.polaris.s3.path-style-access", "true")
-        # AWS SDK v2 in S3FileIO requires a region or it fails to construct the
-        # client (even though MinIO ignores region). Polaris does not propagate
-        # catalog s3.region to clients (loadTable.config is empty), and the
-        # write path constructs S3FileIO before reading table metadata — so it
-        # must be set on the Spark catalog directly.
-        .config("spark.sql.catalog.polaris.s3.region", "us-east-1")
-        .config("spark.executorEnv.AWS_REGION", "us-east-1")
         .config("spark.hadoop.fs.s3a.endpoint", MINIO_ENDPOINT)
         .config("spark.hadoop.fs.s3a.access.key", MINIO_ACCESS_KEY)
         .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET_KEY)

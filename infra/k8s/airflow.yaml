@@ -230,6 +230,10 @@ spec:
             - secretRef:
                 name: chess-secrets
           env:
+            # Spark drivers launched here (client mode) need a region or the
+            # AWS SDK v2 region provider chain fails. MinIO ignores the value.
+            - name: AWS_REGION
+              value: us-east-1
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/airflow_db
             - name: AIRFLOW__WEBSERVER__SECRET_KEY
