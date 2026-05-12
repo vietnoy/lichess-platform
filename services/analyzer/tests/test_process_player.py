@@ -1,7 +1,7 @@
 """Tests for process_player in services/analyzer/worker.py."""
 
 import datetime
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from services.analyzer.worker import process_player, BATCH_GAMES, THROTTLE_HOURS
 
@@ -19,21 +19,25 @@ def _make_pg() -> MagicMock:
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
 @patch("services.analyzer.worker.fetch_plies")
+@patch("services.analyzer.worker.fetch_plies_batch")
 @patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_happy_path_one_game_two_plies(
     mock_fetch_games,
     mock_eval,
+    mock_fetch_plies_batch,
     mock_fetch_plies,
     mock_insert,
     mock_update_cursor,
 ):
     game_date = datetime.date(2026, 4, 18)
-    mock_fetch_games.return_value = [{"game_id": "g1", "date": game_date}]
-    mock_fetch_plies.return_value = [
+    games = [{"game_id": "g1", "date": game_date}]
+    plies = [
         {"move_number": 1, "fen": "f1", "whose_moved": "white", "move": "e2e4"},
         {"move_number": 2, "fen": "f2", "whose_moved": "black", "move": "e7e5"},
     ]
+    mock_fetch_games.return_value = games
+    mock_fetch_plies_batch.return_value = {"g1": plies}
     mock_eval.return_value = [
         {"cp": 10, "mate": None, "best_move": "d2d4"},
         {"cp": 20, "mate": None, "best_move": "g8f6"},
@@ -51,8 +55,8 @@ def test_happy_path_one_game_two_plies(
     rows_arg = mock_insert.call_args.args[1]
     assert len(rows_arg) == 2
 
-    # fetch_plies must receive the date for partition pruning on the 17M-row table.
-    mock_fetch_plies.assert_called_once_with(sr, "g1", game_date)
+    mock_fetch_plies.assert_not_called()
+    mock_fetch_plies_batch.assert_called_once_with(sr, games)
 
     # fetch_player_games receives the cursor values + batch limit.
     mock_fetch_games.assert_called_once_with(sr, "alice", None, None, BATCH_GAMES)
@@ -74,13 +78,13 @@ def test_happy_path_one_game_two_plies(
 
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
-@patch("services.analyzer.worker.fetch_plies")
+@patch("services.analyzer.worker.fetch_plies_batch")
 @patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_no_games_returned(
     mock_fetch_games,
     mock_eval,
-    mock_fetch_plies,
+    mock_fetch_plies_batch,
     mock_insert,
     mock_update_cursor,
 ):
@@ -92,6 +96,7 @@ def test_no_games_returned(
     result = process_player(pg, sr, "alice", None, None)
 
     assert result == 0
+    mock_fetch_plies_batch.assert_not_called()
     mock_insert.assert_not_called()
     mock_update_cursor.assert_called_once_with(
         pg, "alice", "", datetime.date(1900, 1, 1),
@@ -107,13 +112,13 @@ def test_no_games_returned(
 
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
-@patch("services.analyzer.worker.fetch_plies")
+@patch("services.analyzer.worker.fetch_plies_batch")
 @patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_no_games_existing_cursor_preserved(
     mock_fetch_games,
     mock_eval,
-    mock_fetch_plies,
+    mock_fetch_plies_batch,
     mock_insert,
     mock_update_cursor,
 ):
@@ -126,6 +131,7 @@ def test_no_games_existing_cursor_preserved(
     result = process_player(pg, sr, "bob", "prev", last_date)
 
     assert result == 0
+    mock_fetch_plies_batch.assert_not_called()
     mock_update_cursor.assert_called_once_with(
         pg, "bob", "prev", last_date,
         games_delta=0, throttle_hours=THROTTLE_HOURS,
@@ -139,25 +145,27 @@ def test_no_games_existing_cursor_preserved(
 
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
-@patch("services.analyzer.worker.fetch_plies")
+@patch("services.analyzer.worker.fetch_plies_batch")
 @patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_empty_ply_list_skipped_cursor_advances(
     mock_fetch_games,
     mock_eval,
-    mock_fetch_plies,
+    mock_fetch_plies_batch,
     mock_insert,
     mock_update_cursor,
 ):
     game_date = datetime.date(2026, 4, 18)
-    mock_fetch_games.return_value = [{"game_id": "g1", "date": game_date}]
-    mock_fetch_plies.return_value = []
+    games = [{"game_id": "g1", "date": game_date}]
+    mock_fetch_games.return_value = games
+    mock_fetch_plies_batch.return_value = {"g1": []}
 
     pg = _make_pg()
     sr = MagicMock()
 
     result = process_player(pg, sr, "carol", None, None)
 
+    mock_fetch_plies_batch.assert_called_once_with(sr, games)
     # insert not called because plies list was empty
     mock_insert.assert_not_called()
     # cursor still advances past the empty-ply game (len(games)==1)
@@ -176,22 +184,24 @@ def test_empty_ply_list_skipped_cursor_advances(
 
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
-@patch("services.analyzer.worker.fetch_plies")
+@patch("services.analyzer.worker.fetch_plies_batch")
 @patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_eval_none_for_one_ply_no_crash(
     mock_fetch_games,
     mock_eval,
-    mock_fetch_plies,
+    mock_fetch_plies_batch,
     mock_insert,
     mock_update_cursor,
 ):
     game_date = datetime.date(2026, 4, 18)
-    mock_fetch_games.return_value = [{"game_id": "g1", "date": game_date}]
-    mock_fetch_plies.return_value = [
+    games = [{"game_id": "g1", "date": game_date}]
+    plies = [
         {"move_number": 1, "fen": "f1", "whose_moved": "white", "move": "e2e4"},
         {"move_number": 2, "fen": "f2", "whose_moved": "black", "move": "e7e5"},
     ]
+    mock_fetch_games.return_value = games
+    mock_fetch_plies_batch.return_value = {"g1": plies}
     # evals[0] is None; evals[1] has data
     mock_eval.return_value = [None, {"cp": 10, "mate": None, "best_move": "d2d4"}]
 
@@ -220,13 +230,13 @@ def test_eval_none_for_one_ply_no_crash(
 
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
-@patch("services.analyzer.worker.fetch_plies")
+@patch("services.analyzer.worker.fetch_plies_batch")
 @patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_batch_limit_honored(
     mock_fetch_games,
     mock_eval,
-    mock_fetch_plies,
+    mock_fetch_plies_batch,
     mock_insert,
     mock_update_cursor,
 ):

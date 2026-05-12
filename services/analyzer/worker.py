@@ -215,6 +215,42 @@ def fetch_plies(sr: Any, game_id: str, date: datetime.date | None = None) -> lis
         return c.fetchall()
 
 
+def fetch_plies_batch(
+    sr: Any,
+    games: list[dict],
+) -> dict[str, list[dict]]:
+    """Fetch plies for many games in one StarRocks query.
+
+    Returns a dict keyed by game_id, value = list of ply dicts in move_number order.
+    Each game must have `game_id` and `date`; date prunes partitions while game_id
+    filters within those partitions. GROUP BY dedupes upstream duplicate move rows.
+    """
+    if not games:
+        return {}
+
+    dates = list(dict.fromkeys(g["date"] for g in games))
+    game_ids = list(dict.fromkeys(g["game_id"] for g in games))
+
+    with closing(sr.cursor(dictionary=True)) as c:
+        placeholders_d = ",".join(["%s"] * len(dates))
+        placeholders_g = ",".join(["%s"] * len(game_ids))
+        c.execute(
+            f"SELECT game_id, move_number, fen, whose_moved, move"
+            f" FROM polaris_catalog.prod.chess_move_events"
+            f" WHERE date IN ({placeholders_d})"
+            f"   AND game_id IN ({placeholders_g})"
+            f" GROUP BY game_id, move_number, fen, whose_moved, move"
+            f" ORDER BY game_id, move_number",
+            (*dates, *game_ids),
+        )
+        rows = c.fetchall()
+
+    out: dict[str, list[dict]] = {gid: [] for gid in game_ids}
+    for r in sorted(rows, key=lambda row: (row["game_id"], row["move_number"])):
+        out[r["game_id"]].append(r)
+    return out
+
+
 def process_player(
     pg: "Connection",
     sr: Any,
@@ -229,35 +265,37 @@ def process_player(
     """
     games = fetch_player_games(sr, player_id, last_game_date, last_game_id, BATCH_GAMES)
 
-    for g in games:
-        plies = fetch_plies(sr, g["game_id"], g["date"])
-        if not plies:
-            continue
-
-        evals = eval_plies_batch(pg, plies)
-
-        rows: list[tuple] = []
-        for i, p in enumerate(plies):
-            cp_before = (evals[i] or {}).get("cp")
-            cp_after = (evals[i + 1] or {}).get("cp") if i + 1 < len(evals) else None
-            swing, classification = classify_move(cp_before, cp_after, p["whose_moved"])
-            rows.append((
-                g["game_id"],
-                p["move_number"],
-                player_id,
-                p["fen"],
-                p["move"],
-                (evals[i] or {}).get("best_move"),
-                cp_before,
-                (evals[i] or {}).get("mate"),
-                swing,
-                classification,
-            ))
-
-        insert_evaluations(pg, rows)
-        pg.commit()
-
     if games:
+        plies_by_game = fetch_plies_batch(sr, games)
+
+        for g in games:
+            plies = plies_by_game.get(g["game_id"], [])
+            if not plies:
+                continue
+
+            evals = eval_plies_batch(pg, plies)
+
+            rows: list[tuple] = []
+            for i, p in enumerate(plies):
+                cp_before = (evals[i] or {}).get("cp")
+                cp_after = (evals[i + 1] or {}).get("cp") if i + 1 < len(evals) else None
+                swing, classification = classify_move(cp_before, cp_after, p["whose_moved"])
+                rows.append((
+                    g["game_id"],
+                    p["move_number"],
+                    player_id,
+                    p["fen"],
+                    p["move"],
+                    (evals[i] or {}).get("best_move"),
+                    cp_before,
+                    (evals[i] or {}).get("mate"),
+                    swing,
+                    classification,
+                ))
+
+            insert_evaluations(pg, rows)
+            pg.commit()
+
         newest = games[-1]  # ASC ordering -> newest is last
         update_cursor(
             pg, player_id, newest["game_id"], newest["date"],
