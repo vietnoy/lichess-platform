@@ -77,6 +77,7 @@ with DAG(
         "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
         "org.apache.iceberg:iceberg-aws-bundle:1.5.0"
     )
+    _iceberg_pg_packages = _iceberg_packages + ",org.postgresql:postgresql:42.7.4"
 
     process = SparkSubmitOperator(
         task_id="run_process_to_polaris",
@@ -98,7 +99,18 @@ with DAG(
         verbose=True,
     )
 
-    process >> build_player_games
+    # Compacts the on-demand analyzer's Postgres staging into Iceberg. Runs after
+    # player_games is rebuilt because the date column is sourced from that table.
+    compact_ondemand = SparkSubmitOperator(
+        task_id="run_compact_ondemand_evals",
+        application="/git/repo/processing/compact_ondemand_evals.py",
+        conn_id="spark_default",
+        packages=_iceberg_pg_packages,
+        conf=_process_conf,
+        verbose=True,
+    )
+
+    process >> build_player_games >> compact_ondemand
 
 # ─── DAG 3: Stockfish blunder analysis (daily at 01:30 UTC) ───────────────────
 with DAG(
@@ -182,6 +194,7 @@ PROPERTIES (
             'REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;'
             'REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;'
             'REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;'
+            'REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;'
             '"'
         ),
     )
