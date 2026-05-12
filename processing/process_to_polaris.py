@@ -53,13 +53,10 @@ def build_spark():
         # var to executor JVMs that don't inherit driver envFrom.
         .config("spark.sql.catalog.polaris.s3.region", "us-east-1")
         .config("spark.executorEnv.AWS_REGION", "us-east-1")
-        # AWS SDK v2 reads aws.region system property via SystemSettingsRegionProvider
-        # before falling back to env/profile/EC2-metadata. Setting it on both driver
-        # and executor JVMs avoids region-resolution failures when committing Iceberg
-        # snapshots (driver-side delete paths) and when executors construct S3 clients
-        # for FileIO writes.
-        .config("spark.driver.extraJavaOptions", "-Daws.region=us-east-1")
-        .config("spark.executor.extraJavaOptions", "-Daws.region=us-east-1")
+        # NOTE: spark.driver.extraJavaOptions and spark.executor.extraJavaOptions
+        # also need to carry -Daws.region=us-east-1, but those have to be set at
+        # spark-submit time (DAG conf), not here — the JVMs are already started by
+        # the time this builder runs.
         .config("spark.hadoop.fs.s3a.endpoint", MINIO_ENDPOINT)
         .config("spark.hadoop.fs.s3a.access.key", MINIO_ACCESS_KEY)
         .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET_KEY)

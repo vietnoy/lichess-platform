@@ -80,6 +80,12 @@ with DAG(
             "spark.network.timeout": "300s",
             "spark.executor.heartbeatInterval": "60s",
             "spark.executorEnv.PYSPARK_PYTHON": "python3.13",
+            # Must be set at spark-submit time so the driver JVM picks it up.
+            # Setting it later via SparkSession.builder.config() is too late —
+            # AWS SDK reads aws.region during S3 client construction in the
+            # iceberg commit/delete path on the driver.
+            "spark.driver.extraJavaOptions": "-Daws.region=us-east-1",
+            "spark.executor.extraJavaOptions": "-Daws.region=us-east-1",
         },
         application_args=["{{ ds }}"],
         verbose=True,
@@ -122,6 +128,12 @@ with DAG(
             "spark.network.timeout": "300s",
             "spark.executor.heartbeatInterval": "60s",
             "spark.executorEnv.PYSPARK_PYTHON": "python3.13",
+            # Must be set at spark-submit time so the driver JVM picks it up.
+            # Setting it later via SparkSession.builder.config() is too late —
+            # AWS SDK reads aws.region during S3 client construction in the
+            # iceberg commit/delete path on the driver.
+            "spark.driver.extraJavaOptions": "-Daws.region=us-east-1",
+            "spark.executor.extraJavaOptions": "-Daws.region=us-east-1",
         },
         application_args=["{{ ds }}"],
         verbose=True,
