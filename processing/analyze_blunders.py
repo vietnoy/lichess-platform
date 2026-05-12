@@ -77,12 +77,6 @@ def build_spark() -> SparkSession:
         # AWS SDK v2 in S3FileIO requires a region or it fails to construct the
         # client (even though MinIO ignores region). executorEnv propagates the
         # var to executor JVMs that don't inherit driver envFrom.
-        .config("spark.sql.catalog.polaris.s3.region", "us-east-1")
-        .config("spark.executorEnv.AWS_REGION", "us-east-1")
-        # NOTE: spark.driver.extraJavaOptions and spark.executor.extraJavaOptions
-        # also need to carry -Daws.region=us-east-1, but those have to be set at
-        # spark-submit time (DAG conf), not here — the JVMs are already started by
-        # the time this builder runs.
         .config("spark.hadoop.fs.s3a.endpoint", MINIO_ENDPOINT)
         .config("spark.hadoop.fs.s3a.access.key", MINIO_ACCESS_KEY)
         .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET_KEY)
