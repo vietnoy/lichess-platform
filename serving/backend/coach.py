@@ -24,7 +24,7 @@ from typing import Any, Iterator
 
 from openai import OpenAI
 
-from db import StarRocks, TABLE
+from db import StarRocks, TABLE, PLAYER_GAMES
 from stockfish import eval_fen
 
 log = logging.getLogger("coach")
@@ -57,23 +57,30 @@ def get_player_overview(player_id: str) -> dict:
         f"""
         SELECT speed,
                COUNT(*) AS total_games,
-               SUM(CASE WHEN (white_id=%s AND winner='white') OR (black_id=%s AND winner='black') THEN 1 ELSE 0 END) AS wins,
-               SUM(CASE WHEN (white_id=%s AND winner='black') OR (black_id=%s AND winner='white') THEN 1 ELSE 0 END) AS losses,
+               SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN winner IS NOT NULL AND winner <> color THEN 1 ELSE 0 END) AS losses,
                SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END) AS draws,
-               ROUND(AVG(CASE WHEN white_id=%s THEN white_rating ELSE black_rating END), 0) AS avg_rating
-        FROM (
-            SELECT DISTINCT game_id, speed, winner, white_id, black_id, white_rating, black_rating
-            FROM {TABLE}
-            WHERE (white_id=%s OR black_id=%s) AND move_number=1
-        ) t
+               ROUND(AVG(my_rating), 0) AS avg_rating
+        FROM {PLAYER_GAMES}
+        WHERE player_id = %s
         GROUP BY speed ORDER BY total_games DESC
         """,
-        (player_id, player_id, player_id, player_id, player_id, player_id, player_id),
+        (player_id,),
     )
     return {"player_id": player_id, "overview": rows}
 
 
 def get_time_pressure_stats(player_id: str) -> dict:
+    # Time-pressure needs move-level clock data — stays on chess_move_events,
+    # but narrows by the dates this player actually played to prune partitions.
+    date_rows = _q(
+        f"SELECT DISTINCT date FROM {PLAYER_GAMES} WHERE player_id = %s",
+        (player_id,),
+    )
+    if not date_rows:
+        return {"player_id": player_id, "time_pressure": []}
+    dates = [r["date"].isoformat() for r in date_rows if r["date"]]
+    date_ph = ",".join(["%s"] * len(dates))
     rows = _q(
         f"""
         SELECT pressure,
@@ -85,11 +92,14 @@ def get_time_pressure_stats(player_id: str) -> dict:
             SELECT DISTINCT game_id, winner, white_id, black_id, clock_remaining,
                    CASE WHEN clock_remaining < 1000 THEN 'under_10s' ELSE 'normal' END AS pressure
             FROM {TABLE}
-            WHERE (white_id=%s OR black_id=%s) AND clock_remaining IS NOT NULL AND move_number=1
+            WHERE date IN ({date_ph})
+              AND (white_id=%s OR black_id=%s)
+              AND clock_remaining IS NOT NULL
+              AND move_number=1
         ) t
         GROUP BY pressure
         """,
-        (player_id, player_id, player_id, player_id, player_id, player_id),
+        tuple(dates) + (player_id, player_id, player_id, player_id, player_id, player_id),
     )
     return {"player_id": player_id, "time_pressure": rows}
 
@@ -99,24 +109,31 @@ def get_opening_stats(player_id: str, top_n: int = 10) -> dict:
         f"""
         SELECT opening_eco, opening_name,
                COUNT(*) AS games,
-               SUM(CASE WHEN (white_id=%s AND winner='white') OR (black_id=%s AND winner='black') THEN 1 ELSE 0 END) AS wins,
-               ROUND(SUM(CASE WHEN (white_id=%s AND winner='white') OR (black_id=%s AND winner='black') THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS win_rate_pct
-        FROM (
-            SELECT DISTINCT game_id, opening_eco, opening_name, winner, white_id, black_id
-            FROM {TABLE}
-            WHERE (white_id=%s OR black_id=%s) AND move_number=1 AND opening_eco IS NOT NULL
-        ) t
+               SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) AS wins,
+               ROUND(SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS win_rate_pct
+        FROM {PLAYER_GAMES}
+        WHERE player_id = %s AND opening_eco IS NOT NULL
         GROUP BY opening_eco, opening_name
         HAVING games >= 2
-        ORDER BY games DESC
-        LIMIT %s
+        ORDER BY games DESC LIMIT %s
         """,
-        (player_id, player_id, player_id, player_id, player_id, player_id, int(top_n)),
+        (player_id, int(top_n)),
     )
     return {"player_id": player_id, "opening_stats": rows}
 
 
 def get_clock_usage_by_phase(player_id: str) -> dict:
+    # Move-level clock data — narrow by dates this player played.
+    date_rows = _q(
+        f"SELECT DISTINCT date, game_id FROM {PLAYER_GAMES} WHERE player_id = %s",
+        (player_id,),
+    )
+    if not date_rows:
+        return {"player_id": player_id, "clock_by_phase": []}
+    dates = sorted({r["date"].isoformat() for r in date_rows if r["date"]})
+    game_ids = [r["game_id"] for r in date_rows]
+    date_ph = ",".join(["%s"] * len(dates))
+    game_ph = ",".join(["%s"] * len(game_ids))
     rows = _q(
         f"""
         SELECT CASE WHEN move_number<=10 THEN 'opening'
@@ -128,11 +145,13 @@ def get_clock_usage_by_phase(player_id: str) -> dict:
         FROM (
             SELECT DISTINCT game_id, move_number, clock_remaining
             FROM {TABLE}
-            WHERE (white_id=%s OR black_id=%s) AND clock_remaining IS NOT NULL
+            WHERE date IN ({date_ph})
+              AND game_id IN ({game_ph})
+              AND clock_remaining IS NOT NULL
         ) t
         GROUP BY phase ORDER BY phase
         """,
-        (player_id, player_id),
+        tuple(dates) + tuple(game_ids),
     )
     return {"player_id": player_id, "clock_by_phase": rows}
 
@@ -140,18 +159,15 @@ def get_clock_usage_by_phase(player_id: str) -> dict:
 def get_performance_by_color(player_id: str) -> dict:
     rows = _q(
         f"""
-        SELECT CASE WHEN white_id=%s THEN 'white' ELSE 'black' END AS color,
+        SELECT color,
                COUNT(*) AS games,
-               SUM(CASE WHEN (white_id=%s AND winner='white') OR (black_id=%s AND winner='black') THEN 1 ELSE 0 END) AS wins,
-               ROUND(SUM(CASE WHEN (white_id=%s AND winner='white') OR (black_id=%s AND winner='black') THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS win_rate_pct
-        FROM (
-            SELECT DISTINCT game_id, winner, white_id, black_id
-            FROM {TABLE}
-            WHERE (white_id=%s OR black_id=%s) AND move_number=1
-        ) t
+               SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) AS wins,
+               ROUND(SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS win_rate_pct
+        FROM {PLAYER_GAMES}
+        WHERE player_id = %s
         GROUP BY color
         """,
-        (player_id, player_id, player_id, player_id, player_id, player_id, player_id),
+        (player_id,),
     )
     return {"player_id": player_id, "by_color": rows}
 
@@ -160,20 +176,17 @@ def get_performance_vs_rating(player_id: str) -> dict:
     rows = _q(
         f"""
         SELECT CASE
-                 WHEN (CASE WHEN white_id=%s THEN black_rating ELSE white_rating END) < (CASE WHEN white_id=%s THEN white_rating ELSE black_rating END) - 100 THEN 'lower_rated'
-                 WHEN (CASE WHEN white_id=%s THEN black_rating ELSE white_rating END) > (CASE WHEN white_id=%s THEN white_rating ELSE black_rating END) + 100 THEN 'higher_rated'
+                 WHEN opp_rating < my_rating - 100 THEN 'lower_rated'
+                 WHEN opp_rating > my_rating + 100 THEN 'higher_rated'
                  ELSE 'equal_rated' END AS opponent_class,
                COUNT(*) AS games,
-               SUM(CASE WHEN (white_id=%s AND winner='white') OR (black_id=%s AND winner='black') THEN 1 ELSE 0 END) AS wins,
-               ROUND(SUM(CASE WHEN (white_id=%s AND winner='white') OR (black_id=%s AND winner='black') THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS win_rate_pct
-        FROM (
-            SELECT DISTINCT game_id, winner, white_id, black_id, white_rating, black_rating
-            FROM {TABLE}
-            WHERE (white_id=%s OR black_id=%s) AND move_number=1
-        ) t
+               SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) AS wins,
+               ROUND(SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS win_rate_pct
+        FROM {PLAYER_GAMES}
+        WHERE player_id = %s AND my_rating IS NOT NULL AND opp_rating IS NOT NULL
         GROUP BY opponent_class
         """,
-        (player_id, player_id, player_id, player_id, player_id, player_id, player_id, player_id, player_id, player_id),
+        (player_id,),
     )
     return {"player_id": player_id, "vs_rating": rows}
 
@@ -181,20 +194,13 @@ def get_performance_vs_rating(player_id: str) -> dict:
 def get_recent_games(player_id: str, limit: int = 10) -> dict:
     rows = _q(
         f"""
-        SELECT game_id,
-               CASE WHEN white_id=%s THEN black_id ELSE white_id END AS opponent,
-               CASE WHEN white_id=%s THEN white_rating ELSE black_rating END AS my_rating,
-               CASE WHEN white_id=%s THEN black_rating ELSE white_rating END AS opp_rating,
+        SELECT game_id, opponent_id AS opponent, my_rating, opp_rating,
                opening_eco, opening_name, speed, winner, end_status, date
-        FROM (
-            SELECT DISTINCT game_id, white_id, black_id, white_rating, black_rating,
-                   opening_eco, opening_name, speed, winner, end_status, date
-            FROM {TABLE}
-            WHERE (white_id=%s OR black_id=%s) AND move_number=1
-        ) t
+        FROM {PLAYER_GAMES}
+        WHERE player_id = %s
         ORDER BY date DESC LIMIT %s
         """,
-        (player_id, player_id, player_id, player_id, player_id, int(limit)),
+        (player_id, int(limit)),
     )
     return {"player_id": player_id, "recent_games": rows}
 

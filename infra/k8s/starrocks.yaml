@@ -133,14 +133,22 @@ spec:
                 name: chess-secrets
   backoffLimit: 5
 ---
-# ─── StarRocks CN ─────────────────────────────────────────────────────────────
+# ─── StarRocks CN (2 replicas for read parallelism) ──────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: starrocks-cn
   namespace: chess
 spec:
-  replicas: 1
+  replicas: 2
+  # Brief CN downtime during rollout is fine; the alternative is a 1-core node
+  # surge that cannot fit. Both new replicas come up together after the old one
+  # exits.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: starrocks-cn
@@ -149,7 +157,8 @@ spec:
       labels:
         app: starrocks-cn
     spec:
-      hostname: starrocks-cn-1
+      # Each pod registers with its own IP via ADD COMPUTE NODE on startup,
+      # so the FE sees two distinct workers and round-robins fragment scans.
       initContainers:
         - name: wait-for-fe
           image: busybox:1.36
@@ -185,7 +194,7 @@ spec:
           resources:
             requests:
               memory: 512Mi
-              cpu: "1"
+              cpu: 500m
             limits:
               memory: 1Gi
               cpu: "2"
