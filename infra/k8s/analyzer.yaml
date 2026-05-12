@@ -1,0 +1,178 @@
+# On-demand Stockfish analyzer. See services/analyzer/PLAN.md.
+#
+# Resources:
+#   - ConfigMap `analyzer-schema`: holds schema.sql so the init Job can apply it
+#   - Job        `analyzer-init`:   creates `chess_analyzer_db` + applies schema (idempotent)
+#   - Deployment `chess-analyzer-worker`: runs the continuous loop
+#   - Job        `analyzer-bootstrap`: seeds analyzer_cursor from StarRocks (one-shot, run manually after init)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analyzer-schema
+  namespace: chess
+data:
+  schema.sql: |
+    CREATE TABLE IF NOT EXISTS analyzer_cursor (
+      player_id            TEXT        PRIMARY KEY,
+      last_game_id         TEXT,
+      last_game_date       DATE,
+      last_processed_at    TIMESTAMPTZ,
+      games_processed      INT         NOT NULL DEFAULT 0,
+      throttle_until       TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS analyzer_cursor_throttle_idx
+      ON analyzer_cursor (throttle_until NULLS FIRST);
+
+    CREATE TABLE IF NOT EXISTS position_evals (
+      fen           TEXT        PRIMARY KEY,
+      cp            INT,
+      mate          INT,
+      best_move     TEXT,
+      depth         INT         NOT NULL,
+      evaluated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS move_evaluations_ondemand (
+      game_id              TEXT        NOT NULL,
+      ply                  INT         NOT NULL,
+      player_id            TEXT        NOT NULL,
+      fen                  TEXT,
+      played_move          TEXT,
+      best_move            TEXT,
+      eval_cp              INT,
+      mate                 INT,
+      eval_swing_cp        INT,
+      classification       TEXT,
+      evaluated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (game_id, ply, player_id)
+    );
+    CREATE INDEX IF NOT EXISTS move_eval_ondemand_player_class_idx
+      ON move_evaluations_ondemand (player_id, classification)
+      WHERE classification IN ('blunder', 'mistake');
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: analyzer-init
+  namespace: chess
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: postgres:15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 192Mi
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eo pipefail
+              export PGPASSWORD="$POSTGRES_PASSWORD"
+              # Postgres has no CREATE DATABASE IF NOT EXISTS; use the SELECT-and-create idiom.
+              psql -h postgres -U "$POSTGRES_USER" -d postgres -tc \
+                "SELECT 1 FROM pg_database WHERE datname='chess_analyzer_db'" \
+                | grep -q 1 || psql -h postgres -U "$POSTGRES_USER" -d postgres \
+                -c "CREATE DATABASE chess_analyzer_db"
+              psql -h postgres -U "$POSTGRES_USER" -d chess_analyzer_db -f /schema/schema.sql
+              echo "analyzer-init done"
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: chess-secrets, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: chess-secrets, key: POSTGRES_PASSWORD } }
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+              readOnly: true
+      volumes:
+        - name: schema
+          configMap:
+            name: analyzer-schema
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chess-analyzer-worker
+  namespace: chess
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # single connection-holding pod; no overlap during rollouts
+  selector:
+    matchLabels:
+      app: chess-analyzer-worker
+  template:
+    metadata:
+      labels:
+        app: chess-analyzer-worker
+    spec:
+      containers:
+        - name: worker
+          image: vietnoy/chess-analyzer:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: chess-config
+            - secretRef:
+                name: chess-secrets
+          env:
+            - name: ANALYZER_PG_DSN
+              value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/chess_analyzer_db"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            # _touch_liveness() writes /tmp/analyzer-last-cycle at startup and
+            # after each successful cycle. If the file is older than 5 min, the
+            # worker is wedged — restart it.
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - test "$(($(date +%s) - $(cat /tmp/analyzer-last-cycle 2>/dev/null || echo 0)))" -lt 300
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: analyzer-bootstrap
+  namespace: chess
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: vietnoy/chess-analyzer:latest
+          command: ["python", "-m", "services.analyzer.bootstrap"]
+          envFrom:
+            - configMapRef:
+                name: chess-config
+            - secretRef:
+                name: chess-secrets
+          env:
+            - name: ANALYZER_PG_DSN
+              value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/chess_analyzer_db"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

@@ -1,0 +1,4 @@
+psycopg2-binary==2.9.9
+mysql-connector-python==9.0.0
+requests==2.32.3
+python-chess==1.11.1
