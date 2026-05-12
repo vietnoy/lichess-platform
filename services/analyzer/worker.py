@@ -259,8 +259,24 @@ def cycle(pg: "Connection", sr: Any, batch_users: int = BATCH_USERS) -> int:
     return len(targets)
 
 
+# Touched after each successful cycle so a k8s liveness probe (or operator) can
+# spot a zombie worker with a dead connection that the outer try/except keeps masking.
+LIVENESS_FILE = "/tmp/analyzer-last-cycle"
+
+
+def _touch_liveness() -> None:
+    try:
+        with open(LIVENESS_FILE, "w") as f:
+            f.write(str(int(time.time())))
+    except OSError:
+        log.warning("could not touch liveness file %s", LIVENESS_FILE)
+
+
 def main() -> None:
     """Entry point. Connects to Postgres + StarRocks, loops cycle() forever."""
+    import mysql.connector
+    import psycopg2
+
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
@@ -272,19 +288,42 @@ def main() -> None:
     sr_user = os.getenv("STARROCKS_USER", "root")
     sr_password = os.getenv("STARROCKS_PASSWORD", "")
 
-    import psycopg2
-    import mysql.connector
+    def _connect_pg():
+        return psycopg2.connect(pg_dsn)
 
-    pg = psycopg2.connect(pg_dsn)
-    sr = mysql.connector.connect(
-        host=sr_host, port=sr_port, user=sr_user, password=sr_password,
-        autocommit=True,  # StarRocks doesn't support transactions over the MySQL protocol the way Postgres does.
-    )
+    def _connect_sr():
+        # autocommit=True: StarRocks doesn't honor MySQL transaction semantics, and
+        # the connector otherwise tracks fake txn state that desyncs over time.
+        return mysql.connector.connect(
+            host=sr_host, port=sr_port, user=sr_user, password=sr_password,
+            autocommit=True,
+        )
 
+    pg = _connect_pg()
+    sr = _connect_sr()
+    # Touch liveness file at startup so the probe has something to read before
+    # the first cycle completes (a slow first cycle can take ~3-4 minutes).
+    _touch_liveness()
     log.info("analyzer worker starting")
+
     while True:
         try:
             cycle(pg, sr)
+            _touch_liveness()
+        except psycopg2.OperationalError:
+            log.exception("postgres connection broken; reconnecting")
+            try:
+                pg.close()
+            except Exception:
+                pass
+            pg = _connect_pg()
+        except mysql.connector.Error:
+            log.exception("starrocks connection broken; reconnecting")
+            try:
+                sr.close()
+            except Exception:
+                pass
+            sr = _connect_sr()
         except Exception:
             log.exception("cycle failed")
         time.sleep(SLEEP_S)

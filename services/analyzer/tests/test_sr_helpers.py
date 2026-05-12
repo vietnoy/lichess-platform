@@ -41,20 +41,30 @@ def test_fetch_player_games_sql_shape():
     fetch_player_games(sr, "alice", datetime.date(2026, 4, 1), "g0", 20)
 
     sql: str = cursor.execute.call_args.args[0]
-    assert "polaris_catalog.prod.player_games" in sql
-    assert "player_id = %s" in sql
-    sql_upper = sql.upper().replace("\n", " ")
-    assert "ORDER BY DATE DESC" in sql_upper
+    sql_compact = " ".join(sql.split())
+    assert "polaris_catalog.prod.player_games" in sql_compact
+    assert "player_id = %s" in sql_compact
+    # Cursor pagination requires forward-only walk: WHERE uses strict-greater on
+    # (date, game_id) tiebreaker AND ORDER BY both ASC, otherwise cursor loops.
+    assert "(date > %s OR (date = %s AND game_id > %s))" in sql_compact
+    sql_upper = sql_compact.upper()
+    assert "ORDER BY DATE ASC, GAME_ID ASC" in sql_upper
     assert "LIMIT %S" in sql_upper
 
 
-def test_fetch_player_games_none_defaults():
+def test_fetch_player_games_none_defaults_exact_tuple():
     sr, cursor = _make_sr()
     fetch_player_games(sr, "alice", None, None, 10)
 
     params = cursor.execute.call_args.args[1]
-    assert datetime.date(1900, 1, 1) in params
-    assert "" in params
+    # Positional order must be: player_id, sentinel_date, sentinel_date, sentinel_gid, limit
+    assert params == ("alice", datetime.date(1900, 1, 1), datetime.date(1900, 1, 1), "", 10)
+
+
+def test_fetch_player_games_uses_dictionary_cursor():
+    sr, cursor = _make_sr()
+    fetch_player_games(sr, "alice", None, None, 10)
+    sr.cursor.assert_called_with(dictionary=True)
 
 
 def test_fetch_player_games_binding_count():
@@ -85,16 +95,27 @@ def test_fetch_plies_returns_rows():
     assert result == rows
 
 
-def test_fetch_plies_sql_shape():
+def test_fetch_plies_sql_shape_no_date():
     sr, cursor = _make_sr()
     fetch_plies(sr, "game42")
 
     sql: str = cursor.execute.call_args.args[0]
-    assert "polaris_catalog.prod.chess_move_events" in sql
-    assert "WHERE game_id = %s" in sql
-    sql_upper = sql.upper().replace("\n", " ")
-    assert "GROUP BY" in sql_upper
-    assert "ORDER BY MOVE_NUMBER" in sql_upper
+    sql_compact = " ".join(sql.split())
+    assert "polaris_catalog.prod.chess_move_events" in sql_compact
+    assert "WHERE game_id = %s" in sql_compact
+    # GROUP BY must include all four columns or dedup semantics shift.
+    assert "GROUP BY move_number, fen, whose_moved, move" in sql_compact
+    assert "ORDER BY move_number" in sql_compact
+
+
+def test_fetch_plies_with_date_prunes_partition():
+    sr, cursor = _make_sr()
+    fetch_plies(sr, "game42", datetime.date(2026, 4, 18))
+
+    sql, params = cursor.execute.call_args.args
+    sql_compact = " ".join(sql.split())
+    assert "WHERE game_id = %s AND date = %s" in sql_compact
+    assert params == ("game42", datetime.date(2026, 4, 18))
 
 
 def test_fetch_plies_binding_count():

@@ -73,6 +73,48 @@ def test_eval_with_cache_miss_stockfish_none(mock_eval_fen):
         assert "INSERT" not in c.args[0].upper()
 
 
+@patch("services.analyzer.worker.eval_fen")
+def test_eval_with_cache_poisoned_row_retries(mock_eval_fen):
+    # A prior bad cache write left a row with cp=None and mate=None. The helper
+    # must re-evaluate instead of returning that useless row.
+    mock_eval_fen.return_value = {"cp": 25, "mate": None, "best_move": "e2e4"}
+    pg, cursor = _make_pg(fetchone=(None, None, None))
+
+    result = eval_with_cache(pg, "poison/fen")
+
+    assert result == {"cp": 25, "mate": None, "best_move": "e2e4"}
+    mock_eval_fen.assert_called_once()
+    insert_calls = [
+        c for c in cursor.execute.call_args_list if "INSERT" in c.args[0].upper()
+    ]
+    assert len(insert_calls) == 1
+
+
+@patch("services.analyzer.worker.eval_fen")
+def test_eval_with_cache_miss_stockfish_both_none_skips_insert(mock_eval_fen):
+    # Stockfish returned a dict but both cp and mate are None — malformed.
+    # Don't cache it; return None so the next caller can retry.
+    mock_eval_fen.return_value = {"cp": None, "mate": None, "best_move": None}
+    pg, cursor = _make_pg(fetchone=None)
+
+    result = eval_with_cache(pg, "weird/fen")
+
+    assert result is None
+    for c in cursor.execute.call_args_list:
+        assert "INSERT" not in c.args[0].upper()
+
+
+@patch("services.analyzer.worker.eval_fen")
+def test_eval_with_cache_mate_position_is_valid_cache(mock_eval_fen):
+    # A mate-in-N cached row has cp=None but mate=N. That's a valid cache hit.
+    pg, cursor = _make_pg(fetchone=(None, 5, "h7h8q"))
+
+    result = eval_with_cache(pg, "mate/fen")
+
+    assert result == {"cp": None, "mate": 5, "best_move": "h7h8q"}
+    mock_eval_fen.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # fetch_eligible_players
 # ---------------------------------------------------------------------------
@@ -93,7 +135,11 @@ def test_fetch_eligible_players_sql_shape():
 
     sql: str = cursor.execute.call_args.args[0]
     assert "throttle_until IS NULL" in sql
-    assert "ORDER BY THROTTLE_UNTIL" in sql.upper().replace("\n", " ")
+    sql_upper = sql.upper().replace("\n", " ")
+    assert "ORDER BY THROTTLE_UNTIL" in sql_upper
+    # NULLS FIRST is load-bearing: cursor rows seeded with throttle_until=NULL
+    # must be picked first or the worker never processes them.
+    assert "NULLS FIRST" in sql_upper
 
 
 def test_fetch_eligible_players_limit_as_parameter():

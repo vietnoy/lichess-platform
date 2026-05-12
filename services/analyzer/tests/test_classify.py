@@ -23,6 +23,16 @@ from services.analyzer.worker import classify_move
         (0, 50, "white", 50, "good"),
         # black improves: drop = -50 - 0 = -50 -> good, swing = 0 - (-50) = +50
         (0, -50, "black", 50, "good"),
+        # asymmetric black blunder: drop = -100 - 100 = -200... no — cp_before=100, cp_after=-100, mover=black
+        # drop = cp_after - cp_before = -100 - 100 = -200 -> good for black, swing = 100 - (-100) = +200
+        (100, -100, "black", 200, "good"),
+        # asymmetric black bad move: cp_before=-100, cp_after=100, mover=black
+        # drop = 100 - (-100) = 200 -> blunder, swing = -100 - 100 = -200
+        (-100, 100, "black", -200, "blunder"),
+        # exact upper blunder boundary: drop = 200
+        (100, -100, "white", -200, "blunder"),
+        # just below blunder: drop = 199
+        (99, -100, "white", -199, "mistake"),
     ],
 )
 def test_classify_move_parametrized(
@@ -47,3 +57,10 @@ def test_none_cp_after() -> None:
 
 def test_both_none() -> None:
     assert classify_move(None, None, "white") == (None, None)
+
+
+def test_unknown_mover_treated_as_black() -> None:
+    # Pin current behavior: anything != "white" falls into the else branch (black perspective).
+    swing_unknown, cls_unknown = classify_move(-50, 200, "")
+    swing_black, cls_black = classify_move(-50, 200, "black")
+    assert (swing_unknown, cls_unknown) == (swing_black, cls_black)

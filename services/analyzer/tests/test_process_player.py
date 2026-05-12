@@ -51,6 +51,12 @@ def test_happy_path_one_game_two_plies(
     rows_arg = mock_insert.call_args.args[1]
     assert len(rows_arg) == 2
 
+    # fetch_plies must receive the date for partition pruning on the 17M-row table.
+    mock_fetch_plies.assert_called_once_with(sr, "g1", game_date)
+
+    # fetch_player_games receives the cursor values + batch limit.
+    mock_fetch_games.assert_called_once_with(sr, "alice", None, None, BATCH_GAMES)
+
     # update_cursor advances to the newest game in the batch
     mock_update_cursor.assert_called_once_with(
         pg, "alice", "g1", game_date,

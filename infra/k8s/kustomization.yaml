@@ -14,3 +14,4 @@ resources:
   - airflow.yaml
   - stockfish.yaml
   - kafka.yaml
+  - analyzer.yaml
