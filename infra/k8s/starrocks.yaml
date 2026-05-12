@@ -39,6 +39,9 @@ spec:
                 echo "aws_s3_use_aws_sdk_default_behavior = false" >> $CONF
                 echo "aws_s3_region = us-east-1" >> $CONF
               fi
+              # Cap JVM heap to fit within the container memory limit. Default
+              # config asks for -Xmx8192m which is guaranteed-OOMKill at 768Mi.
+              sed -i 's/^JAVA_OPTS=.*/JAVA_OPTS="-Xmx1536m -XX:+UseG1GC -Dfile.encoding=UTF-8"/' $CONF || true
               mkdir -p /opt/starrocks/fe/log
               /opt/starrocks/fe/bin/start_fe.sh --host_type IP &
               FE_PID=$!
@@ -66,10 +69,10 @@ spec:
             periodSeconds: 10
           resources:
             requests:
-              memory: 512Mi
+              memory: 1Gi
               cpu: 500m
             limits:
-              memory: 768Mi
+              memory: 2Gi
               cpu: "1"
 ---
 apiVersion: v1
@@ -172,8 +175,15 @@ spec:
             - |
               sleep 15
               MY_IP=$(hostname -i)
-              mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot -p"$STARROCKS_PASSWORD" \
-                -e "ALTER SYSTEM ADD COMPUTE NODE '$MY_IP:9050';" || true
+              # Try passwordless first (FE state-wipe leaves root with no password);
+              # fall back to the chess-secrets value if the cluster has been initialised.
+              # Either path failing is non-fatal — the CN still starts and the FE has
+              # a periodic re-registration loop in newer versions.
+              mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot \
+                -e "ALTER SYSTEM ADD COMPUTE NODE '$MY_IP:9050';" 2>/dev/null \
+                || mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot -p"$STARROCKS_PASSWORD" \
+                  -e "ALTER SYSTEM ADD COMPUTE NODE '$MY_IP:9050';" 2>/dev/null \
+                || true
               /opt/starrocks/cn/bin/start_cn.sh --host_type IP
           ports:
             - containerPort: 8040
