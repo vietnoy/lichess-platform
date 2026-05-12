@@ -12,6 +12,7 @@ from mysql.connector import pooling
 log = logging.getLogger("db")
 
 TABLE = "polaris_catalog.prod.chess_move_events"
+PLAYER_GAMES = "polaris_catalog.prod.player_games"
 EVAL_TABLE = "polaris_catalog.prod.move_evaluations"
 
 
@@ -141,37 +142,27 @@ def query_player_profile(username: str) -> dict | None:
 
 
 def _query_player_profile_uncached(username: str) -> dict | None:
-    # chess_move_events has duplicate rows per (game_id, move_number) due to upstream retries;
-    # GROUP BY game_id collapses each game to one record. The 60-day bound prunes Iceberg partitions
-    # so we don't scan all historical move events on every page load (no index on white_id/black_id).
+    # player_games is the denormalized projection (one row per game-side) built by
+    # processing/build_player_games.py. Sorted by player_id within each partition so
+    # parquet min/max stats let StarRocks skip whole files for WHERE player_id=?.
     games = _run(
         f"""
-        SELECT
-          game_id,
-          MAX(white_id)      AS white_id,
-          MAX(black_id)      AS black_id,
-          MAX(white_rating)  AS white_rating,
-          MAX(black_rating)  AS black_rating,
-          MAX(speed)         AS speed,
-          MAX(opening_eco)   AS opening_eco,
-          MAX(opening_name)  AS opening_name,
-          MAX(winner)        AS winner,
-          MAX(end_status)    AS end_status,
-          MAX(date)          AS date
-        FROM {TABLE}
-        WHERE move_number=1
-          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-          AND (white_id=%s OR black_id=%s)
-        GROUP BY game_id
+        SELECT game_id, color, opponent_id, my_rating, opp_rating,
+               speed, opening_eco, opening_name, winner, end_status, date
+        FROM {PLAYER_GAMES}
+        WHERE player_id=%s
         """,
-        (username, username),
+        (username,),
     )
     if not games:
         return None
 
-    # Clock-by-phase: scope to this user's known game IDs to avoid a full-table scan.
+    # Clock-by-phase: also narrow by the dates this player actually played, so
+    # chess_move_events partition pruning kicks in instead of scanning every day.
     game_ids = [g["game_id"] for g in games]
-    placeholders = ",".join(["%s"] * len(game_ids))
+    dates = sorted({g["date"] for g in games if g["date"]})
+    game_ph = ",".join(["%s"] * len(game_ids))
+    date_ph = ",".join(["%s"] * len(dates))
     clock_rows = _run(
         f"""
         SELECT phase, ROUND(AVG(clock_remaining)/100.0, 1) AS avg_clock_s
@@ -182,31 +173,27 @@ def _query_player_profile_uncached(username: str) -> dict | None:
                  ELSE 'Endgame' END AS phase,
             MAX(clock_remaining) AS clock_remaining
           FROM {TABLE}
-          WHERE game_id IN ({placeholders}) AND clock_remaining IS NOT NULL
+          WHERE date IN ({date_ph})
+            AND game_id IN ({game_ph})
+            AND clock_remaining IS NOT NULL
           GROUP BY game_id, move_number
         ) t
         GROUP BY phase
         ORDER BY phase
         """,
-        tuple(game_ids),
+        tuple(dates) + tuple(game_ids),
     )
 
-    # ── aggregate in Python ──────────────────────────────────────────────────
-    def my_color(g):     return "white" if g["white_id"] == username else "black"
-    def my_color_cap(g): return my_color(g).capitalize()
-    def my_rating(g):    return g["white_rating"] if my_color(g) == "white" else g["black_rating"]
-    def opp_rating(g):   return g["black_rating"] if my_color(g) == "white" else g["white_rating"]
-    def opponent(g):     return g["black_id"]    if my_color(g) == "white" else g["white_id"]
     def result(g):
         if g["winner"] is None: return "Draw"
-        return "Win" if g["winner"] == my_color(g) else "Loss"
+        return "Win" if g["winner"] == g["color"] else "Loss"
 
     by_speed: dict[str, dict] = {}
     for g in games:
         s = g["speed"]
         b = by_speed.setdefault(s, {"speed": s, "total_games": 0, "wins": 0, "losses": 0, "draws": 0, "rating_sum": 0})
         b["total_games"] += 1
-        b["rating_sum"] += my_rating(g) or 0
+        b["rating_sum"] += g["my_rating"] or 0
         r = result(g)
         if r == "Win": b["wins"] += 1
         elif r == "Loss": b["losses"] += 1
@@ -219,7 +206,7 @@ def _query_player_profile_uncached(username: str) -> dict | None:
 
     by_color: dict[str, dict] = {"White": {"color": "White", "games": 0, "wins": 0}, "Black": {"color": "Black", "games": 0, "wins": 0}}
     for g in games:
-        c = my_color_cap(g)
+        c = g["color"].capitalize()
         by_color[c]["games"] += 1
         if result(g) == "Win": by_color[c]["wins"] += 1
     color = []
@@ -242,7 +229,7 @@ def _query_player_profile_uncached(username: str) -> dict | None:
 
     vs_acc: dict[str, dict] = {}
     for g in games:
-        my_r, opp_r = my_rating(g), opp_rating(g)
+        my_r, opp_r = g["my_rating"], g["opp_rating"]
         if my_r is None or opp_r is None: continue
         if   opp_r < my_r - 100: bucket = "Lower rated"
         elif opp_r > my_r + 100: bucket = "Higher rated"
@@ -255,9 +242,9 @@ def _query_player_profile_uncached(username: str) -> dict | None:
     recent = sorted(games, key=lambda g: g["date"] or "", reverse=True)[:15]
     recent_out = [{
         "game_id":      g["game_id"],
-        "opponent":     opponent(g),
-        "my_rating":    my_rating(g),
-        "opp_rating":   opp_rating(g),
+        "opponent":     g["opponent_id"],
+        "my_rating":    g["my_rating"],
+        "opp_rating":   g["opp_rating"],
         "opening_eco":  g["opening_eco"],
         "opening_name": g["opening_name"],
         "speed":        g["speed"],
@@ -269,7 +256,7 @@ def _query_player_profile_uncached(username: str) -> dict | None:
     total_wins   = sum(1 for g in games if result(g) == "Win")
     total_losses = sum(1 for g in games if result(g) == "Loss")
     total_draws  = total_games - total_wins - total_losses
-    ratings      = [my_rating(g) for g in games if my_rating(g) is not None]
+    ratings      = [g["my_rating"] for g in games if g["my_rating"] is not None]
     avg_rating   = round(sum(ratings) / len(ratings)) if ratings else 0
     win_pct      = round(total_wins * 100 / total_games, 1) if total_games else 0
 

@@ -54,36 +54,51 @@ with DAG(
     tags=["chess", "processing", "polaris"],
 ) as dag_process:
 
+    _process_conf = {
+        "spark.driver.host": "airflow-scheduler",
+        "spark.driver.bindAddress": "0.0.0.0",
+        "spark.driver.port": "20002",
+        "spark.blockManager.port": "20003",
+        "spark.cores.max": "4",
+        "spark.executor.instances": "2",
+        "spark.executor.cores": "2",
+        "spark.executor.memory": "2g",
+        "spark.executor.memoryOverhead": "512m",
+        "spark.driver.memory": "2g",
+        "spark.driver.memoryOverhead": "512m",
+        "spark.rpc.lookupTimeout": "300s",
+        "spark.network.timeout": "300s",
+        "spark.executor.heartbeatInterval": "60s",
+        "spark.executorEnv.PYSPARK_PYTHON": "python3.13",
+    }
+    _iceberg_packages = (
+        "org.apache.hadoop:hadoop-aws:3.3.4,"
+        "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+        "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
+        "org.apache.iceberg:iceberg-aws-bundle:1.5.0"
+    )
+
     process = SparkSubmitOperator(
         task_id="run_process_to_polaris",
         application="/git/repo/processing/process_to_polaris.py",
         conn_id="spark_default",
-        packages=(
-            "org.apache.hadoop:hadoop-aws:3.3.4,"
-            "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
-            "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
-            "org.apache.iceberg:iceberg-aws-bundle:1.5.0"
-        ),
-        conf={
-            "spark.driver.host": "airflow-scheduler",
-            "spark.driver.bindAddress": "0.0.0.0",
-            "spark.driver.port": "20002",
-            "spark.blockManager.port": "20003",
-            "spark.cores.max": "4",
-            "spark.executor.instances": "2",
-            "spark.executor.cores": "2",
-            "spark.executor.memory": "2g",
-            "spark.executor.memoryOverhead": "512m",
-            "spark.driver.memory": "2g",
-            "spark.driver.memoryOverhead": "512m",
-            "spark.rpc.lookupTimeout": "300s",
-            "spark.network.timeout": "300s",
-            "spark.executor.heartbeatInterval": "60s",
-            "spark.executorEnv.PYSPARK_PYTHON": "python3.13",
-        },
+        packages=_iceberg_packages,
+        conf=_process_conf,
         application_args=["{{ ds }}"],
         verbose=True,
     )
+
+    build_player_games = SparkSubmitOperator(
+        task_id="run_build_player_games",
+        application="/git/repo/processing/build_player_games.py",
+        conn_id="spark_default",
+        packages=_iceberg_packages,
+        conf=_process_conf,
+        application_args=["{{ ds }}"],
+        verbose=True,
+    )
+
+    process >> build_player_games
 
 # ─── DAG 3: Stockfish blunder analysis (daily at 01:30 UTC) ───────────────────
 with DAG(
@@ -162,7 +177,13 @@ PROPERTIES (
 
     refresh_catalog = BashOperator(
         task_id="refresh_polaris_catalog",
-        bash_command="mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -e \"REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;\"",
+        bash_command=(
+            'mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -e "'
+            'REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;'
+            'REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;'
+            'REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;'
+            '"'
+        ),
     )
 
     setup_catalog >> refresh_catalog
