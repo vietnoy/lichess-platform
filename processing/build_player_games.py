@@ -4,7 +4,7 @@ import sys
 
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit
+from pyspark.sql.functions import col, lit, to_date
 
 load_dotenv()
 
@@ -95,6 +95,8 @@ def run(date_str: str | None) -> None:
     else:
         logger.info("Building player_games for ALL dates in chess_move_events")
 
+    # chess_move_events stores date as STRING (lit("YYYY-MM-DD")); cast for the
+    # DATE-partitioned player_games table.
     common = [
         col("speed"),
         col("perf"),
@@ -102,7 +104,7 @@ def run(date_str: str | None) -> None:
         col("opening_name"),
         col("winner"),
         col("end_status"),
-        col("date"),
+        to_date(col("date")).alias("date"),
         col("tournament_id"),
     ]
 
