@@ -3,11 +3,13 @@
 @tailwind utilities;
 
 :root {
-  --bg: 14 14 17;
-  --surface: 22 22 26;
-  --border: 38 38 44;
-  --text: 240 240 244;
-  --muted: 140 140 150;
+  /* Light theme. Inverting these flips the whole UI because every component
+     uses Tailwind tokens that resolve through these CSS variables. */
+  --bg: 250 250 252;
+  --surface: 255 255 255;
+  --border: 220 220 228;
+  --text: 18 18 22;
+  --muted: 100 110 120;
   --accent: 245 158 11;
 }
 

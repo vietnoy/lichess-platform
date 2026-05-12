@@ -250,7 +250,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                 />
                 <ReferenceLine y={0} stroke="#444" />
                 <Tooltip
-                  contentStyle={{ background: "rgb(22 22 26)", border: "1px solid rgb(38 38 44)", borderRadius: 6, fontSize: 12 }}
+                  contentStyle={{ background: "rgb(255 255 255)", border: "1px solid rgb(220 220 228)", borderRadius: 6, fontSize: 12, color: "rgb(18 18 22)" }}
                   formatter={(v: number, _n, p: any) => [`${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}  (${p?.payload?.classification ?? "—"})`, "eval"]}
                   labelFormatter={(v) => `ply ${v}`}
                 />
@@ -267,7 +267,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="bg-surface border border-border rounded-md p-4 mb-4 prose prose-invert prose-sm max-w-none prose-p:my-2 prose-ol:my-2 prose-ul:my-2 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1.5"
+              className="bg-surface border border-border rounded-md p-4 mb-4 prose prose-sm max-w-none prose-p:my-2 prose-ol:my-2 prose-ul:my-2 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1.5"
             >
               {analyzeError && <p className="text-rose-400 not-prose">{analyzeError}</p>}
               {analysis && <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis}</ReactMarkdown>}

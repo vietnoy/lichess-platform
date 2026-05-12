@@ -30,7 +30,7 @@ interface Profile {
 }
 
 const RESULT_COLORS = { Win: "#10b981", Loss: "#f43f5e", Draw: "#737373" };
-const TOOLTIP_STYLE = { background: "rgb(22 22 26)", border: "1px solid rgb(38 38 44)", borderRadius: 6, fontSize: 12 };
+const TOOLTIP_STYLE = { background: "rgb(255 255 255)", border: "1px solid rgb(220 220 228)", borderRadius: 6, fontSize: 12, color: "rgb(18 18 22)" };
 
 function Card({ title, children, className = "" }: { title?: string; children: React.ReactNode; className?: string }) {
   return (
@@ -114,7 +114,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
                       dataKey="value"
                       innerRadius={50}
                       outerRadius={85}
-                      stroke="rgb(22 22 26)"
+                      stroke="rgb(255 255 255)"
                     >
                       <Cell fill={RESULT_COLORS.Win} />
                       <Cell fill={RESULT_COLORS.Loss} />

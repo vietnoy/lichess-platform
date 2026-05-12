@@ -248,7 +248,7 @@ function Bubble({ msg }: { msg: ChatMessage }) {
           className={
             isUser
               ? "bg-accent/15 text-text rounded-md px-3.5 py-2 text-sm whitespace-pre-wrap"
-              : "bg-surface border border-border rounded-md px-3.5 py-2.5 text-sm leading-relaxed prose prose-invert prose-sm max-w-none prose-p:my-2 prose-ol:my-2 prose-ul:my-2 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1.5"
+              : "bg-surface border border-border rounded-md px-3.5 py-2.5 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-2 prose-ol:my-2 prose-ul:my-2 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1.5"
           }
         >
           {isUser ? (

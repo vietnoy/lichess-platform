@@ -26,7 +26,7 @@ interface Patterns {
   worst_games: WorstGameRow[];
 }
 
-const TT = { background: "rgb(22 22 26)", border: "1px solid rgb(38 38 44)", borderRadius: 6, fontSize: 12 };
+const TT = { background: "rgb(255 255 255)", border: "1px solid rgb(220 220 228)", borderRadius: 6, fontSize: 12, color: "rgb(18 18 22)" };
 
 function Card({ title, children, className = "" }: { title: string; children: React.ReactNode; className?: string }) {
   return (
