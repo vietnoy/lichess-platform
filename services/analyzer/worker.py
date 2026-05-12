@@ -6,6 +6,7 @@ import datetime
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from typing import Any, TYPE_CHECKING
 
@@ -17,10 +18,15 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _EVAL_DEPTH = 12
+_STOCKFISH_PARALLELISM = 8
 BATCH_GAMES = 20
 THROTTLE_HOURS = 24
 BATCH_USERS = 5
 SLEEP_S = 30
+
+
+def _call_stockfish(fen: str) -> dict | None:
+    return eval_fen(fen, depth=_EVAL_DEPTH)
 
 
 def eval_with_cache(pg: "Connection", fen: str) -> dict | None:
@@ -47,6 +53,60 @@ def eval_with_cache(pg: "Connection", fen: str) -> dict | None:
             (fen, cp, mate, best_move, _EVAL_DEPTH),
         )
     return {"cp": cp, "mate": mate, "best_move": best_move}
+
+
+def eval_plies_batch(pg: "Connection", plies: list[dict]) -> list[dict | None]:
+    """Evaluate plies with one cache read, parallel Stockfish misses, and one insert."""
+    fens = [p["fen"] for p in plies]
+    unique_fens = list(dict.fromkeys(f for f in fens if f))
+
+    cache: dict[str, dict | None] = {}
+    if unique_fens:
+        with pg.cursor() as c:
+            c.execute(
+                "SELECT fen, cp, mate, best_move FROM position_evals"
+                " WHERE fen = ANY(%s)",
+                (unique_fens,),
+            )
+            for fen, cp, mate, best_move in c.fetchall():
+                # Treat a row with both cp and mate NULL as poisoned; retry it.
+                if cp is None and mate is None:
+                    continue
+                cache[fen] = {"cp": cp, "mate": mate, "best_move": best_move}
+
+    misses = [fen for fen in unique_fens if fen not in cache]
+
+    fresh: dict[str, dict | None] = {}
+    if misses:
+        with ThreadPoolExecutor(max_workers=_STOCKFISH_PARALLELISM) as ex:
+            for fen, result in zip(misses, ex.map(_call_stockfish, misses)):
+                fresh[fen] = result
+
+    insertable = [
+        (fen, r.get("cp"), r.get("mate"), r.get("best_move"), _EVAL_DEPTH)
+        for fen, r in fresh.items()
+        if r is not None and (r.get("cp") is not None or r.get("mate") is not None)
+    ]
+    if insertable:
+        with pg.cursor() as c:
+            c.executemany(
+                "INSERT INTO position_evals (fen, cp, mate, best_move, depth)"
+                " VALUES (%s, %s, %s, %s, %s) ON CONFLICT (fen) DO NOTHING",
+                insertable,
+            )
+
+    def normalize(r: dict | None) -> dict | None:
+        if r is None:
+            return None
+        if r.get("cp") is None and r.get("mate") is None:
+            return None
+        return {"cp": r.get("cp"), "mate": r.get("mate"), "best_move": r.get("best_move")}
+
+    combined: dict[str, dict | None] = dict(cache)
+    for fen, result in fresh.items():
+        combined[fen] = normalize(result)
+
+    return [combined.get(p["fen"]) for p in plies]
 
 
 def fetch_eligible_players(
@@ -174,7 +234,7 @@ def process_player(
         if not plies:
             continue
 
-        evals = [eval_with_cache(pg, p["fen"]) for p in plies]
+        evals = eval_plies_batch(pg, plies)
 
         rows: list[tuple] = []
         for i, p in enumerate(plies):

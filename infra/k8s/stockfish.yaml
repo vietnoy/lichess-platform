@@ -4,7 +4,14 @@ metadata:
   name: stockfish
   namespace: chess
 spec:
-  replicas: 2
+  replicas: 8
+  # Brief stockfish downtime during rollout is fine; worker has a retry loop and
+  # the FEN cache absorbs most steady-state load anyway.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 2
   selector:
     matchLabels:
       app: stockfish
@@ -28,10 +35,10 @@ spec:
           resources:
             requests:
               memory: 256Mi
-              cpu: 250m
+              cpu: 100m
             limits:
               memory: 512Mi
-              cpu: "1"
+              cpu: 500m
 ---
 apiVersion: v1
 kind: Service

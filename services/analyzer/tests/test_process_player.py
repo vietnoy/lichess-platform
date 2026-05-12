@@ -19,7 +19,7 @@ def _make_pg() -> MagicMock:
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
 @patch("services.analyzer.worker.fetch_plies")
-@patch("services.analyzer.worker.eval_with_cache")
+@patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_happy_path_one_game_two_plies(
     mock_fetch_games,
@@ -34,7 +34,7 @@ def test_happy_path_one_game_two_plies(
         {"move_number": 1, "fen": "f1", "whose_moved": "white", "move": "e2e4"},
         {"move_number": 2, "fen": "f2", "whose_moved": "black", "move": "e7e5"},
     ]
-    mock_eval.side_effect = [
+    mock_eval.return_value = [
         {"cp": 10, "mate": None, "best_move": "d2d4"},
         {"cp": 20, "mate": None, "best_move": "g8f6"},
     ]
@@ -75,7 +75,7 @@ def test_happy_path_one_game_two_plies(
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
 @patch("services.analyzer.worker.fetch_plies")
-@patch("services.analyzer.worker.eval_with_cache")
+@patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_no_games_returned(
     mock_fetch_games,
@@ -108,7 +108,7 @@ def test_no_games_returned(
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
 @patch("services.analyzer.worker.fetch_plies")
-@patch("services.analyzer.worker.eval_with_cache")
+@patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_no_games_existing_cursor_preserved(
     mock_fetch_games,
@@ -140,7 +140,7 @@ def test_no_games_existing_cursor_preserved(
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
 @patch("services.analyzer.worker.fetch_plies")
-@patch("services.analyzer.worker.eval_with_cache")
+@patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_empty_ply_list_skipped_cursor_advances(
     mock_fetch_games,
@@ -177,7 +177,7 @@ def test_empty_ply_list_skipped_cursor_advances(
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
 @patch("services.analyzer.worker.fetch_plies")
-@patch("services.analyzer.worker.eval_with_cache")
+@patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_eval_none_for_one_ply_no_crash(
     mock_fetch_games,
@@ -193,7 +193,7 @@ def test_eval_none_for_one_ply_no_crash(
         {"move_number": 2, "fen": "f2", "whose_moved": "black", "move": "e7e5"},
     ]
     # evals[0] is None; evals[1] has data
-    mock_eval.side_effect = [None, {"cp": 10, "mate": None, "best_move": "d2d4"}]
+    mock_eval.return_value = [None, {"cp": 10, "mate": None, "best_move": "d2d4"}]
 
     pg = _make_pg()
     sr = MagicMock()
@@ -221,7 +221,7 @@ def test_eval_none_for_one_ply_no_crash(
 @patch("services.analyzer.worker.update_cursor")
 @patch("services.analyzer.worker.insert_evaluations")
 @patch("services.analyzer.worker.fetch_plies")
-@patch("services.analyzer.worker.eval_with_cache")
+@patch("services.analyzer.worker.eval_plies_batch")
 @patch("services.analyzer.worker.fetch_player_games")
 def test_batch_limit_honored(
     mock_fetch_games,
