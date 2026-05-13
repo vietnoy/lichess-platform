@@ -48,6 +48,22 @@ STREAM_ID_BASE   = "chess-analytics"
 
 _shutdown      = threading.Event()
 _producer_lock = threading.Lock()
+_delivery_failures = 0
+_delivery_failures_lock = threading.Lock()
+
+
+def _delivery_callback(err, msg):
+    # Fires once per message after produce(). Errors here mean the broker
+    # ultimately rejected or never acked the message - NOT just a transient
+    # in-flight failure (librdkafka has already retried internally).
+    if err is not None:
+        global _delivery_failures
+        with _delivery_failures_lock:
+            _delivery_failures += 1
+        logger.error(
+            "Kafka delivery failed: topic=%s key=%s err=%s",
+            msg.topic(), msg.key(), err,
+        )
 
 
 def signal_handler(sig, frame):
@@ -61,8 +77,11 @@ signal.signal(signal.SIGINT, signal_handler)
 
 def build_producer():
     config = {
-        "bootstrap.servers": BOOTSTRAP_SERVER,
-        "acks":              "all",
+        "bootstrap.servers":             BOOTSTRAP_SERVER,
+        "acks":                          "all",
+        "enable.idempotence":            True,
+        "queue.buffering.max.messages":  200000,
+        "compression.type":              "lz4",
     }
     if CLUSTER_API_KEY:
         config.update({
@@ -75,13 +94,36 @@ def build_producer():
 
 
 def produce(producer, topic, key, value):
+    payload = json.dumps(value).encode("utf-8")
+    key_bytes = key.encode("utf-8")
     with _producer_lock:
-        producer.produce(
-            topic=topic,
-            key=key.encode("utf-8"),
-            value=json.dumps(value).encode("utf-8"),
-        )
-        producer.poll(0)
+        # If librdkafka's internal queue is full, drain delivery callbacks
+        # to free slots and retry. Total drain budget ~30s before we drop.
+        # Dropping is a data-loss event (game_end has no retry path), so it's
+        # ERROR-level. _shutdown short-circuits so SIGTERM doesn't block here.
+        drain_budget_s = 30.0
+        poll_step_s = 1.0
+        waited = 0.0
+        while True:
+            try:
+                producer.produce(
+                    topic=topic, key=key_bytes, value=payload,
+                    on_delivery=_delivery_callback,
+                )
+                producer.poll(0)
+                return
+            except BufferError:
+                if _shutdown.is_set() or waited >= drain_budget_s:
+                    global _delivery_failures
+                    with _delivery_failures_lock:
+                        _delivery_failures += 1
+                    logger.error(
+                        "Kafka producer queue full after %.0fs drain; dropping message topic=%s key=%s",
+                        waited, topic, key,
+                    )
+                    return
+                producer.poll(poll_step_s)
+                waited += poll_step_s
 
 
 def init_db():
@@ -382,6 +424,16 @@ def export_worker(export_queue, producer):
                     logger.warning(f"[Export] Failed to parse line: {e}")
 
             logger.info(f"[Export] Fetched {count}/{len(batch)} games")
+            producer.poll(0)
+            with _delivery_failures_lock:
+                total_failures = _delivery_failures
+            prev = getattr(export_worker, "_seen_failures", 0)
+            delta = total_failures - prev
+            if delta > 0:
+                export_worker._seen_failures = total_failures
+                logger.warning(
+                    "Kafka delivery failures: +%s this batch (total=%s)", delta, total_failures,
+                )
 
         except Exception as e:
             logger.warning(f"[Export] Error: {e}")
@@ -530,7 +582,9 @@ def run():
         s.stop()
     for s in streams:
         s.join(timeout=10)
-    producer.flush()
+    remaining = producer.flush(timeout=30)
+    if remaining > 0:
+        logger.warning("Kafka producer.flush() left %s messages undelivered at shutdown", remaining)
     logger.info("Shutdown complete")
 
 
