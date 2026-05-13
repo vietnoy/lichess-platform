@@ -59,6 +59,12 @@ with DAG(
         "spark.driver.bindAddress": "0.0.0.0",
         "spark.driver.port": "20002",
         "spark.blockManager.port": "20003",
+        # AWS SDK v2 needs an explicit region or S3FileIO fails at Iceberg
+        # commit. Pod-level AWS_REGION env (e6daba9) does not survive the
+        # Spark standalone executor fork — set it in the launch contract.
+        "spark.driver.extraJavaOptions": "-Daws.region=us-east-1",
+        "spark.executor.extraJavaOptions": "-Daws.region=us-east-1",
+        "spark.executorEnv.AWS_REGION": "us-east-1",
         "spark.cores.max": "4",
         "spark.executor.instances": "2",
         "spark.executor.cores": "2",
@@ -138,6 +144,10 @@ with DAG(
             "spark.driver.bindAddress": "0.0.0.0",
             "spark.driver.port": "20002",
             "spark.blockManager.port": "20003",
+            # See _process_conf — same reason, this DAG writes Iceberg too.
+            "spark.driver.extraJavaOptions": "-Daws.region=us-east-1",
+            "spark.executor.extraJavaOptions": "-Daws.region=us-east-1",
+            "spark.executorEnv.AWS_REGION": "us-east-1",
             "spark.cores.max": "4",
             "spark.executor.instances": "2",
             "spark.executor.cores": "2",
