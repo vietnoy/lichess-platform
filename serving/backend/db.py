@@ -183,33 +183,33 @@ def _query_player_profile_uncached(username: str) -> dict | None:
     if not games:
         return None
 
-    # Clock-by-phase: also narrow by the dates this player actually played, so
-    # chess_move_events partition pruning kicks in instead of scanning every day.
-    game_ids = [g["game_id"] for g in games]
-    # chess_move_events.date is a STRING column (lit(date_str) in the writer);
-    # player_games.date is DATE, so cast to ISO strings before binding for IN.
-    dates = sorted({g["date"].isoformat() for g in games if g["date"]})
-    game_ph = ",".join(["%s"] * len(game_ids))
-    date_ph = ",".join(["%s"] * len(dates))
+    # Clock-by-phase JOINs against player_games directly so we don't ship a
+    # giant IN-list across the wire for power users with thousands of games.
+    # player_games.date is DATE; chess_move_events.date is STRING - cast on the
+    # join key. StarRocks broadcasts the (small) player_games subquery and uses
+    # runtime filters on m.date for partition pruning.
     clock_rows = _run(
         f"""
         SELECT phase, ROUND(AVG(clock_remaining)/100.0, 1) AS avg_clock_s
         FROM (
           SELECT
-            CASE WHEN move_number<=10 THEN 'Opening'
-                 WHEN move_number<=30 THEN 'Middlegame'
+            CASE WHEN m.move_number<=10 THEN 'Opening'
+                 WHEN m.move_number<=30 THEN 'Middlegame'
                  ELSE 'Endgame' END AS phase,
-            MAX(clock_remaining) AS clock_remaining
-          FROM {TABLE}
-          WHERE date IN ({date_ph})
-            AND game_id IN ({game_ph})
-            AND clock_remaining IS NOT NULL
-          GROUP BY game_id, move_number
+            MAX(m.clock_remaining) AS clock_remaining
+          FROM {TABLE} m
+          JOIN (
+            SELECT DISTINCT game_id, CAST(date AS STRING) AS date
+            FROM {PLAYER_GAMES}
+            WHERE player_id = %s
+          ) g ON m.game_id = g.game_id AND m.date = g.date
+          WHERE m.clock_remaining IS NOT NULL
+          GROUP BY m.game_id, m.move_number
         ) t
         GROUP BY phase
         ORDER BY phase
         """,
-        tuple(dates) + tuple(game_ids),
+        (username,),
     )
 
     def result(g):
