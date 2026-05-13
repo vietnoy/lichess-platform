@@ -80,7 +80,7 @@ Do not ping for: code style preferences, minor naming choices, defaults that mat
 
 ## Project-specific rules
 
-**Architecture.** Kafka → Spark (kafka_to_minio) → MinIO → Spark (process_to_polaris, analyze_blunders) → Polaris Iceberg → StarRocks. Webapp: FastAPI backend (`serving/backend/`) + Next.js 14 frontend (`serving/frontend/`) consumed via `/api/*` rewrites.
+**Architecture.** Kafka → Spark (kafka_to_minio) → MinIO → Spark (process_to_polaris, build_player_games, compact_ondemand_evals) → Polaris Iceberg → StarRocks. Blunder analysis is continuous via `services/analyzer/worker.py` (Postgres staging → daily Spark compaction into Iceberg). Webapp: FastAPI backend (`serving/backend/`) + Next.js 14 frontend (`serving/frontend/`) consumed via `/api/*` rewrites.
 
 **Memory budget.** Single k3s node, ~10 GiB RAM. Idle usage already ~71%. New services must declare tight `resources.limits.memory` (≤512Mi for typical pods). Do not add a service without a memory plan.
 

@@ -118,53 +118,7 @@ with DAG(
 
     process >> build_player_games >> compact_ondemand
 
-# ─── DAG 3: Stockfish blunder analysis (daily at 01:30 UTC) ───────────────────
-with DAG(
-    dag_id="analyze_blunders",
-    default_args=default_args,
-    description="Analyze tracked-player moves with Stockfish and write move_evaluations to Polaris Iceberg",
-    start_date=datetime(2026, 4, 14),
-    schedule="30 1 * * *",
-    catchup=False,
-    tags=["chess", "analysis", "stockfish", "polaris"],
-) as dag_analyze:
-
-    analyze = SparkSubmitOperator(
-        task_id="run_analyze_blunders",
-        application="/git/repo/processing/analyze_blunders.py",
-        conn_id="spark_default",
-        packages=(
-            "org.apache.hadoop:hadoop-aws:3.3.4,"
-            "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
-            "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
-            "org.apache.iceberg:iceberg-aws-bundle:1.5.0"
-        ),
-        conf={
-            "spark.driver.host": "airflow-scheduler",
-            "spark.driver.bindAddress": "0.0.0.0",
-            "spark.driver.port": "20002",
-            "spark.blockManager.port": "20003",
-            # See _process_conf — same reason, this DAG writes Iceberg too.
-            "spark.driver.extraJavaOptions": "-Daws.region=us-east-1",
-            "spark.executor.extraJavaOptions": "-Daws.region=us-east-1",
-            "spark.executorEnv.AWS_REGION": "us-east-1",
-            "spark.cores.max": "4",
-            "spark.executor.instances": "2",
-            "spark.executor.cores": "2",
-            "spark.executor.memory": "2g",
-            "spark.executor.memoryOverhead": "512m",
-            "spark.driver.memory": "2g",
-            "spark.driver.memoryOverhead": "512m",
-            "spark.rpc.lookupTimeout": "300s",
-            "spark.network.timeout": "300s",
-            "spark.executor.heartbeatInterval": "60s",
-            "spark.executorEnv.PYSPARK_PYTHON": "python3.13",
-        },
-        application_args=["{{ ds }}"],
-        verbose=True,
-    )
-
-# ─── DAG 4: Load enriched data into StarRocks via Polaris ─────────────────────
+# ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────
 with DAG(
     dag_id="init_catalog_starrocks",
     default_args=default_args,
