@@ -22,7 +22,7 @@ _STOCKFISH_PARALLELISM = 8
 BATCH_GAMES = 20
 THROTTLE_HOURS = 24
 BATCH_USERS = 5
-SLEEP_S = 30
+SLEEP_S = 5
 
 
 def _call_stockfish(fen: str) -> dict | None:
@@ -338,22 +338,55 @@ def classify_move(
     return swing, classification
 
 
-def cycle(pg: "Connection", sr: Any, batch_users: int = BATCH_USERS) -> int:
+def cycle(pg_pool: Any, sr_pool: Any, batch_users: int = BATCH_USERS) -> int:
     """One pass: fetch up to batch_users eligible players and process each.
 
     Per-player failures are caught and logged so one bad player doesn't kill the loop.
     Returns the number of players attempted (regardless of per-player success/failure).
     """
-    targets = fetch_eligible_players(pg, batch_users)
-    # Release the SELECT's transaction so per-player work starts clean.
-    pg.commit()
-    for player_id, last_game_id, last_game_date in targets:
+    main_pg = pg_pool.getconn()
+    try:
+        targets = fetch_eligible_players(main_pg, batch_users)
+        # Release the SELECT's transaction so per-player work starts clean.
+        main_pg.commit()
+    finally:
+        pg_pool.putconn(main_pg)
+
+    if not targets:
+        return 0
+
+    def _run_one(target: tuple[str, str | None, datetime.date | None]) -> None:
+        player_id, last_game_id, last_game_date = target
+        pg = pg_pool.getconn()
+        try:
+            sr = sr_pool.get_connection()
+        except Exception:
+            pg_pool.putconn(pg)
+            raise
         try:
             n = process_player(pg, sr, player_id, last_game_id, last_game_date)
             log.info("processed player=%s games=%s", player_id, n)
         except Exception:
-            pg.rollback()
+            try:
+                pg.rollback()
+            except Exception:
+                pass
             log.exception("process_player failed for player=%s", player_id)
+        finally:
+            # Wrap each cleanup independently so a putconn failure doesn't
+            # short-circuit sr.close() and leak the StarRocks connection.
+            try:
+                pg_pool.putconn(pg)
+            except Exception:
+                log.exception("pg_pool.putconn failed for player=%s", player_id)
+            try:
+                sr.close()
+            except Exception:
+                pass
+
+    with ThreadPoolExecutor(max_workers=batch_users) as ex:
+        list(ex.map(_run_one, targets))
+
     return len(targets)
 
 
@@ -373,7 +406,9 @@ def _touch_liveness() -> None:
 def main() -> None:
     """Entry point. Connects to Postgres + StarRocks, loops cycle() forever."""
     import mysql.connector
+    import mysql.connector.pooling
     import psycopg2
+    import psycopg2.pool
 
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO"),
@@ -386,19 +421,22 @@ def main() -> None:
     sr_user = os.getenv("STARROCKS_USER", "root")
     sr_password = os.getenv("STARROCKS_PASSWORD", "")
 
-    def _connect_pg():
-        return psycopg2.connect(pg_dsn)
-
-    def _connect_sr():
+    sr_kwargs = {
+        "host": sr_host,
+        "port": sr_port,
+        "user": sr_user,
+        "password": sr_password,
         # autocommit=True: StarRocks doesn't honor MySQL transaction semantics, and
         # the connector otherwise tracks fake txn state that desyncs over time.
-        return mysql.connector.connect(
-            host=sr_host, port=sr_port, user=sr_user, password=sr_password,
-            autocommit=True,
-        )
+        "autocommit": True,
+    }
 
-    pg = _connect_pg()
-    sr = _connect_sr()
+    pg_pool = psycopg2.pool.ThreadedConnectionPool(
+        minconn=1, maxconn=BATCH_USERS + 1, dsn=pg_dsn,
+    )
+    sr_pool = mysql.connector.pooling.MySQLConnectionPool(
+        pool_name="analyzer", pool_size=BATCH_USERS + 1, **sr_kwargs,
+    )
     # Touch liveness file at startup so the probe has something to read before
     # the first cycle completes (a slow first cycle can take ~3-4 minutes).
     _touch_liveness()
@@ -406,22 +444,22 @@ def main() -> None:
 
     while True:
         try:
-            cycle(pg, sr)
+            cycle(pg_pool, sr_pool)
             _touch_liveness()
         except psycopg2.OperationalError:
-            log.exception("postgres connection broken; reconnecting")
+            log.exception("postgres pool issue; recreating pool")
             try:
-                pg.close()
+                pg_pool.closeall()
             except Exception:
                 pass
-            pg = _connect_pg()
+            pg_pool = psycopg2.pool.ThreadedConnectionPool(
+                1, BATCH_USERS + 1, dsn=pg_dsn,
+            )
         except mysql.connector.Error:
-            log.exception("starrocks connection broken; reconnecting")
-            try:
-                sr.close()
-            except Exception:
-                pass
-            sr = _connect_sr()
+            log.exception("starrocks pool issue; recreating pool")
+            sr_pool = mysql.connector.pooling.MySQLConnectionPool(
+                pool_name="analyzer", pool_size=BATCH_USERS + 1, **sr_kwargs,
+            )
         except Exception:
             log.exception("cycle failed")
         time.sleep(SLEEP_S)

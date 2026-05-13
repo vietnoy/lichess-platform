@@ -1,6 +1,6 @@
 """Tests for cycle() in services/analyzer/worker.py."""
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,6 +13,14 @@ def _make_pg() -> MagicMock:
 
 def _make_sr() -> MagicMock:
     return MagicMock()
+
+
+def _make_pool(conn: MagicMock) -> MagicMock:
+    """Return a mock pool whose connection getters yield conn."""
+    pool = MagicMock()
+    pool.getconn.return_value = conn
+    pool.get_connection.return_value = conn
+    return pool
 
 
 def _targets(n: int) -> list[tuple]:
@@ -33,8 +41,10 @@ def test_cycle_happy_path_three_players(mock_fetch, mock_process):
 
     pg = _make_pg()
     sr = _make_sr()
+    pg_pool = _make_pool(pg)
+    sr_pool = _make_pool(sr)
 
-    result = cycle(pg, sr)
+    result = cycle(pg_pool, sr_pool)
 
     assert result == 3
     # SELECT transaction released before per-player work begins
@@ -59,8 +69,10 @@ def test_cycle_one_player_fails_others_continue(mock_fetch, mock_process):
 
     pg = _make_pg()
     sr = _make_sr()
+    pg_pool = _make_pool(pg)
+    sr_pool = _make_pool(sr)
 
-    result = cycle(pg, sr)
+    result = cycle(pg_pool, sr_pool)
 
     assert result == 3
     assert mock_process.call_count == 3
@@ -80,8 +92,10 @@ def test_cycle_empty_target_list(mock_fetch, mock_process):
 
     pg = _make_pg()
     sr = _make_sr()
+    pg_pool = _make_pool(pg)
+    sr_pool = _make_pool(sr)
 
-    result = cycle(pg, sr)
+    result = cycle(pg_pool, sr_pool)
 
     assert result == 0
     mock_process.assert_not_called()
@@ -101,8 +115,10 @@ def test_cycle_passes_batch_users(mock_fetch, mock_process):
 
     pg = _make_pg()
     sr = _make_sr()
+    pg_pool = _make_pool(pg)
+    sr_pool = _make_pool(sr)
 
-    cycle(pg, sr, batch_users=10)
+    cycle(pg_pool, sr_pool, batch_users=10)
 
     mock_fetch.assert_called_once_with(pg, 10)
 
@@ -119,8 +135,10 @@ def test_cycle_fetch_failure_propagates(mock_fetch, mock_process):
 
     pg = _make_pg()
     sr = _make_sr()
+    pg_pool = _make_pool(pg)
+    sr_pool = _make_pool(sr)
 
     with pytest.raises(RuntimeError):
-        cycle(pg, sr)
+        cycle(pg_pool, sr_pool)
 
     mock_process.assert_not_called()
