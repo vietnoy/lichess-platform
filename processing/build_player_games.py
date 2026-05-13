@@ -2,11 +2,12 @@ import logging
 import os
 import sys
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, to_date
 
-load_dotenv()
+# See process_to_polaris.py — same dotenv >=1.1.0 stack-frame assertion.
+load_dotenv(find_dotenv(usecwd=True))
 
 MINIO_ENDPOINT     = os.getenv("MINIO_ENDPOINT")
 MINIO_ACCESS_KEY   = os.getenv("MINIO_ACCESS_KEY")

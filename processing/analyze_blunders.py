@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 import requests
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from pyspark.sql import Row, SparkSession
 from pyspark.sql.functions import col, lit, to_date
 from pyspark.sql.types import (
@@ -17,7 +17,8 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-load_dotenv()
+# See process_to_polaris.py — same dotenv >=1.1.0 stack-frame assertion.
+load_dotenv(find_dotenv(usecwd=True))
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")

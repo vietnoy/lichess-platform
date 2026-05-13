@@ -125,7 +125,10 @@ def module(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "dotenv",
-        SimpleNamespace(load_dotenv=lambda: None),
+        SimpleNamespace(
+            find_dotenv=lambda **kwargs: "",
+            load_dotenv=lambda *args, **kwargs: None,
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
