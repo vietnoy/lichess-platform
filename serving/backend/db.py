@@ -85,6 +85,22 @@ def _run(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def query_game(game_id: str) -> list[dict]:
+    # chess_move_events.date is the partition column; without a `date =` predicate
+    # this scans every partition. Look it up via player_games (one row per game) first.
+    date_rows = _run(
+        f"""
+        SELECT MIN(date) AS date
+        FROM {PLAYER_GAMES}
+        WHERE game_id = %s
+        """,
+        (game_id,),
+    )
+    if not date_rows or date_rows[0]["date"] is None:
+        return []
+    game_date = date_rows[0]["date"]
+    if hasattr(game_date, "isoformat"):
+        game_date = game_date.isoformat()
+
     # Same upstream-duplicates issue: dedupe at (game_id, move_number) granularity.
     return _run(
         f"""
@@ -104,10 +120,11 @@ def query_game(game_id: str) -> list[dict]:
                MAX(end_status)         AS end_status
         FROM {TABLE}
         WHERE game_id = %s
+          AND date = %s
         GROUP BY move_number
         ORDER BY move_number
         """,
-        (game_id,),
+        (game_id, game_date),
     )
 
 
@@ -115,18 +132,26 @@ def query_game_evaluations(game_id: str) -> list[dict]:
     """Return per-ply evaluation timeline for a game."""
     return _run(
         f"""
-        SELECT ply,
-               played_move,
-               best_move,
-               eval_cp,
-               mate,
-               eval_swing_cp_from_prev,
-               classification
-        FROM {EVAL_TABLE}
-        WHERE game_id = %s
+        SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev, classification
+        FROM (
+          SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev, classification,
+                 ROW_NUMBER() OVER (PARTITION BY ply ORDER BY source_priority) AS rn
+          FROM (
+            SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp AS eval_swing_cp_from_prev,
+                   classification, 1 AS source_priority
+            FROM {EVAL_TABLE_ONDEMAND}
+            WHERE game_id = %s
+            UNION ALL
+            SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev,
+                   classification, 2 AS source_priority
+            FROM {EVAL_TABLE}
+            WHERE game_id = %s
+          ) src
+        ) ranked
+        WHERE rn = 1
         ORDER BY ply
         """,
-        (game_id,),
+        (game_id, game_id),
     )
 
 
@@ -527,7 +552,9 @@ def query_exercise(username: str) -> dict | None:
                  g.opening_name, g.opening_eco, g.speed, g.white_id, g.black_id
           FROM {EVAL_TABLE} e
           JOIN (
-            SELECT game_id, opening_name, opening_eco, speed, white_id, black_id
+            SELECT game_id, opening_name, opening_eco, speed, white_id, black_id,
+                   CASE WHEN white_id = %s THEN 'w'
+                        WHEN black_id = %s THEN 'b' END AS user_side
             FROM {TABLE}
             WHERE move_number = 1
               AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
@@ -536,6 +563,7 @@ def query_exercise(username: str) -> dict | None:
           ) g ON g.game_id = e.game_id
           WHERE e.classification IN ('blunder', 'mistake')
             AND e.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+            AND SPLIT_PART(e.fen, ' ', 2) = g.user_side
           LIMIT 500
         )
         UNION ALL
@@ -559,7 +587,7 @@ def query_exercise(username: str) -> dict | None:
           LIMIT 500
         )
         """,
-        (username, username, username, username, username),
+        (username, username, username, username, username, username, username),
     )
     candidates = []
     for r in rows:

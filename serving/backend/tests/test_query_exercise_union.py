@@ -14,7 +14,9 @@ def test_query_exercise_unions_legacy_and_ondemand_tables():
     assert "UNION ALL" in sql
     assert "eval_swing_cp_from_prev AS eval_swing_cp" in sql
     assert "e.player_id = %s" in sql
-    assert params == ("alice", "alice", "alice", "alice", "alice")
+    assert "user_side" in sql
+    assert "SPLIT_PART(e.fen, ' ', 2) = g.user_side" in sql
+    assert params == ("alice", "alice", "alice", "alice", "alice", "alice", "alice")
 
 
 def test_query_exercise_returns_normalized_eval_swing_cp():
