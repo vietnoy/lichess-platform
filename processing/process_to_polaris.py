@@ -60,6 +60,40 @@ def build_spark():
     )
 
 
+def ensure_table(spark) -> None:
+    spark.sql(
+        """
+        CREATE TABLE IF NOT EXISTS polaris.prod.chess_move_events (
+            game_id          STRING,
+            move_number      INT,
+            move             STRING,
+            fen              STRING,
+            whose_moved      STRING,
+            clock_remaining  INT,
+            opening_eco      STRING,
+            opening_name     STRING,
+            clock_initial    INT,
+            clock_increment  INT,
+            speed            STRING,
+            perf             STRING,
+            variant          STRING,
+            white_id         STRING,
+            white_rating     INT,
+            white_title      STRING,
+            black_id         STRING,
+            black_rating     INT,
+            black_title      STRING,
+            tournament_id    STRING,
+            winner           STRING,
+            end_status       STRING,
+            date             STRING
+        )
+        USING iceberg
+        PARTITIONED BY (date)
+        """
+    )
+
+
 def _explode_partition(iterator):
     import chess
     import json
@@ -148,6 +182,7 @@ _move_schema = StructType([
 def run(date_str: str):
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
+    ensure_table(spark)
 
     moves_path      = f"s3a://{BUCKET_DEV}/moves/date={date_str}"
     game_start_path = f"s3a://{BUCKET_DEV}/game_start/date={date_str}"
