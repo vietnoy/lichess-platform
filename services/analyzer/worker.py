@@ -17,6 +17,26 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
+def _is_connection_error(exc: BaseException) -> bool:
+    # Lazy-imported so the worker module imports cleanly without psycopg2 /
+    # mysql.connector installed (the tests' fake-mysql fixture relies on this).
+    connection_errors: list[type[BaseException]] = []
+    try:
+        import psycopg2  # noqa: PLC0415
+
+        connection_errors.extend([psycopg2.OperationalError, psycopg2.InterfaceError])
+    except ImportError:
+        pass
+    try:
+        from mysql.connector import errors as mysql_errors  # noqa: PLC0415
+
+        connection_errors.extend([mysql_errors.OperationalError, mysql_errors.InterfaceError])
+    except ImportError:
+        pass
+    return bool(connection_errors) and isinstance(exc, tuple(connection_errors))
+
+
 _EVAL_DEPTH = 12
 _STOCKFISH_PARALLELISM = 8
 BATCH_GAMES = 20
@@ -366,11 +386,14 @@ def cycle(pg_pool: Any, sr_pool: Any, batch_users: int = BATCH_USERS) -> int:
         try:
             n = process_player(pg, sr, player_id, last_game_id, last_game_date)
             log.info("processed player=%s games=%s", player_id, n)
-        except Exception:
+        except Exception as exc:
             try:
                 pg.rollback()
             except Exception:
                 pass
+            if _is_connection_error(exc):
+                log.exception("connection error while processing player=%s", player_id)
+                raise
             log.exception("process_player failed for player=%s", player_id)
         finally:
             # Wrap each cleanup independently so a putconn failure doesn't
