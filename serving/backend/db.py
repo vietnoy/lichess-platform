@@ -305,20 +305,42 @@ def query_player_patterns(username: str) -> dict | None:
 
     rows = _run(
         f"""
-        SELECT e.game_id, e.ply, e.classification, m.whose_moved, m.clock_remaining
-        FROM {EVAL_TABLE} e
-        JOIN (
-          SELECT game_id, move_number,
-                 MAX(whose_moved)     AS whose_moved,
-                 MAX(clock_remaining) AS clock_remaining
-          FROM {TABLE}
-          WHERE game_id IN ({placeholders})
-          GROUP BY game_id, move_number
-        ) m
-          ON e.game_id = m.game_id AND e.ply = m.move_number
-        WHERE e.game_id IN ({placeholders})
+        (
+          SELECT e.game_id, e.ply, e.classification, m.whose_moved, m.clock_remaining
+          FROM {EVAL_TABLE} e
+          JOIN (
+            SELECT game_id, move_number,
+                   MAX(whose_moved)     AS whose_moved,
+                   MAX(clock_remaining) AS clock_remaining
+            FROM {TABLE}
+            WHERE game_id IN ({placeholders})
+            GROUP BY game_id, move_number
+          ) m
+            ON e.game_id = m.game_id AND e.ply = m.move_number
+          WHERE e.game_id IN ({placeholders})
+        )
+        UNION
+        -- Bare UNION dedupes when the same game exists in both tables (legacy
+        -- daily DAG covered top-5 for some dates, on-demand covers everyone).
+        -- Same Stockfish depth produces identical rows in both, so a UNION-with-ALL
+        -- would double-count blunders/mistakes in the aggregate below.
+        (
+          SELECT e.game_id, e.ply, e.classification, m.whose_moved, m.clock_remaining
+          FROM {EVAL_TABLE_ONDEMAND} e
+          JOIN (
+            SELECT game_id, move_number,
+                   MAX(whose_moved)     AS whose_moved,
+                   MAX(clock_remaining) AS clock_remaining
+            FROM {TABLE}
+            WHERE game_id IN ({placeholders})
+            GROUP BY game_id, move_number
+          ) m
+            ON e.game_id = m.game_id AND e.ply = m.move_number
+          WHERE e.game_id IN ({placeholders})
+            AND e.player_id = %s
+        )
         """,
-        tuple(game_ids) + tuple(game_ids),
+        tuple(game_ids) * 4 + (username,),
     )
     if not rows:
         return None
@@ -338,8 +360,6 @@ def query_player_patterns(username: str) -> dict | None:
         if (r["whose_moved"] == "white" and r["white_id"] == username)
         or (r["whose_moved"] == "black" and r["black_id"] == username)
     ]
-    if not rows:
-        return None
     if not rows:
         return None
 
