@@ -203,10 +203,12 @@ spec:
             periodSeconds: 15
           resources:
             requests:
-              memory: 512Mi
+              memory: 768Mi
               cpu: 250m
             limits:
-              memory: 1Gi
+              # Bumped from 1Gi — concurrent bulk fetch_plies_batch queries from
+              # the analyzer pushed Used over 870Mi and OOM-killed the query.
+              memory: 2Gi
               cpu: "2"
 ---
 apiVersion: v1
