@@ -189,6 +189,17 @@ def run(date_str: str):
     game_end_path   = f"s3a://{BUCKET_DEV}/game_end/date={date_str}"
 
     logger.info(f"Reading raw game exports for date={date_str}")
+    # Skip cleanly if no MinIO partition for this date (no games started that
+    # day, or kafka_to_minio hasn't ingested them yet).
+    hadoop_conf = spark._jsc.hadoopConfiguration()
+    fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+        spark._jvm.java.net.URI(moves_path), hadoop_conf
+    )
+    if not fs.exists(spark._jvm.org.apache.hadoop.fs.Path(moves_path)):
+        logger.info(f"No partition at {moves_path}, skipping")
+        spark.stop()
+        return
+
     raw_games = spark.read.parquet(moves_path)
 
     if raw_games.head(1) == []:
