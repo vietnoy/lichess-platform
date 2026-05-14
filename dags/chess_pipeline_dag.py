@@ -51,6 +51,10 @@ with DAG(
     start_date=datetime(2026, 4, 14),
     schedule="15 1 * * *",
     catchup=True,
+    # Serial execution: each date depends on its own MinIO partition and the
+    # Spark cluster only has one slot of headroom on this node. Parallel runs
+    # blow out the DAG-processor import budget and OOM the scheduler.
+    max_active_runs=1,
     tags=["chess", "processing", "polaris"],
 ) as dag_process:
 
