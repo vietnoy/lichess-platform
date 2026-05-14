@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, to_date, current_timestamp
@@ -8,6 +9,13 @@ from pyspark.sql.types import (
 )
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 BOOTSTRAP_SERVERS  = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
 CLUSTER_API_KEY    = os.getenv("CLUSTER_API_KEY")
@@ -90,15 +98,13 @@ def build_spark():
         .getOrCreate()
     )
 
-
-logger = logging.getLogger(__name__)
-
-
 def run():
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
 
     queries = []
+    topic_totals = {topic.split(".")[-1]: 0 for topic in SCHEMAS}
+    totals_lock = threading.Lock()
 
     for topic, schema in SCHEMAS.items():
         topic_key = topic.split(".")[-1]
@@ -122,17 +128,19 @@ def run():
         def write_batch(batch_df, batch_id, key=topic_key):
             count = batch_df.count()
             logger.info(f"[{key}] batch={batch_id} rows={count}")
+            with totals_lock:
+                topic_totals[key] += count
             if count > 0:
                 batch_df.write.mode("append").partitionBy("date").parquet(f"s3a://{BUCKET_DEV}/{key}")
 
         q = (
             df.writeStream
             .outputMode("append")
-            # _checkpoints_v2: prior path inherited stale offsets from the
+            # _checkpoints_selfhosted_v1: prior path inherited stale offsets from the
             # Confluent->self-hosted Kafka migration. A simple wipe wasn't
             # enough — Spark's first run after the wipe recorded the wrong
             # source initial offsets back. New path guarantees a clean slate.
-            .option("checkpointLocation", f"s3a://{BUCKET_DEV}/_checkpoints_v2/{topic_key}")
+            .option("checkpointLocation", f"s3a://{BUCKET_DEV}/_checkpoints_selfhosted_v1/{topic_key}")
             .trigger(availableNow=True)
             .foreachBatch(write_batch)
             .start()
@@ -142,6 +150,10 @@ def run():
 
     for q in queries:
         q.awaitTermination()
+
+    logger.info("kafka_to_minio totals: %s", topic_totals)
+    if sum(topic_totals.values()) == 0:
+        logger.warning("kafka_to_minio completed with zero rows; no new MinIO partitions were written")
 
 
 if __name__ == "__main__":
