@@ -5,6 +5,7 @@ import sys
 from dotenv import find_dotenv, load_dotenv
 import psycopg2
 from pyspark.sql import SparkSession
+from pyspark.storagelevel import StorageLevel
 
 # See process_to_polaris.py — same dotenv >=1.1.0 stack-frame assertion.
 load_dotenv(find_dotenv(usecwd=True))
@@ -30,6 +31,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def positive_rowcount(rowcount) -> int:
+    return rowcount if isinstance(rowcount, int) and rowcount > 0 else 0
+
+
 def build_spark() -> SparkSession:
     packages = [
         "org.apache.hadoop:hadoop-aws:3.3.4",
@@ -42,7 +47,8 @@ def build_spark() -> SparkSession:
         SparkSession.builder
         .appName("chess-compact-ondemand-evals")
         .config("spark.jars.packages", ",".join(packages))
-        .config("spark.sql.shuffle.partitions", "8")
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.shuffle.partitions", "32")
         .config("spark.sql.catalog.polaris", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.polaris.type", "rest")
         .config("spark.sql.catalog.polaris.uri", POLARIS_URI)
@@ -97,6 +103,7 @@ def read_staging(spark: SparkSession):
         .option("user", POSTGRES_USER)
         .option("password", POSTGRES_PASSWORD)
         .option("driver", "org.postgresql.Driver")
+        .option("fetchsize", "10000")
         .load()
     )
 
@@ -105,7 +112,7 @@ def enrich_with_dates(spark: SparkSession, staging):
     player_games = (
         spark.table("polaris.prod.player_games")
         .select("game_id", "player_id", "date")
-        .distinct()
+        .dropDuplicates(["game_id", "player_id"])
     )
     return (
         staging
@@ -114,11 +121,9 @@ def enrich_with_dates(spark: SparkSession, staging):
     )
 
 
-def clear_staging(keys) -> None:
-    if not keys:
-        return
-
+def clear_staging(keys, batch_size: int = 5000) -> int:
     # Key-matched DELETE avoids removing worker inserts that arrive after Spark read staging.
+    deleted = 0
     with psycopg2.connect(
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
@@ -127,8 +132,12 @@ def clear_staging(keys) -> None:
         password=POSTGRES_PASSWORD,
     ) as conn:
         with conn.cursor() as cur:
-            for start in range(0, len(keys), 5000):
-                chunk = keys[start:start + 5000]
+            chunk = []
+            for row in keys:
+                chunk.append(row)
+                if len(chunk) < batch_size:
+                    continue
+
                 values_sql = ", ".join(["(%s, %s, %s)"] * len(chunk))
                 params = [
                     value
@@ -143,6 +152,27 @@ def clear_staging(keys) -> None:
                       AND m.player_id = v.player_id
                 """
                 cur.execute(sql, params)
+                deleted += positive_rowcount(cur.rowcount)
+                chunk = []
+
+            if chunk:
+                values_sql = ", ".join(["(%s, %s, %s)"] * len(chunk))
+                params = [
+                    value
+                    for row in chunk
+                    for value in (row.game_id, row.ply, row.player_id)
+                ]
+                sql = f"""
+                    DELETE FROM move_evaluations_ondemand AS m
+                    USING (VALUES {values_sql}) AS v(game_id, ply, player_id)
+                    WHERE m.game_id = v.game_id
+                      AND m.ply = v.ply
+                      AND m.player_id = v.player_id
+                """
+                cur.execute(sql, params)
+                deleted += positive_rowcount(cur.rowcount)
+
+    return deleted
 
 
 def run() -> int:
@@ -157,7 +187,7 @@ def run() -> int:
         if staging_count == 0:
             return 0
 
-        compacted = enrich_with_dates(spark, staging).cache()
+        compacted = enrich_with_dates(spark, staging).persist(StorageLevel.DISK_ONLY)
         try:
             compacted_count = compacted.count()
             logger.info(f"joined with player_games -> {compacted_count} rows after date enrichment")
@@ -170,12 +200,12 @@ def run() -> int:
             if compacted_count == 0:
                 return 0
 
-            keys = compacted.select("game_id", "ply", "player_id").distinct().collect()
             compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
             logger.info(f"wrote {compacted_count} rows to iceberg")
 
-            clear_staging(keys)
-            logger.info("cleared staging")
+            keys = compacted.select("game_id", "ply", "player_id").distinct().toLocalIterator()
+            deleted_count = clear_staging(keys)
+            logger.info(f"cleared {deleted_count} staging rows")
             return compacted_count
         finally:
             compacted.unpersist()
