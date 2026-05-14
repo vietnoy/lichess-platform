@@ -128,7 +128,11 @@ def run():
         q = (
             df.writeStream
             .outputMode("append")
-            .option("checkpointLocation", f"s3a://{BUCKET_DEV}/_checkpoints/{topic_key}")
+            # _checkpoints_v2: prior path inherited stale offsets from the
+            # Confluent->self-hosted Kafka migration. A simple wipe wasn't
+            # enough — Spark's first run after the wipe recorded the wrong
+            # source initial offsets back. New path guarantees a clean slate.
+            .option("checkpointLocation", f"s3a://{BUCKET_DEV}/_checkpoints_v2/{topic_key}")
             .trigger(availableNow=True)
             .foreachBatch(write_batch)
             .start()
