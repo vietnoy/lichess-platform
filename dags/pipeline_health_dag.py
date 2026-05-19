@@ -25,4 +25,5 @@ with DAG(
         task_id="run_pipeline_health",
         bash_command="python /git/repo/ops/pipeline_health.py",
         env={"PIPELINE_HEALTH_LOCAL_AIRFLOW": "1"},
+        append_env=True,
     )
