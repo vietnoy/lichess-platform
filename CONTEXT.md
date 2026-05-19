@@ -1,248 +1,75 @@
-# Lichess Chess Analytics Platform — Production Codebase
+# Lichess Platform Context
 
-## What this is
+This file is the short operational handoff. The product and architecture
+backbone lives in `README.md`.
 
-A chess analytics data platform (thesis project) that collects real-time game data from Lichess,
-processes it through a Lakehouse stack, and serves an AI Chess Coach.
+## Current Direction
 
-Student: Đỗ Vĩnh Khang — 20224865
-Teacher meetings: Tuesdays 10AM
+Build a real-time chess coach platform on top of the existing lakehouse:
 
----
-
-## Target Architecture
-
-```
-Lichess API
-  → ingestion/etl.py          (collect + transform)
-  → Confluent Kafka            (3 topics, cloud)
-  → storage/minio staging      (raw parquet)
-  → processing/transform.py    (clean + enrich)
-  → storage/minio prod         (clean parquet, partitioned)
-  → StarRocks                  (OLAP query layer)
-  → serving/agent.py           (AI Chess Coach — Gemini 2.5 Flash tool use)
+```text
+Lichess -> chess-ingestor -> Kafka -> MinIO -> Spark -> Polaris/Iceberg
+-> StarRocks -> coach tools -> single grounded LLM coach
 ```
 
----
+The coach should detect recurring player weaknesses from evaluated game history
+and turn those weaknesses into targeted exercises.
 
-## Folder Structure
+## Current Live Infrastructure
 
+- VPS: `160.187.0.108`
+- Kubernetes namespace: `chess`
+- Systemd producer: `chess-ingestor`
+- Producer path on host: `/opt/chess/ingestion/stream_ingestor.py`
+- Kafka bootstrap from host: `160.187.0.108:30092`
+- Kafka bootstrap inside cluster: `kafka:9092`
+- Raw MinIO prefixes:
+  - `chess-dev/game_start/date=YYYY-MM-DD`
+  - `chess-dev/game_end/date=YYYY-MM-DD`
+  - `chess-dev/moves/date=YYYY-MM-DD`
+
+## Airflow DAGs
+
+- `kafka_to_minio`: Spark Structured Streaming micro-batch into MinIO.
+- `process_to_polaris`: raw MinIO partitions into Polaris/Iceberg analytical
+  tables, then player game rebuild, then on-demand eval compaction.
+- `init_catalog_starrocks`: creates/refreshes StarRocks external catalog over
+  Polaris.
+
+## Immediate Priorities
+
+1. Add explicit pipeline health checks.
+2. Build `critical_positions`.
+3. Build `player_weakness_summary`.
+4. Expose safe coach tools over StarRocks/Postgres.
+5. Build one LLM coach agent with grounded tool use.
+6. Generate exercises from real player mistakes.
+
+## Health Check Command
+
+Run the first read-only pipeline health check from the repo root:
+
+```bash
+python ops/pipeline_health.py
 ```
-lichess-platform/
-├── ingestion/
-│   └── etl.py          ← Lichess API → Kafka (DONE, copy from lichess-test)
-├── storage/
-│   └── (MinIO config, schemas)
-├── processing/
-│   └── (Spark/transform jobs)
-├── serving/
-│   └── (AI agent, tools, API)
-├── infra/
-│   └── docker-compose.yml   ← MinIO + StarRocks + Kafka UI
-└── docs/
-    └── (Vietnamese docs for teacher)
-```
 
----
+It checks Kafka offset growth, fresh MinIO raw partitions, recent Airflow DAG
+success, StarRocks visibility for `chess_move_events` and `player_games`, Spark
+worker availability, and analyzer staging backlog.
 
-## What is already built (in /Users/khangdo/Desktop/lichess-test/)
+## Operational Lessons
 
-| File | Status | Notes |
-|------|--------|-------|
-| etl.py | Done | Lichess → Kafka, tested live |
-| consumer.py | Done | Kafka → PostgreSQL (demo only) |
-| seed.py | Done | Generates realistic sample data |
-| docker-compose.yml | Partial | PostgreSQL only, needs MinIO + StarRocks |
-
-Copy etl.py into ingestion/ as starting point.
-
----
-
-## Kafka Topics (Confluent Cloud)
-
-| Topic | Partitions | Key | Content |
-|-------|------------|-----|---------|
-| lichess.game_start | 6 | game_id | Game metadata |
-| lichess.moves | 6 | game_id | Each move with derived fields |
-| lichess.game_end | 6 | game_id | Winner + status |
-
-Credentials in .env (never commit):
-- KAFKA_BOOTSTRAP_SERVERS
-- CLUSTER_API_KEY
-- CLUSTER_API_SECRET
-- LICHESS_TOKEN
-
----
-
-## Data Schema (PostgreSQL demo → will move to StarRocks)
-
-### players
-player_id (PK), title, last_seen_at, created_at
-
-### games
-game_id (PK), white_id, black_id, white_rating, black_rating, white_title, black_title,
-speed, rated, variant, source, tournament_id, opening_eco, opening_name,
-winner, status, started_at, ended_at, total_moves
-
-### moves
-id (PK), game_id (FK), move_number, player_id (FK), move_uci, fen_after,
-white_clock, black_clock, time_spent_s, time_pressure, game_phase,
-is_check, is_capture, played_at
-
----
-
-## AI Chess Coach Design
-
-Agent (not simple RAG) using Gemini 2.5 Flash (Vertex AI) tool use:
-
-Tools the agent has:
-- get_player_stats(player_id)
-- get_weak_phases(player_id)
-- get_opening_performance(player_id)
-- get_similar_players(rating_band)
-- get_game_replay(game_id)
-
-Agent reasons over tool results to give personalized coaching.
-
-### Output Metrics
-- Factual Accuracy: AI stat vs actual DB query (target >90%)
-- Diagnosis Precision/Recall: vs Stockfish ground truth
-- Groundedness: % claims backed by real data
-- User Improvement Rate: rating change after following advice
-
----
-
-## Deployment Status (as of 2026-04-14)
-
-### VPS: 160.187.0.108 (chessanalytics, Vietnix VPS 5+)
-- k3s v1.34.6 installed, namespace: `chess`
-- All pods healthy, stable for 7+ hours
-- CPU: ~2% idle | RAM: 5.6GB / 10GB (56%)
-
-### Running pods
-| Pod | Status |
-|-----|--------|
-| etl | Running — streaming Lichess → Kafka 24/7 |
-| kafka-to-minio | Running — flushing to MinIO every 270s |
-| minio | Running — buckets: chess-raw, chess-enriched |
-| polaris | Running — Iceberg REST catalog |
-| starrocks-fe | Running |
-| starrocks-cn | Running |
-| postgres | Running — airflow_db + polaris_db |
-| airflow (apiserver, scheduler, triggerer, dag-processor) | Running |
-
-### Data in MinIO (chess-raw) as of 2026-04-15 ~00:00 UTC
-- game_start: 11 records
-- moves: 721 records
-- game_end: 10 records
-- Accumulating every ~4.5 min, will grow significantly overnight
-
-### Airflow UI
-- URL: http://160.187.0.108:30808
-- Login: admin / see infra/.env AIRFLOW_ADMIN_PASSWORD
-
-### Known fixes applied
-- etl.py: removed max_retries cap (was 5) → now retries forever
-- etl.py: logging level DEBUG → INFO
-- kafka_to_minio.py: removed invalid commit-on-empty-buffer call
-
-## Next Steps (priority order)
-
-1. ~~Buy VPS + install k3s~~ ✅ Done
-2. ~~Write k8s manifests (MinIO, Polaris, StarRocks, Airflow)~~ ✅ Done
-3. ~~ingestion/ — Kafka → MinIO writer (raw parquet)~~ ✅ Done, running live
-4. Set up Polaris catalog + register Iceberg tables pointing at MinIO
-5. Configure StarRocks external catalog via Polaris
-6. processing/annotate.py — wire up Airflow DAG, run on schedule
-7. processing/transform.py — aggregate patterns per player into StarRocks
-8. serving/agent.py — Gemini 2.5 Flash (Vertex AI) tool use agent (AI coach)
-9. Demo by Monday 21/04/2026
-
----
-
-## Architecture Decisions (from planning session 2026-04-14)
-
-### Deployment
-- **VPS provider**: Vietnix (Vietnamese), VPS 5+ plan (~$19/month)
-  - 10GB RAM, 5 vCPU AMD, 80GB NVMe, 1 public IPv4
-- **k8s**: k3s (lightweight certified k8s, single binary, single node)
-  - Same kubectl/Helm/manifests as full k8s — academically correct
-- **No Docker needed on VPS** — k3s bundles containerd runtime
-- **OS**: Ubuntu 22.04 LTS
-
-### Storage
-- **MinIO on VPS** (not local) — so raw data accumulates from day one, no migration later
-- **StarRocks in shared-data mode** — CN nodes are stateless, read parquet from MinIO
-  - FE pod: ~1GB RAM (metadata + query planning)
-  - CN pod: ~1GB RAM (query execution, reads MinIO over network)
-- **Parquet compression**: zstd (best balance of size and speed)
-  - 30GB .zst PGN → ~14GB Parquet (zstd) after conversion
-
-### Chess Evaluation
-- **Stockfish role**: labeling engine — turns raw moves into evaluated moves
-  - Produces: eval_delta (centipawns), classification (blunder/mistake/good), best_move_uci
-  - Runs in processing layer (annotate.py), NOT at query time in the agent
-- **Use Lichess Cloud Eval API** for now (zero setup, free, rate-limited but generous):
-  - `GET https://lichess.org/api/cloud-eval?fen=<FEN>&multiPv=1`
-  - Design annotate.py to swap in local Stockfish later via one function swap
-- **No fine-tuning Stockfish** — use personalized thresholds per player instead:
-  - Classify mistakes relative to player's own historical baseline, not universal thresholds
-  - Train a lightweight classifier on top of Stockfish eval (Option B, future work)
-
-### Processing
-- **Real-time pipeline** (thesis demo): Python + pandas in annotate.py
-  - etl.py → Kafka → MinIO (raw) → annotate.py → MinIO (enriched) → StarRocks
-- **Batch pipeline** (future, Lichess monthly dumps): Apache Spark
-  - 30GB .zst PGN takes hours to parse in Python — Spark required at that scale
-  - Mention in thesis as production strategy, not required for demo
-- **Spark NOT deployed for demo** — saves 2-3GB RAM on VPS
-
-### Lichess Public DB (tested 2026-04-14)
-- Files: `lichess_db_standard_rated_YYYY-MM.pgn.zst` (~30GB/month compressed)
-- 50MB sample → 359MB raw PGN → 162,484 games parsed
-- Compression result: 30GB → ~14GB Parquet (zstd), ~20GB Parquet (snappy)
-- Also available: `lichess_db_eval.jsonl.zst` — 369M positions pre-evaluated by Stockfish (huge shortcut)
-- Parsing speed in Python: ~5 min per 50MB → Spark needed for full monthly files
-
-### AI Coach Design (clarified)
-- Stockfish is step 1 (ground truth labels), everything else is step 2
-- Cross-game pattern detection is the key thesis contribution — not single game analysis
-- Example query the coach answers:
-  > "You blunder 3x more often in time pressure during endgame with <10s on clock in rook endgames"
-- Agent uses Claude tool use over StarRocks SQL queries — NOT RAG, NOT fine-tuning
-
----
-
-## Ingestion Architecture Decisions (2026-04-15)
-
-### stream_active_game removed
-- `stream_active_game` threads were opening individual HTTP connections per in-progress game at startup
-- Combined with the main batch stream, this caused 6+ concurrent Lichess connections → HTTP 429 rate limiting
-- `withCurrentGames=true` on the batch stream already covers in-progress games — individual threads were redundant
-- Removed: `stream_active_game`, `get_active_players` calls from main entrypoint
-
-### 429 handling
-- Added `response.status_code == 429` check in `_stream_batch` before iterating lines
-- Backs off 60s on 429 instead of looping on HTML error responses
-- Added `try/except json.JSONDecodeError` to skip non-JSON lines (Lichess sends HTML on errors)
-- Added `retry_attempt = 0` reset after successful connection to prevent backoff accumulation
-
-### Dynamic player list (planned, not yet implemented)
-- Goal: grow tracked player set by adding opponents seen in gameStart events
-- Constraint: Lichess stream connections are fixed at POST time — cannot add players mid-stream
-- Plan: maintain pending set, open new stream connection every 30s for newly seen opponents
-- Store all players in Postgres (`tracked_players` table) for persistence across restarts
-- Cap: ~3000 players max (10 concurrent stream connections of 300 each)
-
-### Spark (planned)
-- Current pipeline (Python + pandas) will bottleneck as player list grows
-- Plan: replace kafka_to_minio.py and annotate.py with Spark Structured Streaming jobs
-- Spark master + 2 workers fits in remaining VPS RAM (~5GB available)
-- Airflow triggers via SparkSubmitOperator instead of BashOperator
-
-## Known Issues to Fix
-
-- consumer.py: player_id derived from move_number parity — fragile (low priority, consumer.py is demo-only)
-
-scp ingestion/lichess-api_to_kafka.py root@160.187.0.108:/opt/chess/ingestion/lichess-api_to_kafka.py
-ssh root@160.187.0.108 "systemctl restart chess-etl"
+- A live process can still fail silently. Check Kafka offsets, not only service
+  status.
+- Missing Kafka data cannot be recovered after retention expires unless another
+  source still has it.
+- Keep the host ingestor and repo version of `ingestion/stream_ingestor.py` in
+  sync.
+- `process_to_polaris.py` maps a same-day scheduled run to yesterday's raw
+  partition; `build_player_games.py` must use the same date resolution or the
+  derived `player_games` table becomes stale while the DAG still reports
+  success.
+- StarRocks FE restarts can drop CN registration and external catalog state.
+  The CN deployment has a re-registration loop, and `process_to_polaris` now
+  refreshes the StarRocks catalog after writing Polaris tables.
+- Rotate credentials that were pasted into chat or local notes.

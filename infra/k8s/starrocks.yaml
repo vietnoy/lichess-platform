@@ -173,17 +173,20 @@ spec:
             - /bin/bash
             - -c
             - |
-              sleep 15
               MY_IP=$(hostname -i)
-              # Try passwordless first (FE state-wipe leaves root with no password);
-              # fall back to the chess-secrets value if the cluster has been initialised.
-              # Either path failing is non-fatal — the CN still starts and the FE has
-              # a periodic re-registration loop in newer versions.
-              mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot \
-                -e "ALTER SYSTEM ADD COMPUTE NODE '$MY_IP:9050';" 2>/dev/null \
-                || mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot -p"$STARROCKS_PASSWORD" \
+              register_cn() {
+                mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot \
                   -e "ALTER SYSTEM ADD COMPUTE NODE '$MY_IP:9050';" 2>/dev/null \
-                || true
+                  || mysql --connect-timeout 2 -h starrocks-fe -P9030 -uroot -p"$STARROCKS_PASSWORD" \
+                    -e "ALTER SYSTEM ADD COMPUTE NODE '$MY_IP:9050';" 2>/dev/null \
+                  || true
+              }
+              (
+                while true; do
+                  register_cn
+                  sleep 60
+                done
+              ) &
               /opt/starrocks/cn/bin/start_cn.sh --host_type IP
           ports:
             - containerPort: 8040

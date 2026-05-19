@@ -2,7 +2,9 @@ FROM apache/airflow:latest
 
 USER root
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc librdkafka-dev openjdk-17-jdk-headless procps default-mysql-client && \
+    apt-get install -y --no-install-recommends gcc librdkafka-dev openjdk-17-jdk-headless procps default-mysql-client curl ca-certificates && \
+    curl -L -o /usr/local/bin/kubectl https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl && \
+    chmod +x /usr/local/bin/kubectl && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64

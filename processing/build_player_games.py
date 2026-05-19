@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 
+from datetime import datetime, timedelta
 from dotenv import find_dotenv, load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, to_date
@@ -140,4 +141,7 @@ def run(date_str: str | None) -> None:
 
 if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    run(arg)
+    today = datetime.today().strftime("%Y-%m-%d")
+    yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    date = yesterday if (arg is None or arg >= today) else arg
+    run(date)

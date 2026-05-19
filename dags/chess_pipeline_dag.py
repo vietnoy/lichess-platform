@@ -120,7 +120,48 @@ with DAG(
         verbose=True,
     )
 
-    process >> build_player_games >> compact_ondemand
+    refresh_starrocks_catalog = BashOperator(
+        task_id="refresh_starrocks_catalog",
+        bash_command=r"""
+starrocks_mysql() {
+  if [ -n "$STARROCKS_PASSWORD" ]; then
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -p"$STARROCKS_PASSWORD" "$@" 2>/tmp/starrocks_mysql.err || {
+      if grep -q "Access denied" /tmp/starrocks_mysql.err; then
+        mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+      else
+        cat /tmp/starrocks_mysql.err >&2
+        return 1
+      fi
+    }
+  else
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+  fi
+}
+
+starrocks_mysql -e "
+CREATE EXTERNAL CATALOG IF NOT EXISTS polaris_catalog
+PROPERTIES (
+  'type'='iceberg',
+  'iceberg.catalog.type'='rest',
+  'iceberg.catalog.uri'='http://polaris:8181/api/catalog',
+  'iceberg.catalog.warehouse'='chess_warehouse',
+  'iceberg.catalog.credential'='$POLARIS_ETL_CLIENT_ID:$POLARIS_ETL_CLIENT_SECRET',
+  'iceberg.catalog.scope'='PRINCIPAL_ROLE:ALL',
+  'aws.s3.use_instance_profile'='false',
+  'aws.s3.access_key'='$MINIO_ACCESS_KEY',
+  'aws.s3.secret_key'='$MINIO_SECRET_KEY',
+  'aws.s3.endpoint'='http://minio:9000',
+  'aws.s3.enable_path_style_access'='true'
+);
+"
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;"
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;"
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
+""",
+    )
+
+    process >> build_player_games >> compact_ondemand >> refresh_starrocks_catalog
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────
 with DAG(
@@ -143,7 +184,7 @@ PROPERTIES (
   'iceberg.catalog.type'='rest',
   'iceberg.catalog.uri'='http://polaris:8181/api/catalog',
   'iceberg.catalog.warehouse'='chess_warehouse',
-  'iceberg.catalog.credential'='$STARROCKS_POLARIS_CREDENTIAL',
+  'iceberg.catalog.credential'='$POLARIS_ETL_CLIENT_ID:$POLARIS_ETL_CLIENT_SECRET',
   'iceberg.catalog.scope'='PRINCIPAL_ROLE:ALL',
   'aws.s3.use_instance_profile'='false',
   'aws.s3.access_key'='$MINIO_ACCESS_KEY',
@@ -157,14 +198,12 @@ PROPERTIES (
 
     refresh_catalog = BashOperator(
         task_id="refresh_polaris_catalog",
-        bash_command=(
-            'mysql -h $STARROCKS_HOST -P $STARROCKS_PORT -u $STARROCKS_USER -e "'
-            'REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;'
-            'REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;'
-            'REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;'
-            'REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;'
-            '"'
-        ),
+        bash_command=r"""
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;"
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;"
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;" || true
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
+""",
     )
 
     setup_catalog >> refresh_catalog
