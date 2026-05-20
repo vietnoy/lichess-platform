@@ -36,6 +36,21 @@ def test_check_airflow_runs_uses_latest_run(monkeypatch):
     assert all("state=success" in result.detail for result in results)
 
 
+def test_check_airflow_runs_warns_when_latest_run_is_in_progress(monkeypatch):
+    def fake_airflow_json_local(dag_id, start_date):
+        return [
+            {"dag_run_id": f"{dag_id}-old", "state": "success", "logical_date": "2026-05-19T01:00:00"},
+            {"dag_run_id": f"{dag_id}-new", "state": "running", "logical_date": "2026-05-19T02:00:00"},
+        ]
+
+    monkeypatch.setattr(pipeline_health, "airflow_json_local", fake_airflow_json_local)
+
+    results = pipeline_health.check_airflow_runs(None, lookback_hours=30, local_cli=True)
+
+    assert [result.status for result in results] == ["WARN", "WARN"]
+    assert all("last success=" in result.detail for result in results)
+
+
 def test_check_kafka_offsets_reports_growth(monkeypatch):
     offsets = iter(
         [

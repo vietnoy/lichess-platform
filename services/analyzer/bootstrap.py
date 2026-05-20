@@ -11,6 +11,8 @@ import os
 from contextlib import closing
 from typing import Any, TYPE_CHECKING
 
+from services.analyzer.starrocks import connect_with_passwordless_fallback
+
 if TYPE_CHECKING:
     from psycopg2.extensions import connection as Connection
 
@@ -78,7 +80,8 @@ def main() -> None:
     sr_user = os.getenv("STARROCKS_USER", "root")
     sr_password = os.getenv("STARROCKS_PASSWORD", "")
 
-    sr = mysql.connector.connect(
+    sr = connect_with_passwordless_fallback(
+        mysql.connector,
         host=sr_host, port=sr_port, user=sr_user, password=sr_password,
         autocommit=True,
     )

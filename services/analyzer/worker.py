@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from typing import Any, TYPE_CHECKING
 
+from services.analyzer.starrocks import pool_with_passwordless_fallback
 from services.analyzer.stockfish import eval_fen
 
 if TYPE_CHECKING:
@@ -457,8 +458,11 @@ def main() -> None:
     pg_pool = psycopg2.pool.ThreadedConnectionPool(
         minconn=1, maxconn=BATCH_USERS + 1, dsn=pg_dsn,
     )
-    sr_pool = mysql.connector.pooling.MySQLConnectionPool(
-        pool_name="analyzer", pool_size=BATCH_USERS + 1, **sr_kwargs,
+    sr_pool = pool_with_passwordless_fallback(
+        mysql.connector.pooling,
+        pool_name="analyzer",
+        pool_size=BATCH_USERS + 1,
+        **sr_kwargs,
     )
     # Touch liveness file at startup so the probe has something to read before
     # the first cycle completes (a slow first cycle can take ~3-4 minutes).
@@ -480,8 +484,11 @@ def main() -> None:
             )
         except mysql.connector.Error:
             log.exception("starrocks pool issue; recreating pool")
-            sr_pool = mysql.connector.pooling.MySQLConnectionPool(
-                pool_name="analyzer", pool_size=BATCH_USERS + 1, **sr_kwargs,
+            sr_pool = pool_with_passwordless_fallback(
+                mysql.connector.pooling,
+                pool_name="analyzer",
+                pool_size=BATCH_USERS + 1,
+                **sr_kwargs,
             )
         except Exception:
             log.exception("cycle failed")

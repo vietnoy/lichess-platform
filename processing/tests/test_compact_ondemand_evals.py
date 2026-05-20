@@ -29,6 +29,8 @@ class FakeDataFrame:
         self.append_called = False
         self.write_target = None
         self.cache_called = False
+        self.persist_called = False
+        self.persist_level = None
         self.unpersist_called = False
 
     def count(self):
@@ -74,11 +76,19 @@ class FakeDataFrame:
         self.cache_called = True
         return self
 
+    def persist(self, storage_level):
+        self.persist_called = True
+        self.persist_level = storage_level
+        return self
+
     def unpersist(self):
         self.unpersist_called = True
 
     def collect(self):
         return [SimpleNamespace(**row) for row in self.rows]
+
+    def toLocalIterator(self):
+        return iter(self.collect())
 
     def writeTo(self, target):
         self.write_target = target
@@ -138,8 +148,11 @@ def module(monkeypatch):
     pyspark = types.ModuleType("pyspark")
     pyspark_sql = types.ModuleType("pyspark.sql")
     pyspark_sql.SparkSession = SimpleNamespace(builder=SimpleNamespace())
+    pyspark_storagelevel = types.ModuleType("pyspark.storagelevel")
+    pyspark_storagelevel.StorageLevel = SimpleNamespace(DISK_ONLY="DISK_ONLY")
     monkeypatch.setitem(sys.modules, "pyspark", pyspark)
     monkeypatch.setitem(sys.modules, "pyspark.sql", pyspark_sql)
+    monkeypatch.setitem(sys.modules, "pyspark.storagelevel", pyspark_storagelevel)
     module_path = Path(__file__).resolve().parents[1] / "compact_ondemand_evals.py"
     spec = util.spec_from_file_location("compact_ondemand_evals", module_path)
     compact_module = util.module_from_spec(spec)
@@ -185,9 +198,10 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert module.run() == 1
     assert FakeDataFrame.last_write_target == "polaris.prod.move_evaluations_ondemand"
     assert FakeDataFrame.last_write_frame.append_called is True
-    assert FakeDataFrame.last_write_frame.cache_called is True
+    assert FakeDataFrame.last_write_frame.persist_called is True
+    assert FakeDataFrame.last_write_frame.persist_level == "DISK_ONLY"
     assert FakeDataFrame.last_write_frame.unpersist_called is True
-    assert clear_staging.call_args.args[0][0].game_id == "g1"
+    assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
 
 
 def test_successful_write_deletes_postgres_rows(module, monkeypatch):
@@ -254,7 +268,7 @@ def test_unmatched_staging_row_stays_out_of_delete_keys(module, monkeypatch):
     assert module.run() == 1
 
     clear_staging.assert_called_once()
-    delete_keys = clear_staging.call_args.args[0]
+    delete_keys = list(clear_staging.call_args.args[0])
     assert len(delete_keys) == 1
     assert [(key.game_id, key.ply, key.player_id) for key in delete_keys] == [
         ("g1", 12, "alice")

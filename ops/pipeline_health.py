@@ -25,6 +25,7 @@ RAW_TOPICS = {
     "lichess.moves": "moves",
 }
 AIRFLOW_DAGS = ("kafka_to_minio", "process_to_polaris")
+AIRFLOW_IN_PROGRESS_STATES = {"queued", "running", "scheduled"}
 SERVING_TABLES = (
     "polaris_catalog.prod.chess_move_events",
     "polaris_catalog.prod.player_games",
@@ -220,11 +221,34 @@ def check_airflow_runs(scheduler_pod: str | None, lookback_hours: int, local_cli
         if not runs:
             results.append(CheckResult(f"airflow_{dag_id}_recent_run", "FAIL", f"no runs since {start} UTC"))
             continue
-        latest = sorted(runs, key=lambda row: row.get("run_after") or row.get("logical_date") or "")[-1]
+        sorted_runs = sorted(runs, key=lambda row: row.get("run_after") or row.get("logical_date") or "")
+        latest = sorted_runs[-1]
         state = latest.get("state")
         run_id = latest.get("dag_run_id") or latest.get("run_id")
         if state == "success":
             results.append(CheckResult(f"airflow_{dag_id}_latest_run", "OK", f"{run_id} state=success"))
+        elif state in AIRFLOW_IN_PROGRESS_STATES:
+            latest_success = next(
+                (row for row in reversed(sorted_runs) if row.get("state") == "success"),
+                None,
+            )
+            if latest_success:
+                success_id = latest_success.get("dag_run_id") or latest_success.get("run_id")
+                results.append(
+                    CheckResult(
+                        f"airflow_{dag_id}_latest_run",
+                        "WARN",
+                        f"{run_id} state={state}; last success={success_id}",
+                    )
+                )
+            else:
+                results.append(
+                    CheckResult(
+                        f"airflow_{dag_id}_latest_run",
+                        "FAIL",
+                        f"{run_id} state={state}; no successful run since {start} UTC",
+                    )
+                )
         else:
             results.append(CheckResult(f"airflow_{dag_id}_latest_run", "FAIL", f"{run_id} state={state}"))
     return results
