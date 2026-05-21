@@ -164,7 +164,7 @@ def build_critical_positions_sql(
 
     return f"""
     WITH player_games AS (
-        SELECT game_id, player_id, color, opponent_id, date
+        SELECT DISTINCT game_id, player_id, color, opponent_id, date
         FROM polaris.prod.player_games pg
         {player_games_filter}
     ),

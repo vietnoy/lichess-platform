@@ -55,6 +55,7 @@ def test_time_pressure_case_uses_clock_centisecond_boundaries(module):
 def test_sql_prefers_ondemand_and_dedupes_by_player_game_ply(module):
     sql = module.build_critical_positions_sql("2026-05-20", include_legacy_daily=True)
 
+    assert "SELECT DISTINCT game_id, player_id, color, opponent_id, date" in sql
     assert "FROM polaris.prod.move_evaluations_ondemand e" in sql
     assert "UNION ALL" in sql
     assert "FROM polaris.prod.move_evaluations e" in sql
