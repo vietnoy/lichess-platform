@@ -246,6 +246,7 @@ def run(date_str: str):
         .join(game_start_df, on="game_id", how="inner")
         .join(game_end_df,   on="game_id", how="inner")
         .withColumn("date", lit(date_str))
+        .dropDuplicates(["game_id", "move_number", "move", "fen", "whose_moved", "date"])
     )
 
     player_moves.writeTo("polaris.prod.chess_move_events").overwritePartitions()

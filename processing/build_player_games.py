@@ -90,7 +90,11 @@ def run(date_str: str | None) -> None:
 
     # One row per game (use move_number=1 to dedupe). Iceberg parquet stats on
     # move_number make this filter cheap even across the full table.
-    source = spark.table("polaris.prod.chess_move_events").where(col("move_number") == 1)
+    source = (
+        spark.table("polaris.prod.chess_move_events")
+        .where(col("move_number") == 1)
+        .dropDuplicates(["game_id"])
+    )
     if date_str:
         source = source.where(col("date") == lit(date_str))
         logger.info(f"Building player_games for date={date_str}")
