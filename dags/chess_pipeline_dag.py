@@ -120,6 +120,16 @@ with DAG(
         verbose=True,
     )
 
+    build_critical_positions = SparkSubmitOperator(
+        task_id="run_build_critical_positions",
+        application="/git/repo/processing/build_critical_positions.py",
+        conn_id="spark_default",
+        packages=_iceberg_packages,
+        conf=_process_conf,
+        application_args=["{{ ds }}"],
+        verbose=True,
+    )
+
     refresh_starrocks_catalog = BashOperator(
         task_id="refresh_starrocks_catalog",
         bash_command=r"""
@@ -158,10 +168,11 @@ starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_event
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;"
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;" || true
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positions;" || true
 """,
     )
 
-    process >> build_player_games >> compact_ondemand >> refresh_starrocks_catalog
+    process >> build_player_games >> compact_ondemand >> build_critical_positions >> refresh_starrocks_catalog
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────
 with DAG(
@@ -203,6 +214,7 @@ mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;"
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;" || true
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positions;" || true
 """,
     )
 

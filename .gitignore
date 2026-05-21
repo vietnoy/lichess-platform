@@ -1,6 +1,7 @@
 .env
 __pycache__/
 *.pyc
+.venv/
 venv/
 .DS_Store
 infra/k8s/secrets.yaml
@@ -13,6 +14,8 @@ logs/
 node_modules/
 .next/
 serving/frontend/tsconfig.tsbuildinfo
+tmp/
+.pytest_cache/
 
 # Playwright snapshots and ad-hoc screenshots
 .playwright-mcp/
