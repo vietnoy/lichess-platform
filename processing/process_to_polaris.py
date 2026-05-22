@@ -4,7 +4,8 @@ import os
 from datetime import datetime, timedelta
 from dotenv import find_dotenv, load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit
+from pyspark.sql import Window
+from pyspark.sql.functions import col, coalesce, desc_nulls_last, lit, row_number, size, split, trim, when
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 # python-dotenv >=1.1.0 asserts f_back is not None in find_dotenv() when
@@ -179,6 +180,24 @@ _move_schema = StructType([
 ])
 
 
+def canonical_raw_games(raw_games):
+    """Keep the most complete raw export per game before exploding moves."""
+    moves_text = trim(coalesce(col("moves"), lit("")))
+    move_count = when(moves_text == "", lit(0)).otherwise(size(split(moves_text, r"\s+")))
+    window = Window.partitionBy("id").orderBy(
+        desc_nulls_last("move_count"),
+        desc_nulls_last("lastMoveAt"),
+        desc_nulls_last("ingested_at"),
+    )
+    return (
+        raw_games
+        .withColumn("move_count", move_count)
+        .withColumn("_rn", row_number().over(window))
+        .where(col("_rn") == 1)
+        .drop("_rn", "move_count")
+    )
+
+
 def run(date_str: str):
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
@@ -207,6 +226,8 @@ def run(date_str: str):
         spark.stop()
         return
 
+    raw_games = canonical_raw_games(raw_games)
+
     # --- 1. Explode moves with clocks and game-level metadata ---
     moves_df = (
         raw_games.rdd
@@ -228,6 +249,7 @@ def run(date_str: str):
             col("black_title"),
             col("tournament_id"),
         )
+        .dropDuplicates(["game_id"])
     )
 
     # --- 3. Join game_end for result ---
@@ -238,6 +260,7 @@ def run(date_str: str):
             col("winner"),
             col("status").alias("end_status"),
         )
+        .dropDuplicates(["game_id"])
     )
 
     # --- 4. Assemble flat table ---
@@ -249,7 +272,7 @@ def run(date_str: str):
         .dropDuplicates(["game_id", "move_number", "move", "fen", "whose_moved", "date"])
     )
 
-    player_moves.writeTo("polaris.prod.chess_move_events").overwritePartitions()
+    player_moves.writeTo("polaris.prod.chess_move_events").overwrite(col("date") == lit(date_str))
     logger.info(f"Done — date={date_str} written to Polaris")
     spark.stop()
 
