@@ -24,7 +24,13 @@ from typing import Any, Iterator
 
 from openai import OpenAI
 
-from db import StarRocks, TABLE, PLAYER_GAMES
+from db import (
+    StarRocks,
+    TABLE,
+    PLAYER_GAMES,
+    query_blunder_examples,
+    query_weakness_summary,
+)
 from stockfish import eval_fen
 
 log = logging.getLogger("coach")
@@ -68,6 +74,27 @@ def get_player_overview(player_id: str) -> dict:
         (player_id,),
     )
     return {"player_id": player_id, "overview": rows}
+
+
+def get_weakness_summary(player_id: str, days: int = 60) -> dict:
+    return query_weakness_summary(player_id, days=days)
+
+
+def get_blunder_examples(
+    player_id: str,
+    limit: int = 5,
+    phase: str | None = None,
+    time_pressure: str | None = None,
+) -> dict:
+    return {
+        "player_id": player_id,
+        "examples": query_blunder_examples(
+            player_id,
+            limit=limit,
+            phase=phase,
+            time_pressure=time_pressure,
+        ),
+    }
 
 
 def get_time_pressure_stats(player_id: str) -> dict:
@@ -254,6 +281,8 @@ def analyze_game(game_id: str) -> dict:
 
 _TOOL_FNS: dict[str, Any] = {
     "get_player_overview":       get_player_overview,
+    "get_weakness_summary":      get_weakness_summary,
+    "get_blunder_examples":      get_blunder_examples,
     "get_time_pressure_stats":   get_time_pressure_stats,
     "get_opening_stats":         get_opening_stats,
     "get_clock_usage_by_phase":  get_clock_usage_by_phase,
@@ -279,6 +308,15 @@ _PLAYER_PROP = {"player_id": {"type": "string", "description": "Lichess username
 
 _OPENAI_TOOLS: list[dict] = [
     _tool("get_player_overview", "Total games, wins/losses/draws and average rating by time control.", _PLAYER_PROP, ["player_id"]),
+    _tool("get_weakness_summary", "Aggregated recurring mistakes from the derived player_weakness_summary table.",
+          {**_PLAYER_PROP, "days": {"type": "integer", "description": "Lookback days, clamped to 1-365 (default 60)"}}, ["player_id"]),
+    _tool("get_blunder_examples", "Concrete blunder/mistake examples from critical_positions, with optional allowlisted filters.",
+          {
+              **_PLAYER_PROP,
+              "limit": {"type": "integer", "description": "Number of examples, clamped to 1-20 (default 5)"},
+              "phase": {"type": "string", "enum": ["opening", "middlegame", "endgame"]},
+              "time_pressure": {"type": "string", "enum": ["unknown", "under_10s", "under_30s", "normal"]},
+          }, ["player_id"]),
     _tool("get_time_pressure_stats", "Win rate when clock is under 10 seconds vs normal.", _PLAYER_PROP, ["player_id"]),
     _tool("get_opening_stats", "Win rate by opening ECO. Identifies structural opening weaknesses.",
           {**_PLAYER_PROP, "top_n": {"type": "integer", "description": "Top N openings (default 10)"}}, ["player_id"]),
@@ -333,6 +371,7 @@ class CoachSession:
         fn = _TOOL_FNS.get(name)
         if fn is None:
             return json.dumps({"error": f"unknown tool: {name}"})
+        fn = globals().get(name, fn)
         try:
             return json.dumps(fn(**args), default=str)
         except Exception as e:

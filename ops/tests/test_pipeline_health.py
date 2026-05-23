@@ -74,6 +74,53 @@ def test_check_kafka_offsets_reports_growth(monkeypatch):
     assert "lichess.moves +5" in result.detail
 
 
+def test_count_ingestor_delivery_failures_counts_timeout_lines():
+    output = "\n".join(
+        [
+            "May 23 10:58:56 chess-ingestor ERROR Kafka delivery failed: topic=lichess.moves",
+            "May 23 10:58:56 chess-ingestor INFO [GAME END] abc winner=white",
+            "May 23 10:58:58 chess-ingestor ERROR Kafka delivery failed: topic=lichess.game_end",
+            "May 23 10:58:59 chess-ingestor WARNING Kafka delivery failures: +2 this batch",
+        ]
+    )
+
+    assert pipeline_health.count_ingestor_delivery_failures(output) == 2
+
+
+def test_check_ingestor_delivery_failures_fails_when_errors_present(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_health,
+        "run_cmd",
+        lambda args, timeout=30: "ERROR Kafka delivery failed: topic=lichess.moves\n",
+    )
+
+    result = pipeline_health.check_ingestor_delivery_failures("root@example", lookback_minutes=10)
+
+    assert result.status == "FAIL"
+    assert result.name == "ingestor_kafka_delivery"
+    assert "1 delivery failures" in result.detail
+
+
+def test_check_ingestor_delivery_failures_ok_when_no_errors(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_health,
+        "run_cmd",
+        lambda args, timeout=30: "INFO [GAME START] abc white vs black\n",
+    )
+
+    result = pipeline_health.check_ingestor_delivery_failures("root@example", lookback_minutes=10)
+
+    assert result.status == "OK"
+    assert result.detail == "no Kafka delivery failures in last 10m"
+
+
+def test_check_ingestor_delivery_failures_warns_when_not_configured():
+    result = pipeline_health.check_ingestor_delivery_failures(None, lookback_minutes=10)
+
+    assert result.status == "WARN"
+    assert "not configured" in result.detail
+
+
 def test_check_spark_workers_warns_on_evicted_pods():
     pods = {
         "items": [
@@ -181,6 +228,66 @@ def test_check_serving_rows_fails_when_no_recent_rows(monkeypatch):
 
     assert [result.status for result in results] == ["FAIL", "FAIL"]
     assert all("no rows for checked dates" in result.detail for result in results)
+
+
+def test_check_critical_positions_integrity_reports_rows_and_zero_dupes(monkeypatch):
+    queries = []
+
+    def fake_starrocks_query(sql, scheduler_pod, local_cli):
+        queries.append(sql)
+        if "duplicate_groups" in sql:
+            return "0\n"
+        return "2026-05-21\t658\n"
+
+    monkeypatch.setattr(pipeline_health, "starrocks_query", fake_starrocks_query)
+
+    results = pipeline_health.check_critical_positions_integrity(
+        scheduler_pod=None,
+        dates=["2026-05-21"],
+        local_cli=True,
+    )
+
+    assert [result.status for result in results] == ["OK", "OK"]
+    assert results[0].name == "starrocks_critical_positions_fresh_rows"
+    assert results[1].name == "starrocks_critical_positions_duplicate_keys"
+    assert "2026-05-21=658" in results[0].detail
+    assert "none" == results[1].detail
+    assert "game_id, ply, player_id" in queries[1]
+
+
+def test_check_critical_positions_integrity_warns_when_no_recent_rows(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_health,
+        "starrocks_query",
+        lambda sql, scheduler_pod, local_cli: "0\n" if "duplicate_groups" in sql else "",
+    )
+
+    results = pipeline_health.check_critical_positions_integrity(
+        scheduler_pod=None,
+        dates=["2026-05-23"],
+        local_cli=True,
+    )
+
+    assert [result.status for result in results] == ["WARN", "OK"]
+    assert "no rows for checked dates" in results[0].detail
+
+
+def test_check_critical_positions_integrity_fails_on_duplicate_keys(monkeypatch):
+    def fake_starrocks_query(sql, scheduler_pod, local_cli):
+        if "duplicate_groups" in sql:
+            return "3\n"
+        return "2026-05-21\t658\n"
+
+    monkeypatch.setattr(pipeline_health, "starrocks_query", fake_starrocks_query)
+
+    results = pipeline_health.check_critical_positions_integrity(
+        scheduler_pod=None,
+        dates=["2026-05-21"],
+        local_cli=True,
+    )
+
+    assert [result.status for result in results] == ["OK", "FAIL"]
+    assert "3 duplicate key groups" in results[1].detail
 
 
 def test_starrocks_query_retries_without_password_on_access_denied(monkeypatch):

@@ -30,6 +30,8 @@ SERVING_TABLES = (
     "polaris_catalog.prod.chess_move_events",
     "polaris_catalog.prod.player_games",
 )
+CRITICAL_POSITIONS_TABLE = "polaris_catalog.prod.critical_positions"
+DEFAULT_INGESTOR_SSH_TARGET = "root@160.187.0.108"
 
 
 @dataclass
@@ -124,6 +126,47 @@ def check_kafka_offsets(offset_wait_s: int) -> CheckResult:
     if total_delta <= 0:
         return CheckResult("kafka_offsets_advancing", "FAIL", f"no offset growth in {offset_wait_s}s ({detail})")
     return CheckResult("kafka_offsets_advancing", "OK", detail)
+
+
+def count_ingestor_delivery_failures(journal_output: str) -> int:
+    return sum(1 for line in journal_output.splitlines() if "Kafka delivery failed:" in line)
+
+
+def check_ingestor_delivery_failures(
+    ssh_target: str | None,
+    lookback_minutes: int,
+) -> CheckResult:
+    if not ssh_target:
+        return CheckResult(
+            "ingestor_kafka_delivery",
+            "WARN",
+            "not configured; set --ingestor-ssh-target or INGESTOR_SSH_TARGET",
+        )
+
+    output = run_cmd(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=8",
+            ssh_target,
+            f"journalctl -u chess-ingestor --since '{lookback_minutes} minutes ago' --no-pager",
+        ],
+        timeout=30,
+    )
+    failures = count_ingestor_delivery_failures(output)
+    if failures:
+        return CheckResult(
+            "ingestor_kafka_delivery",
+            "FAIL",
+            f"{failures} delivery failures in last {lookback_minutes}m",
+        )
+    return CheckResult(
+        "ingestor_kafka_delivery",
+        "OK",
+        f"no Kafka delivery failures in last {lookback_minutes}m",
+    )
 
 
 def check_minio_partitions(minio_pod: str, bucket: str, dates: Iterable[str]) -> list[CheckResult]:
@@ -381,6 +424,14 @@ def parse_date_counts(output: str) -> dict[str, int]:
     return counts
 
 
+def parse_single_int(output: str) -> int:
+    for line in reversed(output.splitlines()):
+        stripped = line.strip()
+        if stripped:
+            return int(stripped)
+    return 0
+
+
 def summarize_error(exc: Exception) -> str:
     lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
     for line in reversed(lines):
@@ -416,6 +467,75 @@ def check_serving_rows(
     return results
 
 
+def check_critical_positions_integrity(
+    scheduler_pod: str | None,
+    dates: Iterable[str],
+    local_cli: bool,
+) -> list[CheckResult]:
+    date_list = list(dates)
+    quoted_dates = ", ".join(f"'{date}'" for date in date_list)
+    results = []
+
+    row_sql = (
+        f"SELECT date, COUNT(*) FROM {CRITICAL_POSITIONS_TABLE} "
+        f"WHERE date IN ({quoted_dates}) GROUP BY date;"
+    )
+    try:
+        counts = parse_date_counts(starrocks_query(row_sql, scheduler_pod, local_cli))
+    except RuntimeError as exc:
+        return [
+            CheckResult(
+                "starrocks_critical_positions_fresh_rows",
+                "FAIL",
+                summarize_error(exc),
+            )
+        ]
+
+    positive = {date: count for date, count in counts.items() if count > 0}
+    if positive:
+        detail = ", ".join(f"{date}={count}" for date, count in sorted(positive.items()))
+        results.append(CheckResult("starrocks_critical_positions_fresh_rows", "OK", detail))
+    else:
+        results.append(
+            CheckResult(
+                "starrocks_critical_positions_fresh_rows",
+                "WARN",
+                f"no rows for checked dates: {', '.join(date_list)}",
+            )
+        )
+
+    dupe_sql = (
+        "SELECT COUNT(*) AS duplicate_groups FROM ("
+        f"SELECT game_id, ply, player_id, COUNT(*) AS n FROM {CRITICAL_POSITIONS_TABLE} "
+        f"WHERE date IN ({quoted_dates}) "
+        "GROUP BY game_id, ply, player_id HAVING n > 1"
+        ") d;"
+    )
+    try:
+        duplicate_groups = parse_single_int(starrocks_query(dupe_sql, scheduler_pod, local_cli))
+    except RuntimeError as exc:
+        results.append(
+            CheckResult(
+                "starrocks_critical_positions_duplicate_keys",
+                "FAIL",
+                summarize_error(exc),
+            )
+        )
+        return results
+
+    if duplicate_groups:
+        results.append(
+            CheckResult(
+                "starrocks_critical_positions_duplicate_keys",
+                "FAIL",
+                f"{duplicate_groups} duplicate key groups",
+            )
+        )
+    else:
+        results.append(CheckResult("starrocks_critical_positions_duplicate_keys", "OK", "none"))
+    return results
+
+
 def default_dates() -> list[str]:
     now = dt.datetime.now(dt.timezone.utc).date()
     return [(now - dt.timedelta(days=offset)).isoformat() for offset in (0, 1)]
@@ -442,8 +562,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--offset-wait-s", type=int, default=20, help="seconds between Kafka offset samples")
     parser.add_argument("--airflow-lookback-hours", type=int, default=30)
     parser.add_argument("--analyzer-backlog-threshold", type=int, default=1_000_000)
+    parser.add_argument(
+        "--ingestor-ssh-target",
+        default=os.environ.get("INGESTOR_SSH_TARGET", DEFAULT_INGESTOR_SSH_TARGET),
+        help="SSH target for the VPS-hosted chess-ingestor service; empty disables the check",
+    )
+    parser.add_argument("--ingestor-lookback-minutes", type=int, default=10)
     parser.add_argument("--skip-kafka-advance", action="store_true")
+    parser.add_argument("--skip-ingestor", action="store_true")
     parser.add_argument("--skip-serving", action="store_true", help="skip StarRocks serving table checks")
+    parser.add_argument("--skip-critical-positions", action="store_true")
     return parser.parse_args()
 
 
@@ -460,10 +588,19 @@ def main() -> int:
 
         if not args.skip_kafka_advance:
             results.append(check_kafka_offsets(args.offset_wait_s))
+        if not args.skip_ingestor:
+            results.append(
+                check_ingestor_delivery_failures(
+                    args.ingestor_ssh_target or None,
+                    args.ingestor_lookback_minutes,
+                )
+            )
         results.extend(check_minio_partitions(minio_pod, args.bucket, dates))
         results.extend(check_airflow_runs(scheduler_pod, args.airflow_lookback_hours, local_airflow_cli))
         if not args.skip_serving:
             results.extend(check_serving_rows(scheduler_pod, dates, local_airflow_cli))
+        if not args.skip_critical_positions:
+            results.extend(check_critical_positions_integrity(scheduler_pod, dates, local_airflow_cli))
         results.append(check_failed_pods(pods))
         results.append(check_spark_workers(pods))
         results.append(check_analyzer_backlog(pods, args.analyzer_backlog_threshold))

@@ -15,6 +15,8 @@ TABLE = "polaris_catalog.prod.chess_move_events"
 PLAYER_GAMES = "polaris_catalog.prod.player_games"
 EVAL_TABLE = "polaris_catalog.prod.move_evaluations"
 EVAL_TABLE_ONDEMAND = "polaris_catalog.prod.move_evaluations_ondemand"
+CRITICAL_POSITIONS = "polaris_catalog.prod.critical_positions"
+PLAYER_WEAKNESS_SUMMARY = "polaris_catalog.prod.player_weakness_summary"
 
 
 # Tiny TTL cache so the slow profile query doesn't hit StarRocks on every page load.
@@ -536,6 +538,106 @@ def query_player_patterns(username: str) -> dict | None:
         "by_opening": by_opening,
         "worst_games": worst_games,
     }
+
+
+def clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, int(value)))
+
+
+def query_weakness_summary(username: str, days: int = 60) -> dict:
+    days = clamp_int(days, 1, 365)
+    rows = _run(
+        f"""
+        SELECT
+            player_id,
+            COUNT(*) AS days,
+            SUM(critical_positions) AS critical_positions,
+            SUM(games_with_critical_positions) AS games_with_critical_positions,
+            SUM(blunders) AS blunders,
+            SUM(mistakes) AS mistakes,
+            SUM(inaccuracies) AS inaccuracies,
+            ROUND(AVG(avg_eval_swing_cp), 1) AS avg_eval_swing_cp,
+            SUM(time_pressure_positions) AS time_pressure_positions,
+            MAX(top_phase) AS top_phase,
+            MAX(top_time_pressure) AS top_time_pressure,
+            MAX(top_classification) AS top_classification
+        FROM {PLAYER_WEAKNESS_SUMMARY}
+        WHERE player_id = %s
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)
+        GROUP BY player_id
+        """,
+        (username, days),
+    )
+    if rows:
+        return rows[0]
+    return {
+        "player_id": username,
+        "days": days,
+        "critical_positions": 0,
+        "games_with_critical_positions": 0,
+        "blunders": 0,
+        "mistakes": 0,
+        "inaccuracies": 0,
+        "avg_eval_swing_cp": None,
+        "time_pressure_positions": 0,
+        "top_phase": None,
+        "top_time_pressure": None,
+        "top_classification": None,
+    }
+
+
+def query_blunder_examples(
+    username: str,
+    limit: int = 5,
+    phase: str | None = None,
+    time_pressure: str | None = None,
+) -> list[dict]:
+    valid_phases = {"opening", "middlegame", "endgame"}
+    valid_pressures = {"unknown", "under_10s", "under_30s", "normal"}
+    if phase is not None and phase not in valid_phases:
+        return []
+    if time_pressure is not None and time_pressure not in valid_pressures:
+        return []
+
+    filters = ["player_id = %s", "classification IN ('blunder', 'mistake')"]
+    params: list = [username]
+    if phase is not None:
+        filters.append("phase = %s")
+        params.append(phase)
+    if time_pressure is not None:
+        filters.append("time_pressure = %s")
+        params.append(time_pressure)
+    params.append(clamp_int(limit, 1, 20))
+
+    return _run(
+        f"""
+        SELECT
+            game_id,
+            ply,
+            date,
+            fen,
+            played_move,
+            best_move,
+            eval_cp,
+            mate,
+            eval_swing_cp,
+            classification,
+            phase,
+            time_pressure,
+            clock_remaining,
+            color,
+            opponent_id,
+            opening_eco,
+            opening_name,
+            speed,
+            perf
+        FROM {CRITICAL_POSITIONS}
+        WHERE {" AND ".join(filters)}
+        ORDER BY date DESC, ABS(eval_swing_cp) DESC
+        LIMIT %s
+        """,
+        tuple(params),
+    )
 
 
 def query_exercise(username: str) -> dict | None:
