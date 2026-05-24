@@ -1,6 +1,7 @@
 from datetime import date
 from importlib import util
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -79,6 +80,28 @@ def test_process_date_marks_failed_when_validation_fails(monkeypatch):
         raise AssertionError("expected validation failure")
 
     assert any("status = 'failed'" in sql for sql, _ in cursor.executed)
+
+
+def test_starrocks_query_retries_without_password_on_access_denied(monkeypatch):
+    calls = []
+    monkeypatch.setenv("STARROCKS_PASSWORD", "wrong-password")
+
+    def fake_run(command, text, capture_output):
+        calls.append(command)
+        if "-pwrong-password" in command:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="ERROR 1045 (28000): Access denied for user 'root'",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="7\n", stderr="")
+
+    monkeypatch.setattr(rebuild.subprocess, "run", fake_run)
+
+    assert rebuild.starrocks_query("SELECT 7") == [["7"]]
+    assert "-pwrong-password" in calls[0]
+    assert "-pwrong-password" not in calls[1]
 
 
 class FakeCursor:

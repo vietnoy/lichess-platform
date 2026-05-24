@@ -36,7 +36,7 @@ ANALYZER_TABLES = [
 ]
 
 
-def starrocks_mysql_command(sql: str) -> list[str]:
+def starrocks_mysql_command(sql: str, include_password: bool = True) -> list[str]:
     command = [
         "mysql",
         "--connect-timeout=30",
@@ -50,10 +50,27 @@ def starrocks_mysql_command(sql: str) -> list[str]:
         "-B",
     ]
     password = os.getenv("STARROCKS_PASSWORD")
-    if password:
+    if include_password and password:
         command.append(f"-p{password}")
     command.extend(["-e", sql])
     return command
+
+
+def run_starrocks_mysql(sql: str, capture_output: bool = True) -> subprocess.CompletedProcess:
+    command = starrocks_mysql_command(sql)
+    result = subprocess.run(command, text=True, capture_output=capture_output)
+    combined_output = f"{result.stdout or ''}\n{result.stderr or ''}"
+
+    if (
+        result.returncode != 0
+        and os.getenv("STARROCKS_PASSWORD")
+        and "Access denied" in combined_output
+    ):
+        command = starrocks_mysql_command(sql, include_password=False)
+        result = subprocess.run(command, text=True, capture_output=capture_output)
+
+    result.check_returncode()
+    return result
 
 
 def ensure_change_table(cur) -> None:
@@ -146,21 +163,16 @@ def spark_submit_command(script: str, date_str: str) -> list[str]:
 
 
 def starrocks_query(sql: str) -> list[list[str]]:
-    result = subprocess.run(
-        starrocks_mysql_command(sql),
-        check=True,
-        text=True,
-        capture_output=True,
-    )
+    result = run_starrocks_mysql(sql, capture_output=True)
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     return [line.split("\t") for line in lines]
 
 
 def refresh_starrocks_tables() -> None:
     for table in ANALYZER_TABLES:
-        subprocess.run(
-            starrocks_mysql_command(f"REFRESH EXTERNAL TABLE polaris_catalog.prod.{table};"),
-            check=True,
+        run_starrocks_mysql(
+            f"REFRESH EXTERNAL TABLE polaris_catalog.prod.{table};",
+            capture_output=True,
         )
 
 
