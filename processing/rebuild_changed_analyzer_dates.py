@@ -94,7 +94,7 @@ def claim_pending_dates(cur, max_dates: int) -> list[str]:
         UPDATE analyzer_partition_changes
         SET status = 'processing',
             error = NULL
-        WHERE date = ANY(%s)
+        WHERE date = ANY(%s::date[])
         """,
         (dates,),
     )
