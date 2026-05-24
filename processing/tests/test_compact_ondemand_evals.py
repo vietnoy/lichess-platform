@@ -189,6 +189,8 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
+    record_changed_dates = MagicMock()
+    monkeypatch.setattr(module, "record_changed_dates", record_changed_dates)
 
     enriched = module.enrich_with_dates(spark, staging)
     assert enriched.rows == [
@@ -201,7 +203,18 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert FakeDataFrame.last_write_frame.persist_called is True
     assert FakeDataFrame.last_write_frame.persist_level == "DISK_ONLY"
     assert FakeDataFrame.last_write_frame.unpersist_called is True
+    record_changed_dates.assert_called_once_with(["2026-05-11"], 1)
     assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
+
+
+def test_changed_dates_are_distinct_and_sorted(module):
+    compacted = FakeDataFrame([
+        {"game_id": "g2", "ply": 1, "player_id": "bob", "date": "2026-05-12"},
+        {"game_id": "g1", "ply": 1, "player_id": "alice", "date": "2026-05-11"},
+        {"game_id": "g1", "ply": 2, "player_id": "alice", "date": "2026-05-11"},
+    ])
+
+    assert module.changed_dates(compacted) == ["2026-05-11", "2026-05-12"]
 
 
 def test_successful_write_deletes_postgres_rows(module, monkeypatch):
@@ -224,8 +237,12 @@ def test_successful_write_deletes_postgres_rows(module, monkeypatch):
 
     assert module.run() == 1
 
-    cursor.execute.assert_called_once()
-    sql, params = cursor.execute.call_args.args
+    delete_calls = [
+        call for call in cursor.execute.call_args_list
+        if "DELETE FROM move_evaluations_ondemand" in call.args[0]
+    ]
+    assert len(delete_calls) == 1
+    sql, params = delete_calls[0].args
     assert "DELETE FROM move_evaluations_ondemand" in sql
     assert params == ["g1", 12, "alice"]
 

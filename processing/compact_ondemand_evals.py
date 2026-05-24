@@ -121,6 +121,64 @@ def enrich_with_dates(spark: SparkSession, staging):
     )
 
 
+def changed_dates(compacted) -> list[str]:
+    return sorted(str(row.date) for row in compacted.select("date").distinct().collect())
+
+
+def ensure_change_table(cur) -> None:
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS analyzer_partition_changes (
+            date DATE PRIMARY KEY,
+            first_changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            new_eval_rows BIGINT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            processed_at TIMESTAMPTZ,
+            error TEXT
+        )
+        """
+    )
+
+
+def record_changed_dates(dates: list[str], row_count: int) -> None:
+    if not dates:
+        return
+
+    per_date_rows = max(row_count // len(dates), 0)
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as conn:
+        with conn.cursor() as cur:
+            ensure_change_table(cur)
+            for date_str in dates:
+                cur.execute(
+                    """
+                    INSERT INTO analyzer_partition_changes (
+                        date,
+                        first_changed_at,
+                        last_changed_at,
+                        new_eval_rows,
+                        status,
+                        processed_at,
+                        error
+                    )
+                    VALUES (%s, now(), now(), %s, 'pending', NULL, NULL)
+                    ON CONFLICT (date) DO UPDATE SET
+                        last_changed_at = now(),
+                        new_eval_rows = analyzer_partition_changes.new_eval_rows + EXCLUDED.new_eval_rows,
+                        status = 'pending',
+                        processed_at = NULL,
+                        error = NULL
+                    """,
+                    (date_str, per_date_rows),
+                )
+
+
 def clear_staging(keys, batch_size: int = 5000) -> int:
     # Key-matched DELETE avoids removing worker inserts that arrive after Spark read staging.
     deleted = 0
@@ -202,6 +260,10 @@ def run() -> int:
 
             compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
             logger.info(f"wrote {compacted_count} rows to iceberg")
+
+            dates = changed_dates(compacted)
+            record_changed_dates(dates, compacted_count)
+            logger.info("recorded changed analyzer partitions: %s", ", ".join(dates))
 
             keys = compacted.select("game_id", "ply", "player_id").distinct().toLocalIterator()
             deleted_count = clear_staging(keys)

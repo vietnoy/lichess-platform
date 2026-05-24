@@ -109,37 +109,6 @@ with DAG(
         verbose=True,
     )
 
-    # Compacts the on-demand analyzer's Postgres staging into Iceberg. Runs after
-    # player_games is rebuilt because the date column is sourced from that table.
-    compact_ondemand = SparkSubmitOperator(
-        task_id="run_compact_ondemand_evals",
-        application="/git/repo/processing/compact_ondemand_evals.py",
-        conn_id="spark_default",
-        packages=_iceberg_pg_packages,
-        conf=_process_conf,
-        verbose=True,
-    )
-
-    build_critical_positions = SparkSubmitOperator(
-        task_id="run_build_critical_positions",
-        application="/git/repo/processing/build_critical_positions.py",
-        conn_id="spark_default",
-        packages=_iceberg_packages,
-        conf=_process_conf,
-        application_args=["{{ ds }}"],
-        verbose=True,
-    )
-
-    build_player_weakness_summary = SparkSubmitOperator(
-        task_id="run_build_player_weakness_summary",
-        application="/git/repo/processing/build_player_weakness_summary.py",
-        conn_id="spark_default",
-        packages=_iceberg_packages,
-        conf=_process_conf,
-        application_args=["{{ ds }}"],
-        verbose=True,
-    )
-
     refresh_starrocks_catalog = BashOperator(
         task_id="refresh_starrocks_catalog",
         bash_command=r"""
@@ -176,14 +145,81 @@ PROPERTIES (
 "
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;"
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;"
-starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;" || true
-starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
-starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positions;" || true
-starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;" || true
 """,
     )
 
-    process >> build_player_games >> compact_ondemand >> build_critical_positions >> build_player_weakness_summary >> refresh_starrocks_catalog
+    process >> build_player_games >> refresh_starrocks_catalog
+
+
+# ─── DAG 2b: Analyzer eval compaction → derived product partitions ────────────
+with DAG(
+    dag_id="analyzer_derived_maintenance",
+    default_args=default_args,
+    description="Compact asynchronous analyzer evals and rebuild only changed date partitions",
+    start_date=datetime(2026, 5, 24),
+    schedule="37 * * * *",
+    catchup=False,
+    max_active_runs=1,
+    tags=["chess", "processing", "analyzer", "polaris"],
+) as dag_analyzer_derived:
+    compact_ondemand = SparkSubmitOperator(
+        task_id="run_compact_ondemand_evals",
+        application="/git/repo/processing/compact_ondemand_evals.py",
+        conn_id="spark_default",
+        packages=_iceberg_pg_packages,
+        conf=_process_conf,
+        verbose=True,
+    )
+
+    rebuild_changed_dates = BashOperator(
+        task_id="rebuild_changed_analyzer_dates",
+        execution_timeout=timedelta(hours=12),
+        bash_command="python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 4",
+    )
+
+    refresh_analyzer_tables = BashOperator(
+        task_id="refresh_analyzer_tables",
+        bash_command=r"""
+starrocks_mysql() {
+  if [ -n "$STARROCKS_PASSWORD" ]; then
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -p"$STARROCKS_PASSWORD" "$@" 2>/tmp/starrocks_mysql.err || {
+      if grep -q "Access denied" /tmp/starrocks_mysql.err; then
+        mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+      else
+        cat /tmp/starrocks_mysql.err >&2
+        return 1
+      fi
+    }
+  else
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+  fi
+}
+
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positions;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_opening_stats;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_stats;" || true
+""",
+    )
+
+    compact_ondemand >> rebuild_changed_dates >> refresh_analyzer_tables
+
+
+with DAG(
+    dag_id="historical_analyzer_staleness_scan",
+    default_args=default_args,
+    description="Find stale analyzer-derived partitions and enqueue only those dates for rebuild",
+    start_date=datetime(2026, 5, 24),
+    schedule="11 2 * * *",
+    catchup=False,
+    max_active_runs=1,
+    tags=["chess", "processing", "analyzer", "backfill"],
+) as dag_analyzer_scan:
+    enqueue_stale_dates = BashOperator(
+        task_id="enqueue_stale_analyzer_dates",
+        bash_command="python /git/repo/processing/enqueue_stale_analyzer_dates.py --lookback-days 90",
+    )
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────
 with DAG(
@@ -227,6 +263,8 @@ mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positions;" || true
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;" || true
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_opening_stats;" || true
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_stats;" || true
 """,
     )
 
