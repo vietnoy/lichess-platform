@@ -103,6 +103,10 @@ def test_opening_stats_sql_can_run_for_all_dates(module):
     assert "WHERE date = DATE" not in sql
 
 
+def test_resolve_date_arg_supports_all_dates(module):
+    assert module.resolve_date_arg(["build_player_opening_stats.py", "--all"]) is None
+
+
 def test_run_overwrites_partition_when_rows_exist(module, monkeypatch):
     output = FakeDataFrame([{"player_id": "alice", "date": "2026-05-11"}])
     spark = FakeSpark(output)

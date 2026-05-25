@@ -204,44 +204,73 @@ starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_sta
 with DAG(
     dag_id="analyzer_summary_maintenance",
     default_args=default_args,
-    description="Rebuild analyzer aggregate summary partitions for dates touched by new evals",
+    description="Nightly full rebuild of analyzer aggregate summary tables",
     start_date=datetime(2026, 5, 24),
     schedule="45 2 * * *",
     catchup=False,
     max_active_runs=1,
     tags=["chess", "processing", "analyzer", "summaries"],
 ) as dag_analyzer_summaries:
-    rebuild_changed_summaries = BashOperator(
-        task_id="rebuild_changed_analyzer_summaries",
+    rebuild_player_weakness_summary = SparkSubmitOperator(
+        task_id="rebuild_player_weakness_summary",
+        application="/git/repo/processing/build_player_weakness_summary.py",
+        conn_id="spark_default",
+        packages=_iceberg_packages,
+        conf=_process_conf,
+        application_args=["--all"],
+        verbose=True,
+    )
+
+    rebuild_player_opening_stats = SparkSubmitOperator(
+        task_id="rebuild_player_opening_stats",
+        application="/git/repo/processing/build_player_opening_stats.py",
+        conn_id="spark_default",
+        packages=_iceberg_packages,
+        conf=_process_conf,
+        application_args=["--all"],
+        verbose=True,
+    )
+
+    rebuild_player_phase_stats = SparkSubmitOperator(
+        task_id="rebuild_player_phase_stats",
+        application="/git/repo/processing/build_player_phase_stats.py",
+        conn_id="spark_default",
+        packages=_iceberg_packages,
+        conf=_process_conf,
+        application_args=["--all"],
+        verbose=True,
+    )
+
+    refresh_summary_tables = BashOperator(
+        task_id="refresh_summary_tables",
         execution_timeout=timedelta(hours=12),
         bash_command=r"""
-set -euo pipefail
-while true; do
-  pending="$(python - <<'PY'
-import os
-import psycopg2
-
-conn = psycopg2.connect(
-    host="postgres",
-    port=5432,
-    dbname="chess_analyzer_db",
-    user=os.environ["POSTGRES_USER"],
-    password=os.environ["POSTGRES_PASSWORD"],
-)
-cur = conn.cursor()
-cur.execute("select count(*) from analyzer_partition_changes where status in ('pending', 'failed')")
-print(cur.fetchone()[0])
-cur.close()
-conn.close()
-PY
-)"
-  echo "analyzer_summary_maintenance pending=${pending}"
-  if [ "${pending}" = "0" ]; then
-    break
+starrocks_mysql() {
+  if [ -n "$STARROCKS_PASSWORD" ]; then
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -p"$STARROCKS_PASSWORD" "$@" 2>/tmp/starrocks_mysql.err || {
+      if grep -q "Access denied" /tmp/starrocks_mysql.err; then
+        mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+      else
+        cat /tmp/starrocks_mysql.err >&2
+        return 1
+      fi
+    }
+  else
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
   fi
-  python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 1
-done
+}
+
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;"
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_opening_stats;"
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_stats;"
 """,
+    )
+
+    (
+        rebuild_player_weakness_summary
+        >> rebuild_player_opening_stats
+        >> rebuild_player_phase_stats
+        >> refresh_summary_tables
     )
 
 # ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────

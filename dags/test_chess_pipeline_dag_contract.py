@@ -41,15 +41,21 @@ def test_historical_analyzer_dags_are_not_registered():
     assert 'task_id="enqueue_stale_analyzer_dates"' not in DAG_SOURCE
 
 
-def test_analyzer_summary_maintenance_rebuilds_changed_summaries_nightly():
+def test_analyzer_summary_maintenance_rebuilds_all_summaries_nightly():
     assert 'dag_id="analyzer_summary_maintenance"' in DAG_SOURCE
     assert 'schedule="45 2 * * *"' in DAG_SOURCE
-    assert 'task_id="rebuild_changed_analyzer_summaries"' in DAG_SOURCE
-    assert "analyzer_summary_maintenance pending=${pending}" in DAG_SOURCE
+    assert 'task_id="rebuild_player_weakness_summary"' in DAG_SOURCE
+    assert 'task_id="rebuild_player_opening_stats"' in DAG_SOURCE
+    assert 'task_id="rebuild_player_phase_stats"' in DAG_SOURCE
+    assert 'application_args=["--all"]' in DAG_SOURCE
+    assert "analyzer_summary_maintenance pending=${pending}" not in DAG_SOURCE
+    assert "rebuild_changed_analyzer_dates.py --max-dates 1" not in DAG_SOURCE
     assert (
-        "python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 1"
-        in DAG_SOURCE
-    )
+        "rebuild_player_weakness_summary\n"
+        "        >> rebuild_player_opening_stats\n"
+        "        >> rebuild_player_phase_stats\n"
+        "        >> refresh_summary_tables"
+    ) in DAG_SOURCE
 
 
 def test_starrocks_refresh_includes_player_weakness_summary():

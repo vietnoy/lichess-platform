@@ -103,6 +103,10 @@ def test_summary_sql_can_run_for_all_dates(module):
     assert "WHERE date = DATE" not in sql
 
 
+def test_resolve_date_arg_supports_all_dates(module):
+    assert module.resolve_date_arg(["build_player_weakness_summary.py", "--all"]) is None
+
+
 def test_run_overwrites_partition_when_summary_has_rows(module, monkeypatch):
     output = FakeDataFrame([{"player_id": "alice", "date": "2026-05-21"}])
     spark = FakeSpark(output)

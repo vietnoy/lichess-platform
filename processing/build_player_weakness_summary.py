@@ -199,9 +199,15 @@ def run(date_str: str | None) -> int:
         spark.stop()
 
 
-if __name__ == "__main__":
-    arg = sys.argv[1] if len(sys.argv) > 1 else None
+def resolve_date_arg(argv: list[str]) -> str | None:
+    if len(argv) > 1 and argv[1] == "--all":
+        return None
+
+    arg = argv[1] if len(argv) > 1 else None
     today = datetime.today().strftime("%Y-%m-%d")
     yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    date = yesterday if (arg is None or arg >= today) else arg
-    run(date)
+    return yesterday if (arg is None or arg >= today) else arg
+
+
+if __name__ == "__main__":
+    run(resolve_date_arg(sys.argv))
