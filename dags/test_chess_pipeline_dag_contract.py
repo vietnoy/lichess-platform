@@ -41,6 +41,17 @@ def test_historical_analyzer_dags_are_not_registered():
     assert 'task_id="enqueue_stale_analyzer_dates"' not in DAG_SOURCE
 
 
+def test_analyzer_summary_maintenance_rebuilds_changed_summaries_nightly():
+    assert 'dag_id="analyzer_summary_maintenance"' in DAG_SOURCE
+    assert 'schedule="45 2 * * *"' in DAG_SOURCE
+    assert 'task_id="rebuild_changed_analyzer_summaries"' in DAG_SOURCE
+    assert "analyzer_summary_maintenance pending=${pending}" in DAG_SOURCE
+    assert (
+        "python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 1"
+        in DAG_SOURCE
+    )
+
+
 def test_starrocks_refresh_includes_player_weakness_summary():
     assert (
         'REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;'

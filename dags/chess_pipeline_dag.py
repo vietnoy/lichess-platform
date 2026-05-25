@@ -199,6 +199,51 @@ starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_sta
 
     compact_ondemand >> refresh_analyzer_tables
 
+
+# ─── DAG 2c: Nightly analyzer aggregate summaries ────────────────────────────
+with DAG(
+    dag_id="analyzer_summary_maintenance",
+    default_args=default_args,
+    description="Rebuild analyzer aggregate summary partitions for dates touched by new evals",
+    start_date=datetime(2026, 5, 24),
+    schedule="45 2 * * *",
+    catchup=False,
+    max_active_runs=1,
+    tags=["chess", "processing", "analyzer", "summaries"],
+) as dag_analyzer_summaries:
+    rebuild_changed_summaries = BashOperator(
+        task_id="rebuild_changed_analyzer_summaries",
+        execution_timeout=timedelta(hours=12),
+        bash_command=r"""
+set -euo pipefail
+while true; do
+  pending="$(python - <<'PY'
+import os
+import psycopg2
+
+conn = psycopg2.connect(
+    host="postgres",
+    port=5432,
+    dbname="chess_analyzer_db",
+    user=os.environ["POSTGRES_USER"],
+    password=os.environ["POSTGRES_PASSWORD"],
+)
+cur = conn.cursor()
+cur.execute("select count(*) from analyzer_partition_changes where status in ('pending', 'failed')")
+print(cur.fetchone()[0])
+cur.close()
+conn.close()
+PY
+)"
+  echo "analyzer_summary_maintenance pending=${pending}"
+  if [ "${pending}" = "0" ]; then
+    break
+  fi
+  python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 1
+done
+""",
+    )
+
 # ─── DAG 3: Load enriched data into StarRocks via Polaris ─────────────────────
 with DAG(
     dag_id="init_catalog_starrocks",
