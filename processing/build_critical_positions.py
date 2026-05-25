@@ -5,7 +5,6 @@ import sys
 from datetime import datetime, timedelta
 from dotenv import find_dotenv, load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.utils import AnalysisException
 
 # See process_to_polaris.py — same dotenv >=1.1.0 stack-frame assertion.
 load_dotenv(find_dotenv(usecwd=True))
@@ -110,14 +109,6 @@ def time_pressure_case(clock_expr: str = "clock_remaining") -> str:
     )
 
 
-def table_exists(spark: SparkSession, table_name: str) -> bool:
-    try:
-        spark.table(table_name).schema
-        return True
-    except AnalysisException:
-        return False
-
-
 def date_filter(alias: str, date_str: str | None) -> str:
     if not date_str:
         return ""
@@ -133,34 +124,6 @@ def build_critical_positions_sql(
     move_context_filter = ""
     if date_str:
         move_context_filter = f"WHERE to_date(m.date) = DATE '{date_str}'"
-
-    legacy_daily = ""
-    if include_legacy_daily:
-        legacy_daily = f"""
-        UNION ALL
-        SELECT
-            pg.player_id,
-            e.game_id,
-            e.ply,
-            to_date(e.date) AS date,
-            e.fen,
-            e.played_move,
-            e.best_move,
-            e.eval_cp,
-            e.mate,
-            e.eval_swing_cp_from_prev AS eval_swing_cp,
-            e.classification,
-            'daily' AS eval_source,
-            2 AS source_priority
-        FROM polaris.prod.move_evaluations e
-        JOIN move_context m
-          ON e.game_id = m.game_id AND e.ply = m.ply
-        JOIN player_games pg
-          ON e.game_id = pg.game_id AND m.whose_moved = pg.color
-        WHERE e.classification IN ({class_list})
-        """
-        if date_str:
-            legacy_daily += f"\n          AND e.date = DATE '{date_str}'"
 
     return f"""
     WITH player_games AS (
@@ -200,7 +163,6 @@ def build_critical_positions_sql(
         FROM polaris.prod.move_evaluations_ondemand e
         WHERE e.classification IN ({class_list})
         {f"  AND e.date = DATE '{date_str}'" if date_str else ""}
-        {legacy_daily}
     ),
     ranked_evals AS (
         SELECT
@@ -247,12 +209,8 @@ def run(date_str: str | None) -> int:
     spark.sparkContext.setLogLevel("WARN")
     try:
         ensure_table(spark)
-        include_legacy_daily = table_exists(spark, "polaris.prod.move_evaluations")
-        if not include_legacy_daily:
-            logger.info("polaris.prod.move_evaluations not found; using on-demand evaluations only")
-
         logger.info("Building critical_positions for date=%s", date_str or "ALL")
-        output = spark.sql(build_critical_positions_sql(date_str, include_legacy_daily))
+        output = spark.sql(build_critical_positions_sql(date_str, include_legacy_daily=False))
         row_count = output.count()
         logger.info("critical_positions output rows=%s", row_count)
         if row_count == 0:

@@ -90,6 +90,9 @@ class FakeDataFrame:
     def toLocalIterator(self):
         return iter(self.collect())
 
+    def createOrReplaceTempView(self, name):
+        self.temp_view_name = name
+
     def writeTo(self, target):
         self.write_target = target
         FakeDataFrame.last_write_frame = self
@@ -120,7 +123,7 @@ class FakeSpark:
         self.read = FakeReader(staging)
         self.player_games = player_games
         self.sparkContext = SimpleNamespace(setLogLevel=MagicMock())
-        self.sql = MagicMock()
+        self.sql = MagicMock(return_value=FakeDataFrame([], name="sql"))
         self.stop = MagicMock()
 
     def table(self, name):
@@ -191,6 +194,8 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     monkeypatch.setattr(module, "clear_staging", clear_staging)
     record_changed_dates = MagicMock()
     monkeypatch.setattr(module, "record_changed_dates", record_changed_dates)
+    append_critical_positions = MagicMock(return_value=1)
+    monkeypatch.setattr(module, "append_critical_positions", append_critical_positions)
 
     enriched = module.enrich_with_dates(spark, staging)
     assert enriched.rows == [
@@ -203,6 +208,7 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert FakeDataFrame.last_write_frame.persist_called is True
     assert FakeDataFrame.last_write_frame.persist_level == "DISK_ONLY"
     assert FakeDataFrame.last_write_frame.unpersist_called is True
+    append_critical_positions.assert_called_once()
     record_changed_dates.assert_called_once_with(["2026-05-11"], 1)
     assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
 
@@ -215,6 +221,24 @@ def test_changed_dates_are_distinct_and_sorted(module):
     ])
 
     assert module.changed_dates(compacted) == ["2026-05-11", "2026-05-12"]
+
+
+def test_incremental_critical_positions_reads_only_compacted_batch(module):
+    compacted = MagicMock()
+    critical_rows = MagicMock()
+    critical_rows.count.return_value = 3
+    spark = MagicMock()
+    spark.sql.return_value = critical_rows
+
+    assert module.append_critical_positions(spark, compacted) == 3
+
+    compacted.createOrReplaceTempView.assert_called_once_with("new_move_evaluations_ondemand")
+    sql = spark.sql.call_args.args[0]
+    assert "FROM new_move_evaluations_ondemand e" in sql
+    assert "FROM polaris.prod.move_evaluations e" not in sql
+    assert "LEFT ANTI JOIN polaris.prod.critical_positions existing" in sql
+    critical_rows.writeTo.assert_called_once_with("polaris.prod.critical_positions")
+    critical_rows.writeTo.return_value.append.assert_called_once()
 
 
 def test_successful_write_deletes_postgres_rows(module, monkeypatch):

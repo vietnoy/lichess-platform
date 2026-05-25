@@ -30,9 +30,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+TEACHABLE_CLASSES = ("blunder", "mistake", "inaccuracy")
+
 
 def positive_rowcount(rowcount) -> int:
     return rowcount if isinstance(rowcount, int) and rowcount > 0 else 0
+
+
+def phase_case(ply_expr: str = "ply") -> str:
+    return (
+        f"CASE WHEN {ply_expr} <= 20 THEN 'opening' "
+        f"WHEN {ply_expr} <= 60 THEN 'middlegame' "
+        "ELSE 'endgame' END"
+    )
+
+
+def time_pressure_case(clock_expr: str = "clock_remaining") -> str:
+    return (
+        f"CASE WHEN {clock_expr} IS NULL THEN 'unknown' "
+        f"WHEN {clock_expr} < 1000 THEN 'under_10s' "
+        f"WHEN {clock_expr} < 3000 THEN 'under_30s' "
+        "ELSE 'normal' END"
+    )
 
 
 def build_spark() -> SparkSession:
@@ -94,6 +113,38 @@ def ensure_table(spark: SparkSession) -> None:
     )
 
 
+def ensure_critical_positions_table(spark: SparkSession) -> None:
+    spark.sql(
+        """
+        CREATE TABLE IF NOT EXISTS polaris.prod.critical_positions (
+            player_id       STRING NOT NULL,
+            game_id         STRING NOT NULL,
+            ply             INT    NOT NULL,
+            date            DATE   NOT NULL,
+            fen             STRING,
+            played_move     STRING,
+            best_move       STRING,
+            eval_cp         INT,
+            mate            INT,
+            eval_swing_cp   INT,
+            classification  STRING,
+            phase           STRING,
+            clock_remaining INT,
+            time_pressure   STRING,
+            color           STRING,
+            opponent_id     STRING,
+            opening_eco     STRING,
+            opening_name    STRING,
+            speed           STRING,
+            perf            STRING,
+            eval_source     STRING
+        )
+        USING iceberg
+        PARTITIONED BY (date)
+        """
+    )
+
+
 def read_staging(spark: SparkSession):
     return (
         spark.read
@@ -123,6 +174,94 @@ def enrich_with_dates(spark: SparkSession, staging):
 
 def changed_dates(compacted) -> list[str]:
     return sorted(str(row.date) for row in compacted.select("date").distinct().collect())
+
+
+def append_critical_positions(spark: SparkSession, compacted) -> int:
+    """Append critical-position facts from this compaction batch only."""
+    ensure_critical_positions_table(spark)
+    compacted.createOrReplaceTempView("new_move_evaluations_ondemand")
+    class_list = ", ".join(f"'{value}'" for value in TEACHABLE_CLASSES)
+    critical_rows = spark.sql(
+        f"""
+        WITH batch_evals AS (
+            SELECT
+                player_id,
+                game_id,
+                ply,
+                date,
+                fen,
+                played_move,
+                best_move,
+                eval_cp,
+                mate,
+                eval_swing_cp,
+                classification,
+                'ondemand' AS eval_source
+            FROM new_move_evaluations_ondemand e
+            WHERE classification IN ({class_list})
+        ),
+        player_games AS (
+            SELECT DISTINCT game_id, player_id, color, opponent_id, date
+            FROM polaris.prod.player_games
+        ),
+        move_context AS (
+            SELECT
+                m.game_id,
+                m.move_number AS ply,
+                max(m.clock_remaining) AS clock_remaining,
+                max(m.opening_eco) AS opening_eco,
+                max(m.opening_name) AS opening_name,
+                max(m.speed) AS speed,
+                max(m.perf) AS perf
+            FROM polaris.prod.chess_move_events m
+            JOIN (SELECT DISTINCT game_id, ply FROM batch_evals) b
+              ON m.game_id = b.game_id AND m.move_number = b.ply
+            GROUP BY m.game_id, m.move_number
+        ),
+        candidates AS (
+            SELECT
+                e.player_id,
+                e.game_id,
+                e.ply,
+                e.date,
+                e.fen,
+                e.played_move,
+                e.best_move,
+                e.eval_cp,
+                e.mate,
+                e.eval_swing_cp,
+                e.classification,
+                {phase_case("e.ply")} AS phase,
+                m.clock_remaining,
+                {time_pressure_case("m.clock_remaining")} AS time_pressure,
+                pg.color,
+                pg.opponent_id,
+                m.opening_eco,
+                m.opening_name,
+                m.speed,
+                m.perf,
+                e.eval_source
+            FROM batch_evals e
+            JOIN player_games pg
+              ON e.game_id = pg.game_id AND e.player_id = pg.player_id
+            LEFT JOIN move_context m
+              ON e.game_id = m.game_id AND e.ply = m.ply
+        )
+        SELECT c.*
+        FROM candidates c
+        LEFT ANTI JOIN polaris.prod.critical_positions existing
+          ON c.game_id = existing.game_id
+         AND c.ply = existing.ply
+         AND c.player_id = existing.player_id
+        """
+    )
+    row_count = critical_rows.count()
+    if row_count == 0:
+        logger.info("no new critical_positions rows in this compaction")
+        return 0
+    critical_rows.writeTo("polaris.prod.critical_positions").append()
+    logger.info("appended %s critical_positions rows", row_count)
+    return row_count
 
 
 def ensure_change_table(cur) -> None:
@@ -260,6 +399,7 @@ def run() -> int:
 
             compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
             logger.info(f"wrote {compacted_count} rows to iceberg")
+            append_critical_positions(spark, compacted)
 
             dates = changed_dates(compacted)
             record_changed_dates(dates, compacted_count)
