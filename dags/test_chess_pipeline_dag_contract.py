@@ -14,7 +14,7 @@ def test_analyzer_maintenance_compacts_eval_staging_without_history_rebuild():
     assert 'task_id="run_compact_ondemand_evals"' in DAG_SOURCE
     assert 'application="/git/repo/processing/compact_ondemand_evals.py"' in DAG_SOURCE
     maintenance_block = DAG_SOURCE.split('dag_id="analyzer_derived_maintenance"', 1)[1].split(
-        'dag_id="historical_analyzer_rebuild"', 1
+        'dag_id="init_catalog_starrocks"', 1
     )[0]
     assert 'task_id="rebuild_changed_analyzer_dates"' not in maintenance_block
     assert "compact_ondemand >> refresh_analyzer_tables" in maintenance_block
@@ -34,26 +34,11 @@ def test_analyzer_refresh_includes_player_phase_stats():
     )
 
 
-def test_analyzer_rebuilder_script_is_used():
-    assert (
-        "python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 1"
-        in DAG_SOURCE
-    )
-
-
-def test_historical_analyzer_rebuild_is_separate_from_hourly_compaction():
-    assert 'dag_id="historical_analyzer_rebuild"' in DAG_SOURCE
-    assert 'task_id="rebuild_changed_analyzer_dates"' in DAG_SOURCE
-    assert "schedule=None" in DAG_SOURCE
-
-
-def test_historical_analyzer_staleness_scan_enqueues_dates_only():
-    assert 'dag_id="historical_analyzer_staleness_scan"' in DAG_SOURCE
-    assert 'task_id="enqueue_stale_analyzer_dates"' in DAG_SOURCE
-    assert (
-        "python /git/repo/processing/enqueue_stale_analyzer_dates.py --lookback-days 90"
-        in DAG_SOURCE
-    )
+def test_historical_analyzer_dags_are_not_registered():
+    assert 'dag_id="historical_analyzer_rebuild"' not in DAG_SOURCE
+    assert 'dag_id="historical_analyzer_staleness_scan"' not in DAG_SOURCE
+    assert 'task_id="rebuild_changed_analyzer_dates"' not in DAG_SOURCE
+    assert 'task_id="enqueue_stale_analyzer_dates"' not in DAG_SOURCE
 
 
 def test_starrocks_refresh_includes_player_weakness_summary():
