@@ -192,8 +192,6 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
-    record_changed_dates = MagicMock()
-    monkeypatch.setattr(module, "record_changed_dates", record_changed_dates)
     append_critical_positions = MagicMock(return_value=1)
     monkeypatch.setattr(module, "append_critical_positions", append_critical_positions)
 
@@ -209,7 +207,6 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert FakeDataFrame.last_write_frame.persist_level == "DISK_ONLY"
     assert FakeDataFrame.last_write_frame.unpersist_called is True
     append_critical_positions.assert_called_once()
-    record_changed_dates.assert_called_once_with(["2026-05-11"], 1)
     assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
 
 

@@ -402,8 +402,7 @@ def run() -> int:
             append_critical_positions(spark, compacted)
 
             dates = changed_dates(compacted)
-            record_changed_dates(dates, compacted_count)
-            logger.info("recorded changed analyzer partitions: %s", ", ".join(dates))
+            logger.info("compacted analyzer partitions: %s", ", ".join(dates))
 
             keys = compacted.select("game_id", "ply", "player_id").distinct().toLocalIterator()
             deleted_count = clear_staging(keys)
