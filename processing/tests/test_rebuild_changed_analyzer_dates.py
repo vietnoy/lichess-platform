@@ -15,12 +15,12 @@ spec.loader.exec_module(rebuild)
 
 def test_spark_submit_command_targets_expected_script_and_date():
     command = rebuild.spark_submit_command(
-        "/git/repo/processing/build_critical_positions.py",
+        "/git/repo/processing/build_player_weakness_summary.py",
         "2026-05-23",
     )
 
     assert command[:3] == ["spark-submit", "--master", "spark://spark-master:7077"]
-    assert "/git/repo/processing/build_critical_positions.py" in command
+    assert "/git/repo/processing/build_player_weakness_summary.py" in command
     assert command[-1] == "2026-05-23"
     assert "spark.cores.max=4" in command
 
@@ -51,7 +51,6 @@ def test_process_date_runs_builders_validates_and_marks_clean(monkeypatch):
 
     scripts = [command[-2] for command in calls]
     assert scripts == [
-        "/git/repo/processing/build_critical_positions.py",
         "/git/repo/processing/build_player_weakness_summary.py",
         "/git/repo/processing/build_player_opening_stats.py",
         "/git/repo/processing/build_player_phase_stats.py",

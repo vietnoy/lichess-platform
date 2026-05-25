@@ -21,7 +21,6 @@ ICEBERG_PACKAGES = (
 
 
 DERIVED_BUILDERS = [
-    "/git/repo/processing/build_critical_positions.py",
     "/git/repo/processing/build_player_weakness_summary.py",
     "/git/repo/processing/build_player_opening_stats.py",
     "/git/repo/processing/build_player_phase_stats.py",
