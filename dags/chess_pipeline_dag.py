@@ -213,7 +213,34 @@ with DAG(
     rebuild_changed_dates = BashOperator(
         task_id="rebuild_changed_analyzer_dates",
         execution_timeout=timedelta(hours=12),
-        bash_command="python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 999",
+        bash_command=r"""
+set -euo pipefail
+while true; do
+  pending="$(python - <<'PY'
+import os
+import psycopg2
+
+conn = psycopg2.connect(
+    host="postgres",
+    port=5432,
+    dbname="chess_analyzer_db",
+    user=os.environ["POSTGRES_USER"],
+    password=os.environ["POSTGRES_PASSWORD"],
+)
+cur = conn.cursor()
+cur.execute("select count(*) from analyzer_partition_changes where status in ('pending', 'failed')")
+print(cur.fetchone()[0])
+cur.close()
+conn.close()
+PY
+)"
+  echo "historical_analyzer_rebuild pending=${pending}"
+  if [ "${pending}" = "0" ]; then
+    break
+  fi
+  python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 1
+done
+""",
     )
 
     refresh_analyzer_tables = BashOperator(

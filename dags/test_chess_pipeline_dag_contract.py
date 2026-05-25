@@ -36,7 +36,7 @@ def test_analyzer_refresh_includes_player_phase_stats():
 
 def test_analyzer_rebuilder_script_is_used():
     assert (
-        "python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 999"
+        "python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 1"
         in DAG_SOURCE
     )
 
