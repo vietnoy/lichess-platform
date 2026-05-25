@@ -171,10 +171,49 @@ with DAG(
         verbose=True,
     )
 
+    refresh_analyzer_tables = BashOperator(
+        task_id="refresh_analyzer_tables",
+        bash_command=r"""
+starrocks_mysql() {
+  if [ -n "$STARROCKS_PASSWORD" ]; then
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -p"$STARROCKS_PASSWORD" "$@" 2>/tmp/starrocks_mysql.err || {
+      if grep -q "Access denied" /tmp/starrocks_mysql.err; then
+        mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+      else
+        cat /tmp/starrocks_mysql.err >&2
+        return 1
+      fi
+    }
+  else
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+  fi
+}
+
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positions;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_opening_stats;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_stats;" || true
+""",
+    )
+
+    compact_ondemand >> refresh_analyzer_tables
+
+
+with DAG(
+    dag_id="historical_analyzer_rebuild",
+    default_args=default_args,
+    description="Drain analyzer-derived historical partition rebuild queue without compaction",
+    start_date=datetime(2026, 5, 24),
+    schedule=None,
+    catchup=False,
+    max_active_runs=1,
+    tags=["chess", "processing", "analyzer", "backfill"],
+) as dag_analyzer_history_rebuild:
     rebuild_changed_dates = BashOperator(
         task_id="rebuild_changed_analyzer_dates",
         execution_timeout=timedelta(hours=12),
-        bash_command="python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 4",
+        bash_command="python /git/repo/processing/rebuild_changed_analyzer_dates.py --max-dates 999",
     )
 
     refresh_analyzer_tables = BashOperator(
@@ -203,7 +242,7 @@ starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_sta
 """,
     )
 
-    compact_ondemand >> rebuild_changed_dates >> refresh_analyzer_tables
+    rebuild_changed_dates >> refresh_analyzer_tables
 
 
 with DAG(

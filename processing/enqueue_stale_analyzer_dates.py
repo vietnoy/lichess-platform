@@ -1,10 +1,9 @@
 import argparse
 import os
-import subprocess
 
 import psycopg2
 
-from rebuild_changed_analyzer_dates import ensure_change_table, starrocks_mysql_command
+from rebuild_changed_analyzer_dates import ensure_change_table, run_starrocks_mysql
 
 
 POSTGRES_USER = os.getenv("POSTGRES_USER")
@@ -15,12 +14,7 @@ POSTGRES_DB = "chess_analyzer_db"
 
 
 def starrocks_rows(sql: str) -> list[list[str]]:
-    result = subprocess.run(
-        starrocks_mysql_command(sql),
-        check=True,
-        text=True,
-        capture_output=True,
-    )
+    result = run_starrocks_mysql(sql)
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     return [line.split("\t") for line in lines]
 

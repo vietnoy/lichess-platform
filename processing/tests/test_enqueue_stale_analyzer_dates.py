@@ -10,6 +10,7 @@ sys.modules.setdefault(
     SimpleNamespace(
         ensure_change_table=lambda cur: cur.execute("ensure"),
         starrocks_mysql_command=lambda sql: ["mysql", "-e", sql],
+        run_starrocks_mysql=lambda sql: SimpleNamespace(stdout="2026-05-21\n2026-05-23\n"),
     ),
 )
 module_path = Path(__file__).resolve().parents[1] / "enqueue_stale_analyzer_dates.py"
@@ -38,6 +39,21 @@ def test_enqueue_dates_marks_only_requested_dates_pending():
     assert len(insert_calls) == 2
     assert insert_calls[0][1] == ("2026-05-21",)
     assert insert_calls[1][1] == ("2026-05-23",)
+
+
+def test_starrocks_rows_uses_passwordless_fallback_helper(monkeypatch):
+    calls = []
+
+    def fake_run(sql):
+        calls.append(sql)
+        return SimpleNamespace(stdout="2026-05-21\t10\n2026-05-23\t20\n")
+
+    monkeypatch.setattr(enqueue, "run_starrocks_mysql", fake_run)
+
+    rows = enqueue.starrocks_rows("select 1")
+
+    assert rows == [["2026-05-21", "10"], ["2026-05-23", "20"]]
+    assert calls == ["select 1"]
 
 
 class FakeCursor:
