@@ -38,6 +38,7 @@ from db import (
     query_opening_stats,
     query_phase_stats,
     query_platform_overview,
+    query_player_insights,
     query_player_patterns,
     query_player_profile,
     query_system_summary,
@@ -374,6 +375,11 @@ def get_player_phase_stats(username: str, days: int = 60):
         "player_id": username,
         "phase_stats": query_phase_stats(username, days=days),
     }
+
+
+@app.get("/api/players/{username}/insights")
+def get_player_insights(username: str, days: int = 60):
+    return query_player_insights(username, days=days)
 
 
 # ─── exercise ────────────────────────────────────────────────────────────────

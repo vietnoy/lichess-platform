@@ -38,6 +38,8 @@ const HINT_TIERS = [
   null, // tier 3 reveals via the green arrow on the board
 ] as const;
 
+const SOURCE_COPY = "Bài tập được sinh tự động từ critical positions: các vị trí trong game thật nơi Stockfish ghi nhận blunder/mistake và eval swing lớn.";
+
 export default function DrillPage() {
   const [username, setUsername] = useState("");
   const [exercise, setExercise] = useState<Exercise | null>(null);
@@ -135,7 +137,7 @@ export default function DrillPage() {
 
   return (
     <>
-      <Header subtitle={username ? `Pressure drill · ${username}` : "Pressure drill"} />
+      <Header subtitle={username ? `Personalized drill · ${username}` : "Personalized drill"} />
       <main className="max-w-5xl mx-auto px-6 py-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
           <StatusPill tone={status.tone}>{status.label}</StatusPill>
@@ -158,9 +160,12 @@ export default function DrillPage() {
         </div>
 
         {!exercise && !error && !loading && (
-          <p className="text-muted text-sm max-w-prose">
-            Pulls one of your real blunders or mistakes, recreates the exact clock pressure of the moment, and asks you to find the move you missed. Your timer matches the seconds you had on the real clock.
-          </p>
+          <div className="border border-border rounded-md p-4 space-y-2 max-w-3xl">
+            <h1 className="font-medium">Personalized training từ lỗi thật</h1>
+            <p className="text-muted text-sm leading-relaxed">
+              {SOURCE_COPY} Hệ thống ưu tiên lỗi gần đây, eval swing lớn, và tình huống có clock pressure để biến game history thành bài tập hành động.
+            </p>
+          </div>
         )}
 
         {exercise && (
@@ -192,6 +197,9 @@ export default function DrillPage() {
                     Eval swing was about {(Math.abs(exercise.eval_swing_cp) / 100).toFixed(1)} pawns against you.
                   </p>
                 )}
+                <p className="text-xs text-muted mt-2 leading-relaxed">
+                  {SOURCE_COPY}
+                </p>
               </Card>
 
               {outcome.kind === "pending" && (

@@ -59,6 +59,15 @@ interface PhaseWeaknessRow {
 }
 interface OpeningStatsResponse { player_id: string; opening_stats: OpeningWeaknessRow[]; }
 interface PhaseStatsResponse { player_id: string; phase_stats: PhaseWeaknessRow[]; }
+interface PlayerInsight {
+  type: string;
+  score: number;
+  title: string;
+  evidence: string;
+  action: string;
+  data?: Record<string, unknown>;
+}
+interface PlayerInsightsResponse { player_id: string; days: number; insights: PlayerInsight[]; }
 
 interface Profile {
   username: string;
@@ -167,6 +176,32 @@ function Diagnosis({ weakness, openingStats, phaseStats }: {
   );
 }
 
+function InsightBoard({ insights, loaded }: { insights: PlayerInsight[]; loaded: boolean }) {
+  return (
+    <Card title="Insight được ưu tiên">
+      {insights.length > 0 ? (
+        <div className="grid md:grid-cols-3 gap-3">
+          {insights.slice(0, 3).map((item) => (
+            <div key={`${item.type}-${item.title}`} className="border border-border rounded-md p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs text-muted">{item.type.replace(/_/g, " ")}</div>
+                <div className="text-xs font-mono text-accent">{item.score}</div>
+              </div>
+              <h3 className="font-medium leading-snug">{item.title}</h3>
+              <p className="text-sm text-muted leading-relaxed">{item.evidence}</p>
+              <p className="text-sm leading-relaxed">{item.action}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="min-h-[92px] flex items-center text-muted text-sm">
+          {loaded ? "Chưa đủ signal để tạo ranked insights." : "Đang tính ranked insights từ profile, opening và critical positions..."}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function PlayerPage({ params }: { params: { name: string } }) {
   const username = decodeURIComponent(params.name);
   const router = useRouter();
@@ -174,6 +209,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
   const [weakness, setWeakness] = useState<WeaknessSummary | null>(null);
   const [openingStats, setOpeningStats] = useState<OpeningWeaknessRow[]>([]);
   const [phaseStats, setPhaseStats] = useState<PhaseWeaknessRow[]>([]);
+  const [insights, setInsights] = useState<PlayerInsight[]>([]);
   const [coachLoaded, setCoachLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [coachError, setCoachError] = useState<string | null>(null);
@@ -186,6 +222,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
     setWeakness(null);
     setOpeningStats([]);
     setPhaseStats([]);
+    setInsights([]);
     setCoachLoaded(false);
 
     api<Profile>(`/players/${encodeURIComponent(username)}/profile`)
@@ -196,12 +233,14 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
       api<WeaknessSummary>(`/players/${encodeURIComponent(username)}/weakness-summary?days=60`),
       api<OpeningStatsResponse>(`/players/${encodeURIComponent(username)}/opening-stats?days=60&top_n=8`),
       api<PhaseStatsResponse>(`/players/${encodeURIComponent(username)}/phase-stats?days=60`),
+      api<PlayerInsightsResponse>(`/players/${encodeURIComponent(username)}/insights?days=60`),
     ])
-      .then(([summary, openings, phases]) => {
+      .then(([summary, openings, phases, insightResponse]) => {
         if (!alive) return;
         setWeakness(summary);
         setOpeningStats(openings.opening_stats ?? []);
         setPhaseStats(phases.phase_stats ?? []);
+        setInsights(insightResponse.insights ?? []);
       })
       .catch((e) => { if (alive) setCoachError(String(e.message ?? e)); })
       .finally(() => { if (alive) setCoachLoaded(true); });
@@ -231,6 +270,8 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
         </div>
 
         <Diagnosis weakness={weakness} openingStats={openingStats} phaseStats={phaseStats} />
+
+        <InsightBoard insights={insights} loaded={coachLoaded} />
 
         <Card title="Chỉ số huấn luyện · 60 ngày gần đây">
           {weakness ? (

@@ -777,6 +777,104 @@ def query_phase_stats(username: str, days: int = 60) -> list[dict]:
     )
 
 
+def _num(value, default=0):
+    return default if value is None else value
+
+
+def query_player_insights(username: str, days: int = 60) -> dict:
+    days = clamp_int(days, 1, 365)
+    weakness = query_weakness_summary(username, days=days)
+    phase_stats = query_phase_stats(username, days=days)
+    opening_stats = query_opening_stats(username, days=days, top_n=10)
+    profile = query_player_profile(username) or {}
+
+    insights: list[dict] = []
+
+    if phase_stats:
+        phase = phase_stats[0]
+        critical = int(_num(phase.get("critical_positions")))
+        blunders = int(_num(phase.get("blunders")))
+        mistakes = int(_num(phase.get("mistakes")))
+        if critical > 0:
+            score = min(100, 35 + critical * 2 + blunders * 5 + mistakes * 2)
+            insights.append(
+                {
+                    "type": "phase_weakness",
+                    "score": score,
+                    "title": f"Bạn đang mất điểm nhiều nhất ở {phase.get('phase')}",
+                    "evidence": (
+                        f"{critical} critical positions, {blunders} blunders và {mistakes} mistakes "
+                        f"trong {days} ngày gần đây."
+                    ),
+                    "action": "Ưu tiên drill theo phase này trước khi học thêm opening mới.",
+                    "data": phase,
+                }
+            )
+
+    for opening in opening_stats[:3]:
+        games = int(_num(opening.get("games")))
+        win_rate = _num(opening.get("win_rate_pct"), None)
+        critical = int(_num(opening.get("critical_positions")))
+        blunders = int(_num(opening.get("blunders")))
+        mistakes = int(_num(opening.get("mistakes")))
+        if games < 2:
+            continue
+        weak_win_rate = win_rate is not None and win_rate < 45
+        if critical == 0 and not weak_win_rate:
+            continue
+        score = min(100, 25 + games * 2 + critical * 3 + blunders * 6 + mistakes * 2 + (15 if weak_win_rate else 0))
+        insights.append(
+            {
+                "type": "opening_leak",
+                "score": score,
+                "title": f"{opening.get('opening_eco') or '-'} · {opening.get('opening_name') or 'Unknown'} cần review",
+                "evidence": (
+                    f"{games} games, win rate {win_rate if win_rate is not None else 'n/a'}%, "
+                    f"{critical} critical positions."
+                ),
+                "action": "Review 3-5 game gần nhất trong opening này rồi tạo drill từ các critical positions.",
+                "data": opening,
+            }
+        )
+
+    time_pressure_positions = int(_num(weakness.get("time_pressure_positions") if weakness else 0))
+    critical_total = int(_num(weakness.get("critical_positions") if weakness else 0))
+    if time_pressure_positions > 0 and critical_total > 0:
+        pressure_share = round(time_pressure_positions * 100.0 / critical_total, 1)
+        if pressure_share >= 20 or time_pressure_positions >= 5:
+            insights.append(
+                {
+                    "type": "time_pressure",
+                    "score": min(100, 30 + time_pressure_positions * 4),
+                    "title": "Time pressure đang tạo lỗi đáng kể",
+                    "evidence": f"{time_pressure_positions}/{critical_total} critical positions xảy ra dưới áp lực thời gian.",
+                    "action": "Tập drill có timer và ưu tiên quyết định candidate moves nhanh hơn.",
+                    "data": {"time_pressure_positions": time_pressure_positions, "critical_positions": critical_total, "share_pct": pressure_share},
+                }
+            )
+
+    by_color = profile.get("by_color") or []
+    if len(by_color) >= 2:
+        best = max(by_color, key=lambda row: row.get("win_pct") or 0)
+        worst = min(by_color, key=lambda row: row.get("win_pct") or 0)
+        gap = round((best.get("win_pct") or 0) - (worst.get("win_pct") or 0), 1)
+        worst_games = int(_num(worst.get("games")))
+        if gap >= 15 and worst_games >= 5:
+            insights.append(
+                {
+                    "type": "color_gap",
+                    "score": min(100, 25 + int(gap) + worst_games),
+                    "title": f"Hiệu suất cầm {worst.get('color')} thấp hơn rõ rệt",
+                    "evidence": f"Win rate lệch {gap} điểm phần trăm giữa {best.get('color')} và {worst.get('color')}.",
+                    "action": "So sánh repertoire và chọn một opening ổn định hơn cho màu quân yếu.",
+                    "data": {"best": best, "worst": worst, "gap_pct": gap},
+                }
+            )
+
+    insights.sort(key=lambda item: (-item["score"], item["type"]))
+    return {"player_id": username, "days": days, "insights": insights[:6]}
+
+
 def query_exercise(username: str) -> dict | None:
     rows = _run(
         f"""

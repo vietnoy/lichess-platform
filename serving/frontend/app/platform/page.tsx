@@ -286,23 +286,17 @@ export default function PlatformPage() {
           </div>
         </section>
 
-        <section className="grid md:grid-cols-3 gap-3">
-          <div className="border border-border rounded-md p-4 space-y-2">
-            <div className="text-xs text-muted">Data platform purpose</div>
-            <p className="text-sm leading-relaxed">
-              Ingestion và processing không chỉ để lưu data. Nó tạo fact tables và aggregate tables đủ nhanh để product hỏi được câu hỏi lớn.
+        <section className="border border-border rounded-md p-4 space-y-3">
+          <h2 className="font-medium">What this means for training</h2>
+          <div className="grid md:grid-cols-3 gap-3 text-sm">
+            <p className="leading-relaxed">
+              Nếu phần lớn games là blitz/bullet, training nên ưu tiên pattern recognition và ra quyết định nhanh.
             </p>
-          </div>
-          <div className="border border-border rounded-md p-4 space-y-2">
-            <div className="text-xs text-muted">Decision layer</div>
-            <p className="text-sm leading-relaxed">
-              Meta dashboard quyết định nên ưu tiên phân tích speed nào, opening nào, phase nào và loại drill nào.
+            <p className="leading-relaxed">
+              Nếu critical positions tập trung ở một phase, drill nên lấy nhiều vị trí từ phase đó thay vì random puzzle.
             </p>
-          </div>
-          <div className="border border-border rounded-md p-4 space-y-2">
-            <div className="text-xs text-muted">User insight</div>
-            <p className="text-sm leading-relaxed">
-              AI Coach và Drill dùng cùng dữ liệu này để biến pattern toàn nền tảng và lỗi cá nhân thành lời khuyên hành động.
+            <p className="leading-relaxed">
+              Nếu một opening phổ biến có win rate thấp hoặc nhiều mistake, đó là candidate tốt cho repertoire recommendation.
             </p>
           </div>
         </section>
