@@ -104,12 +104,12 @@ def query_system_summary() -> dict:
     for name, full_name, description in PROD_TABLES:
         rows = _run(
             f"""
-            SELECT COUNT(*) AS rows, MAX(date) AS latest_date
+            SELECT COUNT(*) AS row_count, MAX(date) AS latest_date
             FROM {full_name}
             """
         )
         row = rows[0] if rows else {}
-        row_count = int(row.get("rows") or 0)
+        row_count = int(row.get("row_count") or 0)
         latest_date = row.get("latest_date")
         if hasattr(latest_date, "isoformat"):
             latest_date = latest_date.isoformat()
