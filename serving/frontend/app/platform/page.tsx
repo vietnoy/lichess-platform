@@ -58,6 +58,11 @@ function percent(value: number | null | undefined) {
   return `${new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 1 }).format(value)}%`;
 }
 
+function share(value: number, total: number | undefined) {
+  if (!total) return "-";
+  return percent((value * 100) / total);
+}
+
 function Bar({ value, max }: { value: number; max: number }) {
   const width = max > 0 ? Math.max(4, Math.round((value / max) * 100)) : 0;
   return (
@@ -104,6 +109,9 @@ export default function PlatformPage() {
     () => Math.max(0, ...(overview?.phase_mistakes ?? []).map((row) => row.critical_positions)),
     [overview],
   );
+  const leadingSpeed = overview?.speed_mix[0];
+  const leadingOpening = overview?.top_openings[0];
+  const leadingPhase = overview?.phase_mistakes[0];
 
   return (
     <div className="min-h-screen">
@@ -117,8 +125,9 @@ export default function PlatformPage() {
               </StatusPill>
               <h1 className="text-3xl md:text-4xl font-medium tracking-tight">Meta cờ vua trên nền tảng</h1>
               <p className="text-muted max-w-2xl leading-relaxed">
-                Thay vì chỉ xem một người chơi, trang này gom dữ liệu production để nhìn xu hướng chung:
-                tốc độ ván phổ biến, khai cuộc được chơi nhiều và giai đoạn dễ mắc lỗi.
+                Dashboard này biến một lượng lớn game data thành insight: người chơi đang chơi gì,
+                meta opening nào xuất hiện nhiều, lỗi thường xảy ra ở phase nào, và hệ thống nên tạo
+                coach/drill theo hướng nào.
               </p>
             </div>
             <div className="grid grid-cols-3 gap-3 md:min-w-[420px]">
@@ -143,18 +152,64 @@ export default function PlatformPage() {
           )}
         </section>
 
+        <section className="grid lg:grid-cols-3 gap-3">
+          <div className="border border-border bg-surface rounded-md p-4 space-y-2">
+            <div className="text-xs text-muted">Insight 1 · Player behavior</div>
+            <p className="text-sm leading-relaxed">
+              {leadingSpeed ? (
+                <>
+                  <span className="font-medium capitalize">{leadingSpeed.speed}</span> đang chiếm{" "}
+                  <span className="font-mono">{share(leadingSpeed.games, overview?.totals.games)}</span> số ván.
+                  Product nên ưu tiên phân tích nhịp chơi nhanh, time pressure và lỗi tactical ngắn hạn.
+                </>
+              ) : "Chưa đủ dữ liệu để kết luận time control chính."}
+            </p>
+          </div>
+          <div className="border border-border bg-surface rounded-md p-4 space-y-2">
+            <div className="text-xs text-muted">Insight 2 · Training focus</div>
+            <p className="text-sm leading-relaxed">
+              {leadingPhase ? (
+                <>
+                  Critical positions tập trung nhiều nhất ở{" "}
+                  <span className="font-medium">{PHASE_LABELS[leadingPhase.phase] ?? leadingPhase.phase}</span>.
+                  Drill generator nên lấy nhiều bài ở phase này để tăng xác suất sửa đúng lỗi thật.
+                </>
+              ) : "Analyzer chưa có đủ critical positions cho partition mới nhất."}
+            </p>
+          </div>
+          <div className="border border-border bg-surface rounded-md p-4 space-y-2">
+            <div className="text-xs text-muted">Insight 3 · Opening meta</div>
+            <p className="text-sm leading-relaxed">
+              {leadingOpening ? (
+                <>
+                  Opening được chơi nhiều nhất là{" "}
+                  <span className="font-medium">{leadingOpening.opening_eco ?? "-"} · {leadingOpening.opening_name}</span>.
+                  Đây là candidate tốt để so sánh win rate, mistake pattern và gợi ý repertoire.
+                </>
+              ) : "Chưa có dữ liệu opening meta."}
+            </p>
+          </div>
+        </section>
+
         <section className="grid lg:grid-cols-2 gap-4">
           <div className="border border-border bg-surface rounded-md p-4 space-y-4">
-            <div className="flex items-center gap-2">
-              <BarChart3 size={18} className="text-accent" />
-              <h2 className="font-medium">Tốc độ ván phổ biến</h2>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <BarChart3 size={18} className="text-accent" />
+                <h2 className="font-medium">Time control mix</h2>
+              </div>
+              <p className="text-xs text-muted">
+                Cho biết người dùng đang chơi loại ván nào để quyết định feature focus: speed, clock pressure, hay deep analysis.
+              </p>
             </div>
             <div className="space-y-3">
               {(overview?.speed_mix ?? []).map((row) => (
                 <div key={row.speed} className="space-y-1.5">
                   <div className="flex justify-between gap-3 text-sm">
                     <span className="capitalize">{row.speed}</span>
-                    <span className="font-mono text-muted">{number(row.games)} ván · Elo TB {number(row.avg_rating)}</span>
+                    <span className="font-mono text-muted">
+                      {number(row.games)} ván · {share(row.games, overview?.totals.games)} · avg Elo {number(row.avg_rating)}
+                    </span>
                   </div>
                   <Bar value={row.games} max={maxSpeedGames} />
                 </div>
@@ -164,9 +219,14 @@ export default function PlatformPage() {
           </div>
 
           <div className="border border-border bg-surface rounded-md p-4 space-y-4">
-            <div className="flex items-center gap-2">
-              <Swords size={18} className="text-accent" />
-              <h2 className="font-medium">Lỗi theo giai đoạn</h2>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Swords size={18} className="text-accent" />
+                <h2 className="font-medium">Mistake distribution by phase</h2>
+              </div>
+              <p className="text-xs text-muted">
+                Cho biết lỗi nghiêm trọng đến từ opening, middlegame hay endgame để AI Coach chọn bài học đúng trọng tâm.
+              </p>
             </div>
             <div className="space-y-3">
               {(overview?.phase_mistakes ?? []).map((row) => (
@@ -186,16 +246,22 @@ export default function PlatformPage() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-xl font-medium">Khai cuộc đang nổi</h2>
+          <div className="space-y-1">
+            <h2 className="text-xl font-medium">Opening meta</h2>
+            <p className="text-sm text-muted max-w-3xl leading-relaxed">
+              Bảng này không chỉ xếp hạng opening theo popularity. Nó giúp trả lời: người chơi gặp cấu trúc nào nhiều nhất,
+              opening nào có win rate đáng chú ý, và opening nào nên được đưa vào coach/drill/repertoire recommendation.
+            </p>
+          </div>
           <div className="overflow-x-auto border border-border rounded-md bg-surface">
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-muted border-b border-border">
                 <tr>
                   <th className="px-4 py-3 font-medium">Khai cuộc</th>
-                  <th className="px-4 py-3 font-medium text-right">Lượt chơi</th>
-                  <th className="px-4 py-3 font-medium text-right">Tỷ lệ thắng</th>
-                  <th className="px-4 py-3 font-medium text-right">Điểm lỗi</th>
-                  <th className="px-4 py-3 font-medium">Quy mô</th>
+                  <th className="px-4 py-3 font-medium text-right">Games</th>
+                  <th className="px-4 py-3 font-medium text-right">Win rate</th>
+                  <th className="px-4 py-3 font-medium text-right">Critical positions</th>
+                  <th className="px-4 py-3 font-medium">Popularity</th>
                 </tr>
               </thead>
               <tbody>
@@ -217,6 +283,27 @@ export default function PlatformPage() {
                 )}
               </tbody>
             </table>
+          </div>
+        </section>
+
+        <section className="grid md:grid-cols-3 gap-3">
+          <div className="border border-border rounded-md p-4 space-y-2">
+            <div className="text-xs text-muted">Data platform purpose</div>
+            <p className="text-sm leading-relaxed">
+              Ingestion và processing không chỉ để lưu data. Nó tạo fact tables và aggregate tables đủ nhanh để product hỏi được câu hỏi lớn.
+            </p>
+          </div>
+          <div className="border border-border rounded-md p-4 space-y-2">
+            <div className="text-xs text-muted">Decision layer</div>
+            <p className="text-sm leading-relaxed">
+              Meta dashboard quyết định nên ưu tiên phân tích speed nào, opening nào, phase nào và loại drill nào.
+            </p>
+          </div>
+          <div className="border border-border rounded-md p-4 space-y-2">
+            <div className="text-xs text-muted">User insight</div>
+            <p className="text-sm leading-relaxed">
+              AI Coach và Drill dùng cùng dữ liệu này để biến pattern toàn nền tảng và lỗi cá nhân thành lời khuyên hành động.
+            </p>
           </div>
         </section>
       </main>
