@@ -75,8 +75,21 @@ const RESULT_COLORS = { Win: "#10b981", Loss: "#f43f5e", Draw: "#737373" };
 const TOOLTIP_STYLE = { background: "rgb(255 255 255)", border: "1px solid rgb(220 220 228)", borderRadius: 6, fontSize: 12, color: "rgb(18 18 22)" };
 
 function labelize(value: string | null | undefined) {
-  if (!value) return "None yet";
-  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  if (!value) return "Chưa đủ dữ liệu";
+  const labels: Record<string, string> = {
+    opening: "Khai cuộc",
+    middlegame: "Trung cuộc",
+    endgame: "Tàn cuộc",
+    blunder: "Sai lầm nghiêm trọng",
+    mistake: "Sai lầm",
+    inaccuracy: "Nước thiếu chính xác",
+    normal: "Không áp lực",
+    under_10s: "Dưới 10 giây",
+    under_30s: "Dưới 30 giây",
+    white: "Cầm Trắng",
+    black: "Cầm Đen",
+  };
+  return labels[value] ?? value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function pct(value: number | null | undefined) {
@@ -103,6 +116,54 @@ function Metric({ label, value }: { label: string; value: string | number }) {
       <div className="text-xs uppercase tracking-wider text-muted">{label}</div>
       <div className="text-2xl font-medium tabular-nums">{value}</div>
     </div>
+  );
+}
+
+function Diagnosis({ weakness, openingStats, phaseStats }: {
+  weakness: WeaknessSummary | null;
+  openingStats: OpeningWeaknessRow[];
+  phaseStats: PhaseWeaknessRow[];
+}) {
+  const worstOpening = openingStats[0];
+  const topPhase = weakness?.top_phase ?? phaseStats[0]?.phase ?? null;
+
+  return (
+    <Card title="Chẩn đoán chính">
+      {weakness ? (
+        <div className="space-y-3">
+          <p className="text-lg leading-relaxed">
+            Điểm yếu lớn nhất hiện tại là <span className="text-accent font-medium">{labelize(topPhase)}</span>.
+            Trong 60 ngày gần đây, hệ thống tìm thấy{" "}
+            <span className="font-medium tabular-nums">{weakness.critical_positions.toLocaleString()}</span>{" "}
+            thế cờ quan trọng từ các ván đã phân tích.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm text-muted">
+            <div>
+              <span className="text-text font-medium tabular-nums">{weakness.blunders.toLocaleString()}</span>{" "}
+              sai lầm nghiêm trọng cần luyện lại.
+            </div>
+            <div>
+              <span className="text-text font-medium tabular-nums">{weakness.avg_eval_swing_cp ?? "n/a"}</span>{" "}
+              centipawn là mức mất lợi thế trung bình.
+            </div>
+            <div>
+              {worstOpening ? (
+                <>
+                  Khai cuộc cần chú ý:{" "}
+                  <span className="text-text font-medium">{worstOpening.opening_eco} · {worstOpening.opening_name}</span>.
+                </>
+              ) : (
+                "Chưa đủ dữ liệu khai cuộc để kết luận."
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="min-h-[92px] flex items-center text-muted text-sm">
+          Đang đọc dữ liệu phân tích của người chơi...
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -152,36 +213,38 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
 
   return (
     <>
-      <Header subtitle={`Player · ${username}`} />
+      <Header subtitle={`Người chơi · ${username}`} />
       <main className="max-w-6xl mx-auto px-6 py-6 space-y-4">
         <div className="flex items-center gap-3">
-          {!playerLoaded && !error && !coachError && <StatusPill tone="loading">Loading player data</StatusPill>}
+          {!playerLoaded && !error && !coachError && <StatusPill tone="loading">Đang tải dữ liệu người chơi</StatusPill>}
           {error && <StatusPill tone="error">{error}</StatusPill>}
           {coachError && <StatusPill tone="error">{coachError}</StatusPill>}
-          {profile && <StatusPill tone="ok">Loaded · {profile.totals.games.toLocaleString()} games</StatusPill>}
+          {profile && <StatusPill tone="ok">Đã tải · {profile.totals.games.toLocaleString()} ván</StatusPill>}
           {playerLoaded && (
             <a
               href={`/patterns/${encodeURIComponent(username)}`}
               className="ml-auto text-xs px-3 py-1 rounded-md border border-border hover:border-accent text-muted hover:text-text"
             >
-              Mistake patterns →
+              Mẫu lỗi lặp lại →
             </a>
           )}
         </div>
 
-        <Card title="Coach snapshot · last 60 days">
+        <Diagnosis weakness={weakness} openingStats={openingStats} phaseStats={phaseStats} />
+
+        <Card title="Chỉ số huấn luyện · 60 ngày gần đây">
           {weakness ? (
             <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
-              <Metric label="Critical spots" value={weakness.critical_positions.toLocaleString()} />
-              <Metric label="Games affected" value={weakness.games_with_critical_positions.toLocaleString()} />
-              <Metric label="Blunders" value={weakness.blunders.toLocaleString()} />
-              <Metric label="Mistakes" value={weakness.mistakes.toLocaleString()} />
-              <Metric label="Top phase" value={labelize(weakness.top_phase)} />
-              <Metric label="Avg swing" value={weakness.avg_eval_swing_cp == null ? "n/a" : `${weakness.avg_eval_swing_cp} cp`} />
+              <Metric label="Thế cờ quan trọng" value={weakness.critical_positions.toLocaleString()} />
+              <Metric label="Ván có lỗi" value={weakness.games_with_critical_positions.toLocaleString()} />
+              <Metric label="Lỗi nghiêm trọng" value={weakness.blunders.toLocaleString()} />
+              <Metric label="Sai lầm" value={weakness.mistakes.toLocaleString()} />
+              <Metric label="Giai đoạn yếu" value={labelize(weakness.top_phase)} />
+              <Metric label="Mất lợi thế TB" value={weakness.avg_eval_swing_cp == null ? "n/a" : `${weakness.avg_eval_swing_cp} cp`} />
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-6 gap-6 min-h-[58px]">
-              {["Critical spots", "Games affected", "Blunders", "Mistakes", "Top phase", "Avg swing"].map((label) => (
+              {["Thế cờ quan trọng", "Ván có lỗi", "Lỗi nghiêm trọng", "Sai lầm", "Giai đoạn yếu", "Mất lợi thế TB"].map((label) => (
                 <Metric key={label} label={label} value={coachLoaded ? "n/a" : "…"} />
               ))}
             </div>
@@ -189,10 +252,10 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
         </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Card title="Weakness by phase">
+          <Card title="Điểm yếu theo giai đoạn">
             {phaseStats.length === 0 ? (
               <div className="h-[260px] flex items-center text-muted text-sm">
-                {coachLoaded ? "No analyzed phase data yet." : "Loading phase weaknesses"}
+                {coachLoaded ? "Chưa đủ dữ liệu theo giai đoạn." : "Đang tải điểm yếu theo giai đoạn"}
               </div>
             ) : (
               <ResponsiveContainer width="100%" height={260}>
@@ -208,21 +271,21 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
             )}
           </Card>
 
-          <Card title="Opening trouble spots">
+          <Card title="Khai cuộc cần cải thiện">
             {openingStats.length === 0 ? (
               <div className="min-h-[260px] flex items-center text-muted text-sm">
-                {coachLoaded ? "No analyzed opening weaknesses yet." : "Loading opening weaknesses"}
+                {coachLoaded ? "Chưa đủ dữ liệu khai cuộc." : "Đang tải điểm yếu khai cuộc"}
               </div>
             ) : (
               <div className="overflow-x-auto min-h-[260px]">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-muted text-xs uppercase tracking-wider">
-                      <th className="text-left py-2 font-normal">Opening</th>
-                      <th className="text-right py-2 font-normal">Games</th>
-                      <th className="text-right py-2 font-normal">Win</th>
-                      <th className="text-right py-2 font-normal">Critical</th>
-                      <th className="text-right py-2 font-normal">Blunders</th>
+                      <th className="text-left py-2 font-normal">Khai cuộc</th>
+                      <th className="text-right py-2 font-normal">Ván</th>
+                      <th className="text-right py-2 font-normal">Thắng</th>
+                      <th className="text-right py-2 font-normal">Thế quan trọng</th>
+                      <th className="text-right py-2 font-normal">Lỗi nặng</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -249,24 +312,24 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
           <>
             <Card>
               <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
-                <Metric label="Total games" value={profile.totals.games.toLocaleString()} />
-                <Metric label="Win rate" value={`${profile.totals.win_pct}%`} />
-                <Metric label="Wins" value={profile.totals.wins.toLocaleString()} />
-                <Metric label="Losses" value={profile.totals.losses.toLocaleString()} />
-                <Metric label="Draws" value={profile.totals.draws.toLocaleString()} />
-                <Metric label="Avg rating" value={profile.totals.avg_rating} />
+                <Metric label="Tổng ván" value={profile.totals.games.toLocaleString()} />
+                <Metric label="Tỷ lệ thắng" value={`${profile.totals.win_pct}%`} />
+                <Metric label="Thắng" value={profile.totals.wins.toLocaleString()} />
+                <Metric label="Thua" value={profile.totals.losses.toLocaleString()} />
+                <Metric label="Hòa" value={profile.totals.draws.toLocaleString()} />
+                <Metric label="Rating TB" value={profile.totals.avg_rating} />
               </div>
             </Card>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Card title="Result distribution">
+              <Card title="Phân bố kết quả">
                 <ResponsiveContainer width="100%" height={240}>
                   <PieChart>
                     <Pie
                       data={[
-                        { name: "Wins", value: profile.totals.wins, color: RESULT_COLORS.Win },
-                        { name: "Losses", value: profile.totals.losses, color: RESULT_COLORS.Loss },
-                        { name: "Draws", value: profile.totals.draws, color: RESULT_COLORS.Draw },
+                        { name: "Thắng", value: profile.totals.wins, color: RESULT_COLORS.Win },
+                        { name: "Thua", value: profile.totals.losses, color: RESULT_COLORS.Loss },
+                        { name: "Hòa", value: profile.totals.draws, color: RESULT_COLORS.Draw },
                       ]}
                       dataKey="value"
                       innerRadius={50}
@@ -283,7 +346,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
                 </ResponsiveContainer>
               </Card>
 
-              <Card title="Win rate by color">
+              <Card title="Tỷ lệ thắng theo màu quân">
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={profile.by_color}>
                     <XAxis dataKey="color" stroke="#888" fontSize={12} />
@@ -304,9 +367,9 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
               </Card>
             </div>
 
-            <Card title="Top openings (win %)">
+            <Card title="Khai cuộc thường chơi">
               {profile.openings.length === 0 ? (
-                <p className="text-muted text-sm">Not enough games per opening yet.</p>
+                <p className="text-muted text-sm">Chưa đủ dữ liệu theo khai cuộc.</p>
               ) : (
                 (() => {
                   // Build unique labels: ECO codes can repeat (e.g. multiple A40 sub-variations).
@@ -330,7 +393,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
                         />
                         <Tooltip
                           contentStyle={TOOLTIP_STYLE}
-                          formatter={(v: number) => [`${v}%`, "win rate"]}
+                          formatter={(v: number) => [`${v}%`, "tỷ lệ thắng"]}
                         />
                         <Bar dataKey="win_pct" radius={[0, 4, 4, 0]}>
                           {data.map((r) => (
@@ -345,9 +408,9 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
             </Card>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Card title="Time pressure by phase">
+              <Card title="Áp lực thời gian theo giai đoạn">
                 {phaseStats.length === 0 ? (
-                  <p className="text-muted text-sm">No analyzed time-pressure data yet.</p>
+                  <p className="text-muted text-sm">Chưa có dữ liệu áp lực thời gian.</p>
                 ) : (
                   <ResponsiveContainer width="100%" height={220}>
                     <BarChart data={phaseStats.map((r) => ({ ...r, phaseLabel: labelize(r.phase) }))}>
@@ -360,14 +423,14 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
                 )}
               </Card>
 
-              <Card title="Performance vs opponent strength">
+              <Card title="Kết quả theo sức mạnh đối thủ">
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={profile.vs_rating.map((r) => ({ ...r, label: `${r.opponent} (n=${r.games})` }))}>
                     <XAxis dataKey="label" stroke="#888" fontSize={11} />
                     <YAxis stroke="#888" fontSize={12} domain={[0, 100]} />
                     <Tooltip
                       contentStyle={TOOLTIP_STYLE}
-                      formatter={(v: number) => [`${v}%`, "win rate"]}
+                      formatter={(v: number) => [`${v}%`, "tỷ lệ thắng"]}
                     />
                     <Bar dataKey="win_pct" radius={[4, 4, 0, 0]}>
                       {profile.vs_rating.map((r) => (
@@ -379,17 +442,17 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
               </Card>
             </div>
 
-            <Card title="Recent games">
+            <Card title="Ván gần đây">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-muted text-xs uppercase tracking-wider">
-                      <th className="text-left py-2 font-normal">Result</th>
-                      <th className="text-left py-2 font-normal">Opponent</th>
+                      <th className="text-left py-2 font-normal">Kết quả</th>
+                      <th className="text-left py-2 font-normal">Đối thủ</th>
                       <th className="text-left py-2 font-normal">Rating</th>
-                      <th className="text-left py-2 font-normal">Opening</th>
-                      <th className="text-left py-2 font-normal">Speed</th>
-                      <th className="text-left py-2 font-normal">Date</th>
+                      <th className="text-left py-2 font-normal">Khai cuộc</th>
+                      <th className="text-left py-2 font-normal">Thể loại</th>
+                      <th className="text-left py-2 font-normal">Ngày</th>
                     </tr>
                   </thead>
                   <tbody>

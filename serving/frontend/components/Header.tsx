@@ -6,9 +6,9 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
 const NAV = [
-  { href: "/", label: "Home" },
-  { href: "/coach", label: "Coach" },
-  { href: "/drill", label: "Drill" },
+  { href: "/", label: "Trang chủ" },
+  { href: "/coach", label: "AI Coach" },
+  { href: "/drill", label: "Luyện tập" },
 ];
 
 interface Freshness {
@@ -32,16 +32,16 @@ export default function Header({ subtitle }: { subtitle?: string }) {
     <header className="border-b border-border bg-bg/80 backdrop-blur sticky top-0 z-10">
       <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between gap-4">
         <Link href="/" className="font-medium tracking-tight hover:text-accent shrink-0">
-          Chess Coach
+          Chess Insight
         </Link>
         <div className="flex-1 flex items-center justify-center gap-3 min-w-0">
           {subtitle && <span className="text-xs text-muted hidden md:block truncate">{subtitle}</span>}
           {fresh?.data_through && (
             <span
               className="text-[10px] text-muted/70 hidden lg:block whitespace-nowrap font-mono"
-              title={`${fresh.days_available} day${fresh.days_available === 1 ? "" : "s"} of ingested data`}
+              title={`${fresh.days_available} ngày dữ liệu đã được nạp`}
             >
-              data through {fresh.data_through}
+              dữ liệu đến {fresh.data_through}
             </span>
           )}
         </div>
