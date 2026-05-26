@@ -80,7 +80,7 @@ spec:
             # calling real AWS STS to vend subscoped creds and failing on the fake ARN.
             # With this flag, clients use their own static MinIO creds directly.
             - name: JAVA_TOOL_OPTIONS
-              value: "-Dpolaris.features.SKIP_CREDENTIAL_SUBSCOPING_INDIRECTION=true"
+              value: "-Dpolaris.features.SKIP_CREDENTIAL_SUBSCOPING_INDIRECTION=true -XX:InitialRAMPercentage=25 -XX:MaxRAMPercentage=70"
             - name: POLARIS_PERSISTENCE_TYPE
               value: relational-jdbc
             - name: QUARKUS_DATASOURCE_JDBC_URL
@@ -130,10 +130,10 @@ spec:
             periodSeconds: 10
           resources:
             requests:
-              memory: 256Mi
+              memory: 512Mi
               cpu: 250m
             limits:
-              memory: 512Mi
+              memory: 1Gi
               cpu: 500m
 ---
 apiVersion: v1
