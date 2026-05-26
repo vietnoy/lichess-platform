@@ -3,20 +3,19 @@ from unittest.mock import patch
 from serving.backend import db
 
 
-def test_query_exercise_unions_legacy_and_ondemand_tables():
+def test_query_exercise_uses_critical_positions_table():
     with patch("serving.backend.db._run", return_value=[]) as run:
         result = db.query_exercise("alice")
 
     assert result is None
     sql, params = run.call_args.args
-    assert db.EVAL_TABLE in sql
-    assert db.EVAL_TABLE_ONDEMAND in sql
-    assert "UNION ALL" in sql
-    assert "eval_swing_cp_from_prev AS eval_swing_cp" in sql
-    assert "e.player_id = %s" in sql
-    assert "user_side" in sql
-    assert "SPLIT_PART(e.fen, ' ', 2) = g.user_side" in sql
-    assert params == ("alice", "alice", "alice", "alice", "alice", "alice", "alice")
+    assert db.CRITICAL_POSITIONS in sql
+    assert db.EVAL_TABLE not in sql
+    assert db.EVAL_TABLE_ONDEMAND not in sql
+    assert db.TABLE not in sql
+    assert "player_id = %s" in sql
+    assert "classification IN ('blunder', 'mistake')" in sql
+    assert params == ("alice",)
 
 
 def test_query_exercise_returns_normalized_eval_swing_cp():
@@ -33,16 +32,16 @@ def test_query_exercise_returns_normalized_eval_swing_cp():
         "opening_name": "Queen's Pawn Game",
         "opening_eco": "D00",
         "speed": "rapid",
-        "white_id": "alice",
-        "black_id": "bob",
+        "clock_remaining": 1234,
     }
     with (
-        patch("serving.backend.db._run", side_effect=[[row], [{"clock_remaining": 1234}]]),
+        patch("serving.backend.db._run", return_value=[row]),
         patch("serving.backend.db.random.choice", side_effect=lambda candidates: candidates[0]),
     ):
         result = db.query_exercise("alice")
 
     assert result["eval_swing_cp"] == 340
+    assert result["clock_remaining_s"] == 12.3
     assert "eval_swing_cp_from_prev" not in result
 
 

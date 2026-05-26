@@ -134,6 +134,20 @@ def query_game(game_id: str) -> list[dict]:
 
 def query_game_evaluations(game_id: str) -> list[dict]:
     """Return per-ply evaluation timeline for a game."""
+    date_rows = _run(
+        f"""
+        SELECT MIN(date) AS date
+        FROM {PLAYER_GAMES}
+        WHERE game_id = %s
+        """,
+        (game_id,),
+    )
+    if not date_rows or date_rows[0]["date"] is None:
+        return []
+    game_date = date_rows[0]["date"]
+    if hasattr(game_date, "isoformat"):
+        game_date = game_date.isoformat()
+
     return _run(
         f"""
         SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev, classification
@@ -145,17 +159,19 @@ def query_game_evaluations(game_id: str) -> list[dict]:
                    classification, 1 AS source_priority
             FROM {EVAL_TABLE_ONDEMAND}
             WHERE game_id = %s
+              AND date = DATE %s
             UNION ALL
             SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev,
                    classification, 2 AS source_priority
             FROM {EVAL_TABLE}
             WHERE game_id = %s
+              AND date = DATE %s
           ) src
         ) ranked
         WHERE rn = 1
         ORDER BY ply
         """,
-        (game_id, game_id),
+        (game_id, game_date, game_id, game_date),
     )
 
 
@@ -312,83 +328,23 @@ def _query_player_profile_uncached(username: str) -> dict | None:
 
 
 def query_player_patterns(username: str) -> dict | None:
-    # Two-pass to avoid scanning the entire 17M-row chess_move_events:
-    # 1) find this user's games in the last 60d (small set, indexed-ish via date partition)
-    # 2) join evals + per-move metadata only for those game IDs
-    games = _run(
-        f"""
-        SELECT DISTINCT game_id, opening_name, opening_eco, white_id, black_id, date
-        FROM {TABLE}
-        WHERE move_number = 1
-          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-          AND (white_id=%s OR black_id=%s)
-        """,
-        (username, username),
-    )
-    if not games:
-        return None
-
-    game_ids = [g["game_id"] for g in games]
-    placeholders = ",".join(["%s"] * len(game_ids))
-    games_by_id = {g["game_id"]: g for g in games}
-
     rows = _run(
         f"""
-        (
-          SELECT e.game_id, e.ply, e.classification, m.whose_moved, m.clock_remaining
-          FROM {EVAL_TABLE} e
-          JOIN (
-            SELECT game_id, move_number,
-                   MAX(whose_moved)     AS whose_moved,
-                   MAX(clock_remaining) AS clock_remaining
-            FROM {TABLE}
-            WHERE game_id IN ({placeholders})
-            GROUP BY game_id, move_number
-          ) m
-            ON e.game_id = m.game_id AND e.ply = m.move_number
-          WHERE e.game_id IN ({placeholders})
-        )
-        UNION
-        -- Bare UNION dedupes when the same game exists in both tables (legacy
-        -- daily DAG covered top-5 for some dates, on-demand covers everyone).
-        -- Same Stockfish depth produces identical rows in both, so a UNION-with-ALL
-        -- would double-count blunders/mistakes in the aggregate below.
-        (
-          SELECT e.game_id, e.ply, e.classification, m.whose_moved, m.clock_remaining
-          FROM {EVAL_TABLE_ONDEMAND} e
-          JOIN (
-            SELECT game_id, move_number,
-                   MAX(whose_moved)     AS whose_moved,
-                   MAX(clock_remaining) AS clock_remaining
-            FROM {TABLE}
-            WHERE game_id IN ({placeholders})
-            GROUP BY game_id, move_number
-          ) m
-            ON e.game_id = m.game_id AND e.ply = m.move_number
-          WHERE e.game_id IN ({placeholders})
-            AND e.player_id = %s
-        )
+        SELECT
+            game_id,
+            ply,
+            classification,
+            clock_remaining,
+            opening_eco,
+            opening_name,
+            opponent_id,
+            date
+        FROM {CRITICAL_POSITIONS}
+        WHERE player_id = %s
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
         """,
-        tuple(game_ids) * 4 + (username,),
+        (username,),
     )
-    if not rows:
-        return None
-
-    # Stitch in opening + side info from the games map.
-    for r in rows:
-        g = games_by_id.get(r["game_id"], {})
-        r["opening_eco"] = g.get("opening_eco")
-        r["opening_name"] = g.get("opening_name")
-        r["white_id"] = g.get("white_id")
-        r["black_id"] = g.get("black_id")
-        r["date"] = g.get("date")
-        r["move_number"] = r["ply"]
-        # Filter to the player's own moves only.
-    rows = [
-        r for r in rows
-        if (r["whose_moved"] == "white" and r["white_id"] == username)
-        or (r["whose_moved"] == "black" and r["black_id"] == username)
-    ]
     if not rows:
         return None
 
@@ -420,7 +376,7 @@ def query_player_patterns(username: str) -> dict | None:
         classification = r["classification"]
         game_id = r["game_id"]
         ply = int(r["ply"] or 0)
-        move_number = int(r["move_number"] or ply)
+        move_number = ply
         clock_remaining = r["clock_remaining"]
 
         game_ids.add(game_id)
@@ -490,7 +446,7 @@ def query_player_patterns(username: str) -> dict | None:
                 "blunders": 0,
                 "mistakes": 0,
                 "date": str(r["date"]) if r["date"] else None,
-                "opponent": r["black_id"] if r["white_id"] == username else r["white_id"],
+                "opponent": r["opponent_id"],
                 "opening_name": r["opening_name"],
             },
         )
@@ -698,55 +654,30 @@ def query_phase_stats(username: str, days: int = 60) -> list[dict]:
 
 
 def query_exercise(username: str) -> dict | None:
-    # Two-pass to avoid the giant move_evaluations × chess_move_events JOIN.
-    # Pass 1: pull all blunder/mistake candidates joined only with the (small) g subquery —
-    # who played determined by FEN active-color field, not by a JOIN to m. ~hundreds of rows.
-    # Pass 2: tiny point-lookup in m for the chosen row to fetch clock_remaining.
     rows = _run(
         f"""
-        (
-          SELECT e.game_id, e.ply, e.fen, e.played_move, e.best_move,
-                 e.eval_cp, e.eval_swing_cp_from_prev AS eval_swing_cp,
-                 e.classification, e.date,
-                 g.opening_name, g.opening_eco, g.speed, g.white_id, g.black_id
-          FROM {EVAL_TABLE} e
-          JOIN (
-            SELECT game_id, opening_name, opening_eco, speed, white_id, black_id,
-                   CASE WHEN white_id = %s THEN 'w'
-                        WHEN black_id = %s THEN 'b' END AS user_side
-            FROM {TABLE}
-            WHERE move_number = 1
-              AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-              AND (white_id = %s OR black_id = %s)
-            GROUP BY game_id, opening_name, opening_eco, speed, white_id, black_id
-          ) g ON g.game_id = e.game_id
-          WHERE e.classification IN ('blunder', 'mistake')
-            AND e.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-            AND SPLIT_PART(e.fen, ' ', 2) = g.user_side
-          LIMIT 500
-        )
-        UNION ALL
-        (
-          SELECT e.game_id, e.ply, e.fen, e.played_move, e.best_move,
-                 e.eval_cp, e.eval_swing_cp,
-                 e.classification, e.date,
-                 g.opening_name, g.opening_eco, g.speed, g.white_id, g.black_id
-          FROM {EVAL_TABLE_ONDEMAND} e
-          JOIN (
-            SELECT game_id, opening_name, opening_eco, speed, white_id, black_id
-            FROM {TABLE}
-            WHERE move_number = 1
-              AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-              AND (white_id = %s OR black_id = %s)
-            GROUP BY game_id, opening_name, opening_eco, speed, white_id, black_id
-          ) g ON g.game_id = e.game_id
-          WHERE e.classification IN ('blunder', 'mistake')
-            AND e.date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-            AND e.player_id = %s
-          LIMIT 500
-        )
+        SELECT
+            game_id,
+            ply,
+            fen,
+            played_move,
+            best_move,
+            eval_cp,
+            eval_swing_cp,
+            classification,
+            date,
+            opening_name,
+            opening_eco,
+            speed,
+            clock_remaining
+        FROM {CRITICAL_POSITIONS}
+        WHERE player_id = %s
+          AND classification IN ('blunder', 'mistake')
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+        ORDER BY date DESC, ABS(eval_swing_cp) DESC
+        LIMIT 500
         """,
-        (username, username, username, username, username, username, username),
+        (username,),
     )
     candidates = []
     for r in rows:
@@ -755,24 +686,11 @@ def query_exercise(username: str) -> dict | None:
         side = "white" if active == "w" else "black" if active == "b" else None
         if not side:
             continue
-        played_by_user = (
-            (side == "white" and r["white_id"] == username)
-            or (side == "black" and r["black_id"] == username)
-        )
-        if played_by_user:
-            candidates.append((r, side))
+        candidates.append((r, side))
     if not candidates:
         return None
     r, side = random.choice(candidates)
-    move_rows = _run(
-        f"""
-        SELECT MAX(clock_remaining) AS clock_remaining
-        FROM {TABLE}
-        WHERE date = %s AND game_id = %s AND move_number = %s
-        """,
-        (r["date"], r["game_id"], r["ply"]),
-    )
-    clock = (move_rows[0]["clock_remaining"] if move_rows else 0) or 0
+    clock = r.get("clock_remaining") or 0
     return {
         "game_id": r["game_id"],
         "ply": r["ply"],
