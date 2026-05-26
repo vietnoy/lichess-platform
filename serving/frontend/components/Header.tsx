@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 
 const NAV = [
   { href: "/", label: "Trang chủ" },
+  { href: "/platform", label: "Meta" },
   { href: "/system", label: "Hệ thống" },
   { href: "/coach", label: "AI Coach" },
   { href: "/drill", label: "Luyện tập" },

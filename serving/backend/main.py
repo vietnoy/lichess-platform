@@ -7,6 +7,7 @@ Endpoints:
   GET  /metrics                       prometheus text exposition
   GET  /api/freshness                 latest data partition + ingestion lag
   GET  /api/system/summary            production table health summary
+  GET  /api/platform/overview         platform-wide latest-partition meta
   GET  /api/games/{id}                game moves + metadata
   POST /api/eval                      Stockfish proxy (single position)
   POST /api/whatif                    twin-line analysis (actual vs alt) batched
@@ -36,6 +37,7 @@ from db import (
     query_game_evaluations,
     query_opening_stats,
     query_phase_stats,
+    query_platform_overview,
     query_player_patterns,
     query_player_profile,
     query_system_summary,
@@ -218,6 +220,11 @@ def get_freshness():
 @app.get("/api/system/summary")
 def get_system_summary():
     return query_system_summary()
+
+
+@app.get("/api/platform/overview")
+def get_platform_overview():
+    return query_platform_overview()
 
 
 # ─── games ────────────────────────────────────────────────────────────────────

@@ -144,6 +144,99 @@ def query_system_summary() -> dict:
     }
 
 
+def _to_iso_date(value) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def query_platform_overview() -> dict:
+    latest = _run(
+        f"""
+        SELECT MAX(date) AS date
+        FROM {PLAYER_GAMES}
+        """
+    )
+    date = _to_iso_date((latest[0] if latest else {}).get("date"))
+    if not date:
+        return {
+            "date": None,
+            "totals": {"games": 0, "player_game_rows": 0, "players": 0},
+            "speed_mix": [],
+            "top_openings": [],
+            "phase_mistakes": [],
+        }
+
+    totals = _run(
+        f"""
+        SELECT
+            COUNT(DISTINCT game_id) AS games,
+            COUNT(*) AS player_game_rows,
+            COUNT(DISTINCT player_id) AS players
+        FROM {PLAYER_GAMES}
+        WHERE date = %s
+        """,
+        (date,),
+    )
+    speed_mix = _run(
+        f"""
+        SELECT
+            COALESCE(speed, 'unknown') AS speed,
+            COUNT(DISTINCT game_id) AS games,
+            COUNT(*) AS player_game_rows,
+            ROUND(AVG(my_rating), 0) AS avg_rating
+        FROM {PLAYER_GAMES}
+        WHERE date = %s
+        GROUP BY speed
+        ORDER BY games DESC
+        LIMIT 8
+        """,
+        (date,),
+    )
+    top_openings = _run(
+        f"""
+        SELECT
+            opening_eco,
+            opening_name,
+            SUM(games) AS games,
+            ROUND(SUM(wins) * 100.0 / NULLIF(SUM(games), 0), 1) AS win_rate_pct,
+            SUM(critical_positions) AS critical_positions
+        FROM {PLAYER_OPENING_STATS}
+        WHERE date = %s
+        GROUP BY opening_eco, opening_name
+        HAVING games >= 20
+        ORDER BY games DESC
+        LIMIT 10
+        """,
+        (date,),
+    )
+    phase_mistakes = _run(
+        f"""
+        SELECT
+            phase,
+            SUM(critical_positions) AS critical_positions,
+            SUM(blunders) AS blunders,
+            SUM(mistakes) AS mistakes,
+            SUM(inaccuracies) AS inaccuracies
+        FROM {PLAYER_PHASE_STATS}
+        WHERE date = %s
+        GROUP BY phase
+        ORDER BY critical_positions DESC
+        """,
+        (date,),
+    )
+
+    return {
+        "date": date,
+        "totals": totals[0] if totals else {"games": 0, "player_game_rows": 0, "players": 0},
+        "speed_mix": speed_mix,
+        "top_openings": top_openings,
+        "phase_mistakes": phase_mistakes,
+    }
+
+
 def query_game(game_id: str) -> list[dict]:
     # chess_move_events.date is the partition column; without a `date =` predicate
     # this scans every partition. Look it up via player_games (one row per game) first.
