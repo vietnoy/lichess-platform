@@ -131,3 +131,10 @@ def test_coach_dispatch_exposes_new_safe_tools(monkeypatch):
     assert '"days": 30' in result
     assert "get_weakness_summary" in coach._TOOL_FNS
     assert "get_blunder_examples" in coach._TOOL_FNS
+
+
+def test_coach_system_prompt_is_vietnamese_and_action_oriented():
+    assert "Trả lời bằng tiếng Việt" in coach._SYSTEM_PROMPT
+    assert "Chẩn đoán" in coach._SYSTEM_PROMPT
+    assert "Bài tập" in coach._SYSTEM_PROMPT
+    assert "không được bịa số liệu" in coach._SYSTEM_PROMPT
