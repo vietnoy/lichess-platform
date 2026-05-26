@@ -30,3 +30,4 @@ def test_query_platform_overview_uses_latest_partition(monkeypatch):
     assert overview["top_openings"][0]["opening_eco"] == "C20"
     assert overview["phase_mistakes"][0]["phase"] == "middlegame"
     assert all(params == ("2026-05-25",) for _, params in calls if params)
+    assert any("HAVING SUM(games) >= 20" in sql for sql, _ in calls)

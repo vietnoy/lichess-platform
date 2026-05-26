@@ -206,7 +206,7 @@ def query_platform_overview() -> dict:
         FROM {PLAYER_OPENING_STATS}
         WHERE date = %s
         GROUP BY opening_eco, opening_name
-        HAVING games >= 20
+        HAVING SUM(games) >= 20
         ORDER BY games DESC
         LIMIT 10
         """,
