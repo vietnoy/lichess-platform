@@ -203,34 +203,9 @@ def _query_player_profile_uncached(username: str) -> dict | None:
     if not games:
         return None
 
-    # Clock-by-phase JOINs against player_games directly so we don't ship a
-    # giant IN-list across the wire for power users with thousands of games.
-    # player_games.date is DATE; chess_move_events.date is STRING - cast on the
-    # join key. StarRocks broadcasts the (small) player_games subquery and uses
-    # runtime filters on m.date for partition pruning.
-    clock_rows = _run(
-        f"""
-        SELECT phase, ROUND(AVG(clock_remaining)/100.0, 1) AS avg_clock_s
-        FROM (
-          SELECT
-            CASE WHEN m.move_number<=10 THEN 'Opening'
-                 WHEN m.move_number<=30 THEN 'Middlegame'
-                 ELSE 'Endgame' END AS phase,
-            MAX(m.clock_remaining) AS clock_remaining
-          FROM {TABLE} m
-          JOIN (
-            SELECT DISTINCT game_id, CAST(date AS STRING) AS date
-            FROM {PLAYER_GAMES}
-            WHERE player_id = %s
-          ) g ON m.game_id = g.game_id AND m.date = g.date
-          WHERE m.clock_remaining IS NOT NULL
-          GROUP BY m.game_id, m.move_number
-        ) t
-        GROUP BY phase
-        ORDER BY phase
-        """,
-        (username,),
-    )
+    # Keep profile fast: detailed phase weakness now comes from the aggregate
+    # player_phase_stats endpoint instead of scanning raw move events here.
+    clock_rows = []
 
     def result(g):
         if g["winner"] is None: return "Draw"

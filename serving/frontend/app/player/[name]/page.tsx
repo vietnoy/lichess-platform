@@ -17,6 +17,48 @@ interface OpeningRow { opening_eco: string; opening_name: string; games: number;
 interface ClockRow { phase: string; avg_clock_s: number; }
 interface VsRatingRow { opponent: string; games: number; win_pct: number; }
 interface RecentRow { game_id: string; opponent: string; my_rating: number; opp_rating: number; opening_eco: string; opening_name: string; speed: string; result: "Win" | "Loss" | "Draw"; date: string; }
+interface WeaknessSummary {
+  player_id: string;
+  days: number;
+  critical_positions: number;
+  games_with_critical_positions: number;
+  blunders: number;
+  mistakes: number;
+  inaccuracies: number;
+  avg_eval_swing_cp: number | null;
+  time_pressure_positions: number;
+  top_phase: string | null;
+  top_time_pressure: string | null;
+  top_classification: string | null;
+}
+interface OpeningWeaknessRow {
+  opening_eco: string;
+  opening_name: string;
+  color: string;
+  games: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  win_rate_pct: number;
+  critical_positions: number;
+  blunders: number;
+  mistakes: number;
+  inaccuracies: number;
+  avg_eval_swing_cp: number | null;
+}
+interface PhaseWeaknessRow {
+  phase: string;
+  games_with_positions: number;
+  critical_positions: number;
+  blunders: number;
+  mistakes: number;
+  inaccuracies: number;
+  time_pressure_positions: number;
+  avg_eval_swing_cp: number | null;
+  max_eval_swing_cp: number | null;
+}
+interface OpeningStatsResponse { player_id: string; opening_stats: OpeningWeaknessRow[]; }
+interface PhaseStatsResponse { player_id: string; phase_stats: PhaseWeaknessRow[]; }
 
 interface Profile {
   username: string;
@@ -31,6 +73,15 @@ interface Profile {
 
 const RESULT_COLORS = { Win: "#10b981", Loss: "#f43f5e", Draw: "#737373" };
 const TOOLTIP_STYLE = { background: "rgb(255 255 255)", border: "1px solid rgb(220 220 228)", borderRadius: 6, fontSize: 12, color: "rgb(18 18 22)" };
+
+function labelize(value: string | null | undefined) {
+  if (!value) return "None yet";
+  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function pct(value: number | null | undefined) {
+  return typeof value === "number" ? `${value}%` : "0%";
+}
 
 function Card({ title, children, className = "" }: { title?: string; children: React.ReactNode; className?: string }) {
   return (
@@ -59,26 +110,53 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
   const username = decodeURIComponent(params.name);
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [weakness, setWeakness] = useState<WeaknessSummary | null>(null);
+  const [openingStats, setOpeningStats] = useState<OpeningWeaknessRow[]>([]);
+  const [phaseStats, setPhaseStats] = useState<PhaseWeaknessRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [coachError, setCoachError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     setError(null);
+    setCoachError(null);
+    setProfile(null);
+    setWeakness(null);
+    setOpeningStats([]);
+    setPhaseStats([]);
+
     api<Profile>(`/players/${encodeURIComponent(username)}/profile`)
       .then((p) => { if (alive) setProfile(p); })
       .catch((e) => { if (alive) setError(String(e.message ?? e)); });
+
+    Promise.all([
+      api<WeaknessSummary>(`/players/${encodeURIComponent(username)}/weakness-summary?days=60`),
+      api<OpeningStatsResponse>(`/players/${encodeURIComponent(username)}/opening-stats?days=60&top_n=8`),
+      api<PhaseStatsResponse>(`/players/${encodeURIComponent(username)}/phase-stats?days=60`),
+    ])
+      .then(([summary, openings, phases]) => {
+        if (!alive) return;
+        setWeakness(summary);
+        setOpeningStats(openings.opening_stats ?? []);
+        setPhaseStats(phases.phase_stats ?? []);
+      })
+      .catch((e) => { if (alive) setCoachError(String(e.message ?? e)); });
+
     return () => { alive = false; };
   }, [username]);
+
+  const playerLoaded = Boolean(profile || weakness);
 
   return (
     <>
       <Header subtitle={`Player · ${username}`} />
       <main className="max-w-6xl mx-auto px-6 py-6 space-y-4">
         <div className="flex items-center gap-3">
-          {!profile && !error && <StatusPill tone="loading">Loading profile</StatusPill>}
+          {!playerLoaded && !error && !coachError && <StatusPill tone="loading">Loading player data</StatusPill>}
           {error && <StatusPill tone="error">{error}</StatusPill>}
+          {coachError && <StatusPill tone="error">{coachError}</StatusPill>}
           {profile && <StatusPill tone="ok">Loaded · {profile.totals.games.toLocaleString()} games</StatusPill>}
-          {profile && (
+          {playerLoaded && (
             <a
               href={`/patterns/${encodeURIComponent(username)}`}
               className="ml-auto text-xs px-3 py-1 rounded-md border border-border hover:border-accent text-muted hover:text-text"
@@ -87,6 +165,74 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
             </a>
           )}
         </div>
+
+        {weakness && (
+          <Card title="Coach snapshot · last 60 days">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
+              <Metric label="Critical spots" value={weakness.critical_positions.toLocaleString()} />
+              <Metric label="Games affected" value={weakness.games_with_critical_positions.toLocaleString()} />
+              <Metric label="Blunders" value={weakness.blunders.toLocaleString()} />
+              <Metric label="Mistakes" value={weakness.mistakes.toLocaleString()} />
+              <Metric label="Top phase" value={labelize(weakness.top_phase)} />
+              <Metric label="Avg swing" value={weakness.avg_eval_swing_cp == null ? "n/a" : `${weakness.avg_eval_swing_cp} cp`} />
+            </div>
+          </Card>
+        )}
+
+        {(phaseStats.length > 0 || openingStats.length > 0) && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Card title="Weakness by phase">
+              {phaseStats.length === 0 ? (
+                <p className="text-muted text-sm">No analyzed phase data yet.</p>
+              ) : (
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={phaseStats.map((r) => ({ ...r, phaseLabel: labelize(r.phase) }))}>
+                    <XAxis dataKey="phaseLabel" stroke="#888" fontSize={12} />
+                    <YAxis stroke="#888" fontSize={12} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                    <Legend wrapperStyle={{ fontSize: 12, color: "#888" }} />
+                    <Bar dataKey="blunders" stackId="a" fill="#f43f5e" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="mistakes" stackId="a" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </Card>
+
+            <Card title="Opening trouble spots">
+              {openingStats.length === 0 ? (
+                <p className="text-muted text-sm">No analyzed opening weaknesses yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-muted text-xs uppercase tracking-wider">
+                        <th className="text-left py-2 font-normal">Opening</th>
+                        <th className="text-right py-2 font-normal">Games</th>
+                        <th className="text-right py-2 font-normal">Win</th>
+                        <th className="text-right py-2 font-normal">Critical</th>
+                        <th className="text-right py-2 font-normal">Blunders</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openingStats.map((o) => (
+                        <tr key={`${o.opening_eco}-${o.opening_name}-${o.color}`} className="border-t border-border">
+                          <td className="py-2 pr-3">
+                            <div className="font-mono text-xs text-muted">{o.opening_eco} · {labelize(o.color)}</div>
+                            <div className="max-w-[18rem] truncate" title={o.opening_name}>{o.opening_name}</div>
+                          </td>
+                          <td className="py-2 text-right tabular-nums">{o.games.toLocaleString()}</td>
+                          <td className="py-2 text-right tabular-nums">{pct(o.win_rate_pct)}</td>
+                          <td className="py-2 text-right tabular-nums">{o.critical_positions.toLocaleString()}</td>
+                          <td className="py-2 text-right tabular-nums text-rose-500">{o.blunders.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          </div>
+        )}
 
         {profile && (
           <>
@@ -188,15 +334,19 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
             </Card>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Card title="Clock remaining by phase (avg)">
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={profile.clock_by_phase}>
-                    <XAxis dataKey="phase" stroke="#888" fontSize={12} />
-                    <YAxis stroke="#888" fontSize={12} unit="s" />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} />
-                    <Bar dataKey="avg_clock_s" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+              <Card title="Time pressure by phase">
+                {phaseStats.length === 0 ? (
+                  <p className="text-muted text-sm">No analyzed time-pressure data yet.</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={phaseStats.map((r) => ({ ...r, phaseLabel: labelize(r.phase) }))}>
+                      <XAxis dataKey="phaseLabel" stroke="#888" fontSize={12} />
+                      <YAxis stroke="#888" fontSize={12} />
+                      <Tooltip contentStyle={TOOLTIP_STYLE} />
+                      <Bar dataKey="time_pressure_positions" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
               </Card>
 
               <Card title="Performance vs opponent strength">
