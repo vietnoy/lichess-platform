@@ -113,6 +113,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
   const [weakness, setWeakness] = useState<WeaknessSummary | null>(null);
   const [openingStats, setOpeningStats] = useState<OpeningWeaknessRow[]>([]);
   const [phaseStats, setPhaseStats] = useState<PhaseWeaknessRow[]>([]);
+  const [coachLoaded, setCoachLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [coachError, setCoachError] = useState<string | null>(null);
 
@@ -124,6 +125,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
     setWeakness(null);
     setOpeningStats([]);
     setPhaseStats([]);
+    setCoachLoaded(false);
 
     api<Profile>(`/players/${encodeURIComponent(username)}/profile`)
       .then((p) => { if (alive) setProfile(p); })
@@ -140,12 +142,13 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
         setOpeningStats(openings.opening_stats ?? []);
         setPhaseStats(phases.phase_stats ?? []);
       })
-      .catch((e) => { if (alive) setCoachError(String(e.message ?? e)); });
+      .catch((e) => { if (alive) setCoachError(String(e.message ?? e)); })
+      .finally(() => { if (alive) setCoachLoaded(true); });
 
     return () => { alive = false; };
   }, [username]);
 
-  const playerLoaded = Boolean(profile || weakness);
+  const playerLoaded = Boolean(profile || weakness || coachLoaded);
 
   return (
     <>
@@ -166,8 +169,8 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
           )}
         </div>
 
-        {weakness && (
-          <Card title="Coach snapshot · last 60 days">
+        <Card title="Coach snapshot · last 60 days">
+          {weakness ? (
             <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
               <Metric label="Critical spots" value={weakness.critical_positions.toLocaleString()} />
               <Metric label="Games affected" value={weakness.games_with_critical_positions.toLocaleString()} />
@@ -176,63 +179,71 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
               <Metric label="Top phase" value={labelize(weakness.top_phase)} />
               <Metric label="Avg swing" value={weakness.avg_eval_swing_cp == null ? "n/a" : `${weakness.avg_eval_swing_cp} cp`} />
             </div>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-6 min-h-[58px]">
+              {["Critical spots", "Games affected", "Blunders", "Mistakes", "Top phase", "Avg swing"].map((label) => (
+                <Metric key={label} label={label} value={coachLoaded ? "n/a" : "…"} />
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Card title="Weakness by phase">
+            {phaseStats.length === 0 ? (
+              <div className="h-[260px] flex items-center text-muted text-sm">
+                {coachLoaded ? "No analyzed phase data yet." : "Loading phase weaknesses"}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={phaseStats.map((r) => ({ ...r, phaseLabel: labelize(r.phase) }))}>
+                  <XAxis dataKey="phaseLabel" stroke="#888" fontSize={12} />
+                  <YAxis stroke="#888" fontSize={12} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Legend wrapperStyle={{ fontSize: 12, color: "#888" }} />
+                  <Bar dataKey="blunders" stackId="a" fill="#f43f5e" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="mistakes" stackId="a" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </Card>
-        )}
 
-        {(phaseStats.length > 0 || openingStats.length > 0) && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card title="Weakness by phase">
-              {phaseStats.length === 0 ? (
-                <p className="text-muted text-sm">No analyzed phase data yet.</p>
-              ) : (
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={phaseStats.map((r) => ({ ...r, phaseLabel: labelize(r.phase) }))}>
-                    <XAxis dataKey="phaseLabel" stroke="#888" fontSize={12} />
-                    <YAxis stroke="#888" fontSize={12} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} />
-                    <Legend wrapperStyle={{ fontSize: 12, color: "#888" }} />
-                    <Bar dataKey="blunders" stackId="a" fill="#f43f5e" radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="mistakes" stackId="a" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-            </Card>
-
-            <Card title="Opening trouble spots">
-              {openingStats.length === 0 ? (
-                <p className="text-muted text-sm">No analyzed opening weaknesses yet.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-muted text-xs uppercase tracking-wider">
-                        <th className="text-left py-2 font-normal">Opening</th>
-                        <th className="text-right py-2 font-normal">Games</th>
-                        <th className="text-right py-2 font-normal">Win</th>
-                        <th className="text-right py-2 font-normal">Critical</th>
-                        <th className="text-right py-2 font-normal">Blunders</th>
+          <Card title="Opening trouble spots">
+            {openingStats.length === 0 ? (
+              <div className="min-h-[260px] flex items-center text-muted text-sm">
+                {coachLoaded ? "No analyzed opening weaknesses yet." : "Loading opening weaknesses"}
+              </div>
+            ) : (
+              <div className="overflow-x-auto min-h-[260px]">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-muted text-xs uppercase tracking-wider">
+                      <th className="text-left py-2 font-normal">Opening</th>
+                      <th className="text-right py-2 font-normal">Games</th>
+                      <th className="text-right py-2 font-normal">Win</th>
+                      <th className="text-right py-2 font-normal">Critical</th>
+                      <th className="text-right py-2 font-normal">Blunders</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {openingStats.map((o) => (
+                      <tr key={`${o.opening_eco}-${o.opening_name}-${o.color}`} className="border-t border-border">
+                        <td className="py-2 pr-3">
+                          <div className="font-mono text-xs text-muted">{o.opening_eco} · {labelize(o.color)}</div>
+                          <div className="max-w-[18rem] truncate" title={o.opening_name}>{o.opening_name}</div>
+                        </td>
+                        <td className="py-2 text-right tabular-nums">{o.games.toLocaleString()}</td>
+                        <td className="py-2 text-right tabular-nums">{pct(o.win_rate_pct)}</td>
+                        <td className="py-2 text-right tabular-nums">{o.critical_positions.toLocaleString()}</td>
+                        <td className="py-2 text-right tabular-nums text-rose-500">{o.blunders.toLocaleString()}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {openingStats.map((o) => (
-                        <tr key={`${o.opening_eco}-${o.opening_name}-${o.color}`} className="border-t border-border">
-                          <td className="py-2 pr-3">
-                            <div className="font-mono text-xs text-muted">{o.opening_eco} · {labelize(o.color)}</div>
-                            <div className="max-w-[18rem] truncate" title={o.opening_name}>{o.opening_name}</div>
-                          </td>
-                          <td className="py-2 text-right tabular-nums">{o.games.toLocaleString()}</td>
-                          <td className="py-2 text-right tabular-nums">{pct(o.win_rate_pct)}</td>
-                          <td className="py-2 text-right tabular-nums">{o.critical_positions.toLocaleString()}</td>
-                          <td className="py-2 text-right tabular-nums text-rose-500">{o.blunders.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Card>
-          </div>
-        )}
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </div>
 
         {profile && (
           <>
