@@ -157,7 +157,7 @@ with DAG(
     default_args=default_args,
     description="Compact asynchronous analyzer evals and rebuild only changed date partitions",
     start_date=datetime(2026, 5, 24),
-    schedule="30 0-22/2 * * *",
+    schedule="30 1-23/2 * * *",
     catchup=False,
     max_active_runs=1,
     tags=["chess", "processing", "analyzer", "polaris"],
