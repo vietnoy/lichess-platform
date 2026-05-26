@@ -16,7 +16,7 @@ with DAG(
     default_args=default_args,
     description="Safe cleanup for stale failed Spark and StarRocks pod records",
     start_date=datetime(2026, 5, 19),
-    schedule="17 * * * *",
+    schedule="45 * * * *",
     catchup=False,
     max_active_runs=1,
     tags=["chess", "ops", "maintenance"],
