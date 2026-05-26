@@ -6,6 +6,7 @@ Endpoints:
   GET  /readyz                        readiness (StarRocks reachable)
   GET  /metrics                       prometheus text exposition
   GET  /api/freshness                 latest data partition + ingestion lag
+  GET  /api/system/summary            production table health summary
   GET  /api/games/{id}                game moves + metadata
   POST /api/eval                      Stockfish proxy (single position)
   POST /api/whatif                    twin-line analysis (actual vs alt) batched
@@ -37,6 +38,7 @@ from db import (
     query_phase_stats,
     query_player_patterns,
     query_player_profile,
+    query_system_summary,
     query_weakness_summary,
 )
 from stockfish import eval_fen
@@ -210,6 +212,12 @@ def get_freshness():
     with _freshness_lock:
         _freshness_cache["v"] = (now, result)
     return result
+
+
+# ─── system summary ───────────────────────────────────────────────────────────
+@app.get("/api/system/summary")
+def get_system_summary():
+    return query_system_summary()
 
 
 # ─── games ────────────────────────────────────────────────────────────────────

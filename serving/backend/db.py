@@ -20,6 +20,16 @@ PLAYER_WEAKNESS_SUMMARY = "polaris_catalog.prod.player_weakness_summary"
 PLAYER_OPENING_STATS = "polaris_catalog.prod.player_opening_stats"
 PLAYER_PHASE_STATS = "polaris_catalog.prod.player_phase_stats"
 
+PROD_TABLES = [
+    ("chess_move_events", TABLE, "Raw move-level fact table"),
+    ("player_games", PLAYER_GAMES, "One row per player per game"),
+    ("move_evaluations_ondemand", EVAL_TABLE_ONDEMAND, "Stockfish evaluations from analyzer"),
+    ("critical_positions", CRITICAL_POSITIONS, "Teachable mistakes and swings"),
+    ("player_weakness_summary", PLAYER_WEAKNESS_SUMMARY, "Daily player weakness aggregate"),
+    ("player_opening_stats", PLAYER_OPENING_STATS, "Daily player opening aggregate"),
+    ("player_phase_stats", PLAYER_PHASE_STATS, "Daily player phase aggregate"),
+]
+
 
 # Tiny TTL cache so the slow profile query doesn't hit StarRocks on every page load.
 _PROFILE_TTL = 120
@@ -86,6 +96,42 @@ def _run(sql: str, params: tuple = ()) -> list[dict]:
     with StarRocks.cursor() as cur:
         cur.execute(sql, params)
         return cur.fetchall()
+
+
+def query_system_summary() -> dict:
+    tables = []
+    total_rows = 0
+    for name, full_name, description in PROD_TABLES:
+        rows = _run(
+            f"""
+            SELECT COUNT(*) AS rows, MAX(date) AS latest_date
+            FROM {full_name}
+            """
+        )
+        row = rows[0] if rows else {}
+        row_count = int(row.get("rows") or 0)
+        latest_date = row.get("latest_date")
+        if hasattr(latest_date, "isoformat"):
+            latest_date = latest_date.isoformat()
+        tables.append(
+            {
+                "name": name,
+                "full_name": full_name,
+                "description": description,
+                "rows": row_count,
+                "latest_date": str(latest_date) if latest_date else None,
+            }
+        )
+        total_rows += row_count
+    latest_dates = [t["latest_date"] for t in tables if t["latest_date"]]
+    return {
+        "tables": tables,
+        "totals": {
+            "rows": total_rows,
+            "tables": len(tables),
+            "latest_date": max(latest_dates) if latest_dates else None,
+        },
+    }
 
 
 def query_game(game_id: str) -> list[dict]:
