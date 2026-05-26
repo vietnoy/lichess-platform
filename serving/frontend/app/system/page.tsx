@@ -10,14 +10,14 @@ interface SystemTable {
   name: string;
   full_name: string;
   description?: string;
-  rows: number;
+  latest_partition_rows: number;
   latest_date: string | null;
 }
 
 interface SystemSummary {
   tables: SystemTable[];
   totals: {
-    rows: number;
+    latest_partition_rows: number;
     tables: number;
     latest_date?: string | null;
   };
@@ -80,7 +80,7 @@ export default function SystemPage() {
   }, []);
 
   const sortedTables = useMemo(() => {
-    return [...(summary?.tables ?? [])].sort((a, b) => b.rows - a.rows);
+    return [...(summary?.tables ?? [])].sort((a, b) => b.latest_partition_rows - a.latest_partition_rows);
   }, [summary]);
 
   return (
@@ -101,8 +101,10 @@ export default function SystemPage() {
             </div>
             <div className="grid grid-cols-3 gap-3 md:min-w-[420px]">
               <div className="border border-border bg-surface rounded-md p-4">
-                <div className="text-xs text-muted">Dòng dữ liệu</div>
-                <div className="text-2xl font-medium mt-1">{summary ? compactNumber(summary.totals.rows) : "-"}</div>
+                <div className="text-xs text-muted">Dòng ngày mới nhất</div>
+                <div className="text-2xl font-medium mt-1">
+                  {summary ? compactNumber(summary.totals.latest_partition_rows) : "-"}
+                </div>
               </div>
               <div className="border border-border bg-surface rounded-md p-4">
                 <div className="text-xs text-muted">Bảng prod</div>
@@ -142,7 +144,7 @@ export default function SystemPage() {
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-xl font-medium">Bảng production</h2>
-            <span className="text-xs text-muted">Đếm dòng và partition mới nhất</span>
+            <span className="text-xs text-muted">Đếm dòng trong partition mới nhất</span>
           </div>
           <div className="overflow-x-auto border border-border rounded-md bg-surface">
             <table className="w-full text-sm">
@@ -150,7 +152,7 @@ export default function SystemPage() {
                 <tr>
                   <th className="px-4 py-3 font-medium">Bảng</th>
                   <th className="px-4 py-3 font-medium">Vai trò</th>
-                  <th className="px-4 py-3 font-medium text-right">Số dòng</th>
+                  <th className="px-4 py-3 font-medium text-right">Dòng partition mới nhất</th>
                   <th className="px-4 py-3 font-medium">Ngày mới nhất</th>
                 </tr>
               </thead>
@@ -170,8 +172,8 @@ export default function SystemPage() {
                         <div className="text-xs text-muted font-mono mt-1">{row.full_name}</div>
                       </td>
                       <td className="px-4 py-3 text-muted max-w-md">{row.description ?? "-"}</td>
-                      <td className="px-4 py-3 text-right font-mono" title={fullNumber(row.rows)}>
-                        {compactNumber(row.rows)}
+                      <td className="px-4 py-3 text-right font-mono" title={fullNumber(row.latest_partition_rows)}>
+                        {compactNumber(row.latest_partition_rows)}
                       </td>
                       <td className="px-4 py-3 font-mono">{row.latest_date ?? "-"}</td>
                     </tr>

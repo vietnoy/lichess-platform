@@ -102,23 +102,33 @@ def query_system_summary() -> dict:
     tables = []
     total_rows = 0
     for name, full_name, description in PROD_TABLES:
-        rows = _run(
+        latest_rows = _run(
             f"""
-            SELECT COUNT(*) AS row_count, MAX(date) AS latest_date
+            SELECT MAX(date) AS latest_date
             FROM {full_name}
             """
         )
-        row = rows[0] if rows else {}
-        row_count = int(row.get("row_count") or 0)
-        latest_date = row.get("latest_date")
+        latest_row = latest_rows[0] if latest_rows else {}
+        latest_date = latest_row.get("latest_date")
         if hasattr(latest_date, "isoformat"):
             latest_date = latest_date.isoformat()
+        row_count = 0
+        if latest_date:
+            count_rows = _run(
+                f"""
+                SELECT COUNT(*) AS row_count
+                FROM {full_name}
+                WHERE date = %s
+                """,
+                (str(latest_date),),
+            )
+            row_count = int((count_rows[0] if count_rows else {}).get("row_count") or 0)
         tables.append(
             {
                 "name": name,
                 "full_name": full_name,
                 "description": description,
-                "rows": row_count,
+                "latest_partition_rows": row_count,
                 "latest_date": str(latest_date) if latest_date else None,
             }
         )
@@ -127,7 +137,7 @@ def query_system_summary() -> dict:
     return {
         "tables": tables,
         "totals": {
-            "rows": total_rows,
+            "latest_partition_rows": total_rows,
             "tables": len(tables),
             "latest_date": max(latest_dates) if latest_dates else None,
         },
