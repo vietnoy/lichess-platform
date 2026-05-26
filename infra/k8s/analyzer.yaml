@@ -127,6 +127,10 @@ spec:
           env:
             - name: ANALYZER_PG_DSN
               value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/chess_analyzer_db"
+            # StarRocks is passwordless in this cluster (chess-secrets value is stale).
+            # Empty string overrides the envFrom value for this container only.
+            - name: STARROCKS_PASSWORD
+              value: ""
           resources:
             requests:
               cpu: 100m
@@ -169,6 +173,10 @@ spec:
           env:
             - name: ANALYZER_PG_DSN
               value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/chess_analyzer_db"
+            # StarRocks is passwordless in this cluster (chess-secrets value is stale).
+            # Empty string overrides the envFrom value for this container only.
+            - name: STARROCKS_PASSWORD
+              value: ""
           resources:
             requests:
               cpu: 100m
