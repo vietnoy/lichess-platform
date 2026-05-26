@@ -43,7 +43,7 @@ def test_historical_analyzer_dags_are_not_registered():
 
 def test_analyzer_summary_maintenance_rebuilds_all_summaries_nightly():
     assert 'dag_id="analyzer_summary_maintenance"' in DAG_SOURCE
-    assert 'schedule="45 2 * * *"' in DAG_SOURCE
+    assert 'schedule="15 2 * * *"' in DAG_SOURCE
     assert 'task_id="rebuild_player_weakness_summary"' in DAG_SOURCE
     assert 'task_id="rebuild_player_opening_stats"' in DAG_SOURCE
     assert 'task_id="rebuild_player_phase_stats"' in DAG_SOURCE
