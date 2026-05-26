@@ -665,7 +665,7 @@ def query_opening_stats(username: str, days: int = 60, top_n: int = 10) -> list[
         WHERE player_id = %s
           AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)
         GROUP BY opening_eco, opening_name, color
-        HAVING games >= 2
+        HAVING SUM(games) >= 2
         ORDER BY blunders DESC, mistakes DESC, critical_positions DESC, games DESC
         LIMIT %s
         """,

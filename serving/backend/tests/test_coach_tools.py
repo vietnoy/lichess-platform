@@ -87,6 +87,8 @@ def test_query_opening_stats_uses_derived_table_and_clamps_inputs():
     assert db.PLAYER_GAMES not in sql
     assert "player_id = %s" in sql
     assert "date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)" in sql
+    assert "HAVING SUM(games) >= 2" in sql
+    assert "HAVING games >= 2" not in sql
     assert "ORDER BY blunders DESC, mistakes DESC, critical_positions DESC, games DESC" in sql
     assert params == ("alice", 365, 20)
     assert result == rows
