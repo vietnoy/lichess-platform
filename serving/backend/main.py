@@ -33,8 +33,11 @@ from db import (
     query_exercise,
     query_game,
     query_game_evaluations,
+    query_opening_stats,
+    query_phase_stats,
     query_player_patterns,
     query_player_profile,
+    query_weakness_summary,
 )
 from stockfish import eval_fen
 
@@ -335,6 +338,27 @@ def get_player_patterns(username: str):
     if patterns is None:
         raise HTTPException(404, f"No analyzed games for player '{username}' yet.")
     return patterns
+
+
+@app.get("/api/players/{username}/weakness-summary")
+def get_player_weakness_summary(username: str, days: int = 60):
+    return query_weakness_summary(username, days=days)
+
+
+@app.get("/api/players/{username}/opening-stats")
+def get_player_opening_stats(username: str, days: int = 60, top_n: int = 10):
+    return {
+        "player_id": username,
+        "opening_stats": query_opening_stats(username, days=days, top_n=top_n),
+    }
+
+
+@app.get("/api/players/{username}/phase-stats")
+def get_player_phase_stats(username: str, days: int = 60):
+    return {
+        "player_id": username,
+        "phase_stats": query_phase_stats(username, days=days),
+    }
 
 
 # ─── exercise ────────────────────────────────────────────────────────────────

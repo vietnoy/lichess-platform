@@ -17,6 +17,8 @@ EVAL_TABLE = "polaris_catalog.prod.move_evaluations"
 EVAL_TABLE_ONDEMAND = "polaris_catalog.prod.move_evaluations_ondemand"
 CRITICAL_POSITIONS = "polaris_catalog.prod.critical_positions"
 PLAYER_WEAKNESS_SUMMARY = "polaris_catalog.prod.player_weakness_summary"
+PLAYER_OPENING_STATS = "polaris_catalog.prod.player_opening_stats"
+PLAYER_PHASE_STATS = "polaris_catalog.prod.player_phase_stats"
 
 
 # Tiny TTL cache so the slow profile query doesn't hit StarRocks on every page load.
@@ -637,6 +639,61 @@ def query_blunder_examples(
         LIMIT %s
         """,
         tuple(params),
+    )
+
+
+def query_opening_stats(username: str, days: int = 60, top_n: int = 10) -> list[dict]:
+    days = clamp_int(days, 1, 365)
+    top_n = clamp_int(top_n, 1, 20)
+    return _run(
+        f"""
+        SELECT
+            opening_eco,
+            opening_name,
+            color,
+            SUM(games) AS games,
+            SUM(wins) AS wins,
+            SUM(losses) AS losses,
+            SUM(draws) AS draws,
+            ROUND(SUM(wins) * 100.0 / NULLIF(SUM(games), 0), 1) AS win_rate_pct,
+            SUM(critical_positions) AS critical_positions,
+            SUM(blunders) AS blunders,
+            SUM(mistakes) AS mistakes,
+            SUM(inaccuracies) AS inaccuracies,
+            ROUND(AVG(avg_eval_swing_cp), 1) AS avg_eval_swing_cp
+        FROM {PLAYER_OPENING_STATS}
+        WHERE player_id = %s
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)
+        GROUP BY opening_eco, opening_name, color
+        HAVING games >= 2
+        ORDER BY blunders DESC, mistakes DESC, critical_positions DESC, games DESC
+        LIMIT %s
+        """,
+        (username, days, top_n),
+    )
+
+
+def query_phase_stats(username: str, days: int = 60) -> list[dict]:
+    days = clamp_int(days, 1, 365)
+    return _run(
+        f"""
+        SELECT
+            phase,
+            SUM(games_with_positions) AS games_with_positions,
+            SUM(critical_positions) AS critical_positions,
+            SUM(blunders) AS blunders,
+            SUM(mistakes) AS mistakes,
+            SUM(inaccuracies) AS inaccuracies,
+            SUM(time_pressure_positions) AS time_pressure_positions,
+            ROUND(AVG(avg_eval_swing_cp), 1) AS avg_eval_swing_cp,
+            MAX(max_eval_swing_cp) AS max_eval_swing_cp
+        FROM {PLAYER_PHASE_STATS}
+        WHERE player_id = %s
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)
+        GROUP BY phase
+        ORDER BY critical_positions DESC, blunders DESC
+        """,
+        (username, days),
     )
 
 

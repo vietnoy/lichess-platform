@@ -64,6 +64,57 @@ def test_query_blunder_examples_rejects_unknown_filter_values():
     run.assert_not_called()
 
 
+def test_query_opening_stats_uses_derived_table_and_clamps_inputs():
+    rows = [{
+        "opening_eco": "B01",
+        "opening_name": "Scandinavian Defense",
+        "color": "black",
+        "games": 12,
+        "wins": 4,
+        "losses": 7,
+        "draws": 1,
+        "win_rate_pct": 33.3,
+        "critical_positions": 9,
+        "blunders": 3,
+        "mistakes": 4,
+        "avg_eval_swing_cp": 184.0,
+    }]
+    with patch("serving.backend.db._run", return_value=rows) as run:
+        result = db.query_opening_stats("alice", days=600, top_n=100)
+
+    sql, params = run.call_args.args
+    assert db.PLAYER_OPENING_STATS in sql
+    assert db.PLAYER_GAMES not in sql
+    assert "player_id = %s" in sql
+    assert "date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)" in sql
+    assert "ORDER BY blunders DESC, mistakes DESC, critical_positions DESC, games DESC" in sql
+    assert params == ("alice", 365, 20)
+    assert result == rows
+
+
+def test_query_phase_stats_uses_derived_table_and_clamps_days():
+    rows = [{
+        "phase": "middlegame",
+        "games_with_positions": 8,
+        "critical_positions": 17,
+        "blunders": 5,
+        "mistakes": 7,
+        "inaccuracies": 5,
+        "time_pressure_positions": 4,
+        "avg_eval_swing_cp": 151.2,
+    }]
+    with patch("serving.backend.db._run", return_value=rows) as run:
+        result = db.query_phase_stats("alice", days=600)
+
+    sql, params = run.call_args.args
+    assert db.PLAYER_PHASE_STATS in sql
+    assert "player_id = %s" in sql
+    assert "date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)" in sql
+    assert "ORDER BY critical_positions DESC, blunders DESC" in sql
+    assert params == ("alice", 365)
+    assert result == rows
+
+
 def test_coach_dispatch_exposes_new_safe_tools(monkeypatch):
     monkeypatch.setattr(
         coach,

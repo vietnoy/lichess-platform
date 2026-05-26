@@ -29,6 +29,7 @@ from db import (
     TABLE,
     PLAYER_GAMES,
     query_blunder_examples,
+    query_opening_stats,
     query_weakness_summary,
 )
 from stockfish import eval_fen
@@ -131,22 +132,11 @@ def get_time_pressure_stats(player_id: str) -> dict:
     return {"player_id": player_id, "time_pressure": rows}
 
 
-def get_opening_stats(player_id: str, top_n: int = 10) -> dict:
-    rows = _q(
-        f"""
-        SELECT opening_eco, opening_name,
-               COUNT(*) AS games,
-               SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) AS wins,
-               ROUND(SUM(CASE WHEN winner = color THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS win_rate_pct
-        FROM {PLAYER_GAMES}
-        WHERE player_id = %s AND opening_eco IS NOT NULL
-        GROUP BY opening_eco, opening_name
-        HAVING games >= 2
-        ORDER BY games DESC LIMIT %s
-        """,
-        (player_id, int(top_n)),
-    )
-    return {"player_id": player_id, "opening_stats": rows}
+def get_opening_stats(player_id: str, top_n: int = 10, days: int = 60) -> dict:
+    return {
+        "player_id": player_id,
+        "opening_stats": query_opening_stats(player_id, days=days, top_n=top_n),
+    }
 
 
 def get_clock_usage_by_phase(player_id: str) -> dict:
@@ -318,8 +308,12 @@ _OPENAI_TOOLS: list[dict] = [
               "time_pressure": {"type": "string", "enum": ["unknown", "under_10s", "under_30s", "normal"]},
           }, ["player_id"]),
     _tool("get_time_pressure_stats", "Win rate when clock is under 10 seconds vs normal.", _PLAYER_PROP, ["player_id"]),
-    _tool("get_opening_stats", "Win rate by opening ECO. Identifies structural opening weaknesses.",
-          {**_PLAYER_PROP, "top_n": {"type": "integer", "description": "Top N openings (default 10)"}}, ["player_id"]),
+    _tool("get_opening_stats", "Win rate and critical-position counts by opening ECO from the derived player_opening_stats table.",
+          {
+              **_PLAYER_PROP,
+              "top_n": {"type": "integer", "description": "Top N openings, clamped to 1-20 (default 10)"},
+              "days": {"type": "integer", "description": "Lookback days, clamped to 1-365 (default 60)"},
+          }, ["player_id"]),
     _tool("get_clock_usage_by_phase", "Average clock remaining in opening, middlegame, endgame.", _PLAYER_PROP, ["player_id"]),
     _tool("get_performance_by_color", "Win rate as white vs black.", _PLAYER_PROP, ["player_id"]),
     _tool("get_performance_vs_rating", "Win rate vs lower, equal and higher rated opponents.", _PLAYER_PROP, ["player_id"]),
