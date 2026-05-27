@@ -207,6 +207,45 @@ def test_get_time_pressure_stats_binds_params_in_sql_order(monkeypatch):
     assert calls[1][1] == ("alice", "alice", "alice", "alice", "2026-05-25", "alice", "alice")
 
 
+def test_gemini_final_answer_uses_tool_evidence(monkeypatch):
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "candidates": [
+                    {"content": {"parts": [{"text": "Chẩn đoán chính: dữ liệu đủ."}]}}
+                ]
+            }
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(coach, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(coach, "GEMINI_MODEL", "gemini-2.5-flash")
+    monkeypatch.setattr(coach.requests, "post", fake_post)
+
+    text = coach._gemini_final_answer([
+        {"role": "system", "content": coach._SYSTEM_PROMPT},
+        {"role": "user", "content": "Coach alice"},
+        {"role": "tool", "name": "inspect_student_style", "content": '{"player_id":"alice"}'},
+    ])
+
+    assert text == "Chẩn đoán chính: dữ liệu đủ."
+    assert captured["url"].endswith("/models/gemini-2.5-flash:generateContent")
+    assert captured["headers"]["x-goog-api-key"] == "test-key"
+    body_text = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "Coach alice" in body_text
+    assert "inspect_student_style" in body_text
+
+
 def test_coach_system_prompt_is_vietnamese_and_action_oriented():
     assert "Trả lời bằng tiếng Việt" in coach._SYSTEM_PROMPT
     assert "inspect_student_style" in coach._SYSTEM_PROMPT

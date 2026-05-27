@@ -22,6 +22,7 @@ import threading
 import time
 from typing import Any, Iterator
 
+import requests
 from openai import OpenAI
 
 from db import (
@@ -41,6 +42,9 @@ log = logging.getLogger("coach")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+COACH_FINAL_PROVIDER = os.getenv("COACH_FINAL_PROVIDER", "groq").lower()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 _client: OpenAI | None = None
 
@@ -52,6 +56,68 @@ def _get_client() -> OpenAI:
             raise RuntimeError("GROQ_API_KEY not set; coach disabled")
         _client = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
     return _client
+
+
+def _gemini_final_answer(messages: list[dict]) -> str:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY not set; Gemini final answer unavailable")
+    last_user_idx = max((idx for idx, msg in enumerate(messages) if msg.get("role") == "user"), default=0)
+    user_message = messages[last_user_idx].get("content", "")
+    tool_evidence = [
+        {
+            "name": msg.get("name"),
+            "content": msg.get("content"),
+        }
+        for msg in messages[last_user_idx + 1:]
+        if msg.get("role") == "tool"
+    ]
+    evidence_json = json.dumps(tool_evidence, ensure_ascii=False, default=str)
+    if len(evidence_json) > 60_000:
+        evidence_json = evidence_json[:60_000] + "...[truncated]"
+
+    response = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+        },
+        json={
+            "systemInstruction": {
+                "parts": [{"text": _SYSTEM_PROMPT}],
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": (
+                                "Yêu cầu người dùng:\n"
+                                f"{user_message}\n\n"
+                                "Dữ liệu tool đã lấy, chỉ được dùng các số liệu trong JSON này:\n"
+                                f"{evidence_json}"
+                            )
+                        }
+                    ],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.35,
+                "maxOutputTokens": 1400,
+            },
+        },
+        timeout=45,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    parts = (
+        payload.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+    text = "".join(part.get("text", "") for part in parts)
+    if not text.strip():
+        raise RuntimeError("Gemini returned an empty response")
+    return text
 
 
 # ─── tools ────────────────────────────────────────────────────────────────────
@@ -569,6 +635,13 @@ class CoachSession:
                     "name": name,
                     "content": result_json,
                 })
+
+            if COACH_FINAL_PROVIDER == "gemini":
+                final_text = _gemini_final_answer(self.messages)
+                self.messages.append({"role": "assistant", "content": final_text})
+                yield {"type": "token", "text": final_text}
+                yield {"type": "done"}
+                return
 
 
 class SessionStore:
