@@ -23,11 +23,15 @@ export default function Header({ subtitle }: { subtitle?: string }) {
   const [fresh, setFresh] = useState<Freshness | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
     let alive = true;
-    api<Freshness>("/freshness")
+    api<Freshness>("/freshness", { signal: controller.signal })
       .then((f) => { if (alive) setFresh(f); })
       .catch(() => { /* freshness is best-effort, no UI noise */ });
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      controller.abort();
+    };
   }, []);
 
   return (

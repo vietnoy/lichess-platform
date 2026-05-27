@@ -166,9 +166,10 @@ export default function PlatformPage() {
       setLoading(false);
       return;
     }
+    const controller = new AbortController();
     let alive = true;
     setLoading(true);
-    api<PlatformOverview>(overviewPath)
+    api<PlatformOverview>(overviewPath, { signal: controller.signal })
       .then((data) => {
         if (!alive) return;
         setOverview(data);
@@ -183,6 +184,7 @@ export default function PlatformPage() {
       });
     return () => {
       alive = false;
+      controller.abort();
     };
   }, [overviewPath]);
 

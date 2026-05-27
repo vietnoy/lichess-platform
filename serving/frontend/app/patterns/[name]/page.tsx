@@ -59,10 +59,11 @@ export default function PatternsPage({ params }: { params: { name: string } }) {
   const [is404, setIs404] = useState(false);
 
   useEffect(() => {
+    const controller = new AbortController();
     let alive = true;
     setError(null);
     setIs404(false);
-    api<Patterns>(`/players/${encodeURIComponent(username)}/patterns`)
+    api<Patterns>(`/players/${encodeURIComponent(username)}/patterns`, { signal: controller.signal })
       .then((p) => { if (alive) setData(p); })
       .catch((e) => {
         if (!alive) return;
@@ -72,7 +73,10 @@ export default function PatternsPage({ params }: { params: { name: string } }) {
           setError(String(e.message ?? e));
         }
       });
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      controller.abort();
+    };
   }, [username]);
 
   return (

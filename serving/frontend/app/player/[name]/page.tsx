@@ -215,6 +215,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
   const [coachError, setCoachError] = useState<string | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
     let alive = true;
     setError(null);
     setCoachError(null);
@@ -225,15 +226,15 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
     setInsights([]);
     setCoachLoaded(false);
 
-    api<Profile>(`/players/${encodeURIComponent(username)}/profile`)
+    api<Profile>(`/players/${encodeURIComponent(username)}/profile`, { signal: controller.signal })
       .then((p) => { if (alive) setProfile(p); })
       .catch((e) => { if (alive) setError(String(e.message ?? e)); });
 
     Promise.all([
-      api<WeaknessSummary>(`/players/${encodeURIComponent(username)}/weakness-summary?days=60`),
-      api<OpeningStatsResponse>(`/players/${encodeURIComponent(username)}/opening-stats?days=60&top_n=8`),
-      api<PhaseStatsResponse>(`/players/${encodeURIComponent(username)}/phase-stats?days=60`),
-      api<PlayerInsightsResponse>(`/players/${encodeURIComponent(username)}/insights?days=60`),
+      api<WeaknessSummary>(`/players/${encodeURIComponent(username)}/weakness-summary?days=60`, { signal: controller.signal }),
+      api<OpeningStatsResponse>(`/players/${encodeURIComponent(username)}/opening-stats?days=60&top_n=8`, { signal: controller.signal }),
+      api<PhaseStatsResponse>(`/players/${encodeURIComponent(username)}/phase-stats?days=60`, { signal: controller.signal }),
+      api<PlayerInsightsResponse>(`/players/${encodeURIComponent(username)}/insights?days=60`, { signal: controller.signal }),
     ])
       .then(([summary, openings, phases, insightResponse]) => {
         if (!alive) return;
@@ -245,7 +246,10 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
       .catch((e) => { if (alive) setCoachError(String(e.message ?? e)); })
       .finally(() => { if (alive) setCoachLoaded(true); });
 
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      controller.abort();
+    };
   }, [username]);
 
   const playerLoaded = Boolean(profile || weakness || coachLoaded);

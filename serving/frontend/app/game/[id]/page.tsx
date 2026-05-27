@@ -100,25 +100,33 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
 
   // Load game on mount.
   useEffect(() => {
+    const controller = new AbortController();
     let alive = true;
     setError(null);
-    api<Game>(`/games/${encodeURIComponent(gameId)}`)
+    api<Game>(`/games/${encodeURIComponent(gameId)}`, { signal: controller.signal })
       .then((g) => { if (alive) setGame(g); })
       .catch((e) => { if (alive) setError(String(e.message ?? e)); });
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      controller.abort();
+    };
   }, [gameId]);
 
   // Load per-ply evaluations (best-effort; 404 if DAG hasn't run for this date).
   useEffect(() => {
+    const controller = new AbortController();
     let alive = true;
-    api<{ evaluations: MoveEval[] }>(`/games/${encodeURIComponent(gameId)}/evaluations`)
+    api<{ evaluations: MoveEval[] }>(`/games/${encodeURIComponent(gameId)}/evaluations`, { signal: controller.signal })
       .then((r) => { if (alive) { setEvals(r.evaluations); setEvalsAvailable("yes"); } })
       .catch((e) => {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 404) setEvalsAvailable("no");
         else setEvalsAvailable("no");
       });
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      controller.abort();
+    };
   }, [gameId]);
 
   const evalsByPly = useMemo(() => {

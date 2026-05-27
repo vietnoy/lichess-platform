@@ -59,9 +59,10 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const controller = new AbortController();
     let alive = true;
     setLoading(true);
-    api<SystemSummary>("/system/summary")
+    api<SystemSummary>("/system/summary", { signal: controller.signal })
       .then((data) => {
         if (!alive) return;
         setSummary(data);
@@ -76,6 +77,7 @@ export default function SystemPage() {
       });
     return () => {
       alive = false;
+      controller.abort();
     };
   }, []);
 

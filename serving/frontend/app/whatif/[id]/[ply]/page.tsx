@@ -48,11 +48,15 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
 
   // Load game
   useEffect(() => {
+    const controller = new AbortController();
     let alive = true;
-    api<Game>(`/games/${encodeURIComponent(gameId)}`)
+    api<Game>(`/games/${encodeURIComponent(gameId)}`, { signal: controller.signal })
       .then((g) => { if (alive) setGame(g); })
       .catch((e) => { if (alive) setError(String(e.message ?? e)); });
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      controller.abort();
+    };
   }, [gameId]);
 
   const baseFen = useMemo(() => {
@@ -259,4 +263,3 @@ function BoardPanel({
     </section>
   );
 }
-
