@@ -46,6 +46,9 @@ interface PhaseRow {
 
 interface PlatformOverview {
   date: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  range: string;
   totals: {
     games: number;
     player_game_rows: number;
@@ -55,6 +58,8 @@ interface PlatformOverview {
   top_openings: OpeningRow[];
   phase_mistakes: PhaseRow[];
 }
+
+type RangeMode = "14" | "30" | "60" | "all" | "custom";
 
 const COLORS = ["#f59e0b", "#10b981", "#3b82f6", "#ef4444", "#8b5cf6", "#64748b"];
 const TOOLTIP_STYLE = {
@@ -94,6 +99,20 @@ function share(value: number, total: number | undefined) {
 
 function openingLabel(row: OpeningRow) {
   return `${row.opening_eco ?? "-"} · ${row.opening_name ?? "Unknown"}`;
+}
+
+function platformOverviewPath(rangeMode: RangeMode, customDate: string) {
+  if (rangeMode === "all") return "/platform/overview?all_time=true";
+  if (rangeMode === "custom") return customDate ? `/platform/overview?date=${encodeURIComponent(customDate)}` : null;
+  return `/platform/overview?days=${rangeMode}`;
+}
+
+function rangeLabel(overview: PlatformOverview | null, rangeMode: RangeMode) {
+  if (!overview) return "-";
+  if (rangeMode === "all" || overview.range === "all") return "All time";
+  if (overview.range === "date") return overview.date ?? "-";
+  if (overview.start_date && overview.end_date) return `${overview.start_date} → ${overview.end_date}`;
+  return overview.date ?? "-";
 }
 
 function SectionHeader({
@@ -137,10 +156,19 @@ export default function PlatformPage() {
   const [overview, setOverview] = useState<PlatformOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [rangeMode, setRangeMode] = useState<RangeMode>("30");
+  const [customDate, setCustomDate] = useState("");
+
+  const overviewPath = useMemo(() => platformOverviewPath(rangeMode, customDate), [rangeMode, customDate]);
 
   useEffect(() => {
+    if (!overviewPath) {
+      setLoading(false);
+      return;
+    }
     let alive = true;
-    api<PlatformOverview>("/platform/overview")
+    setLoading(true);
+    api<PlatformOverview>(overviewPath)
       .then((data) => {
         if (!alive) return;
         setOverview(data);
@@ -156,7 +184,7 @@ export default function PlatformPage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [overviewPath]);
 
   const speedData = useMemo(() => overview?.speed_mix ?? [], [overview]);
   const phaseData = useMemo(
@@ -183,7 +211,7 @@ export default function PlatformPage() {
         <section className="grid xl:grid-cols-[1.15fr_0.85fr] gap-4 items-stretch">
           <div className="border border-border bg-surface rounded-md p-5 space-y-4">
             <StatusPill tone={loading ? "loading" : error ? "error" : "ok"}>
-              {loading ? "Đang tải meta" : error ? "Cần kiểm tra" : `Latest partition · ${overview?.date ?? "-"}`}
+              {loading ? "Đang tải meta" : error ? "Cần kiểm tra" : `Window · ${rangeLabel(overview, rangeMode)}`}
             </StatusPill>
             <div className="space-y-3">
               <h1 className="text-3xl md:text-4xl font-medium tracking-tight">Platform Meta</h1>
@@ -191,6 +219,41 @@ export default function PlatformPage() {
                 Một dashboard để nhìn toàn cảnh cộng đồng đang chơi gì, opening nào nổi bật, phase nào sinh nhiều lỗi,
                 và hệ thống nên biến các pattern đó thành training decision như thế nào.
               </p>
+            </div>
+            <div className="flex flex-col md:flex-row md:items-center gap-3">
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["14", "14 ngày"],
+                  ["30", "30 ngày"],
+                  ["60", "60 ngày"],
+                  ["all", "All time"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setRangeMode(value as RangeMode)}
+                    className={`h-9 px-3 rounded-md border text-sm transition ${
+                      rangeMode === value
+                        ? "border-accent bg-accent text-white"
+                        : "border-border bg-background hover:bg-border/40"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-sm text-muted">
+                Một ngày
+                <input
+                  type="date"
+                  value={customDate}
+                  onChange={(event) => {
+                    setCustomDate(event.target.value);
+                    setRangeMode("custom");
+                  }}
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm text-text"
+                />
+              </label>
             </div>
             {error && <div className="border border-red-200 bg-red-50 text-red-700 rounded-md px-4 py-3 text-sm">{error}</div>}
           </div>

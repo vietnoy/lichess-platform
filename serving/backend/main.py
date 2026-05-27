@@ -7,7 +7,7 @@ Endpoints:
   GET  /metrics                       prometheus text exposition
   GET  /api/freshness                 latest data partition + ingestion lag
   GET  /api/system/summary            production table health summary
-  GET  /api/platform/overview         platform-wide latest-partition meta
+  GET  /api/platform/overview         platform-wide meta with optional date/range filters
   GET  /api/games/{id}                game moves + metadata
   POST /api/eval                      Stockfish proxy (single position)
   POST /api/whatif                    twin-line analysis (actual vs alt) batched
@@ -23,7 +23,7 @@ import logging
 import threading
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, PlainTextResponse
 from openai import OpenAI
@@ -224,8 +224,15 @@ def get_system_summary():
 
 
 @app.get("/api/platform/overview")
-def get_platform_overview():
-    return query_platform_overview()
+def get_platform_overview(
+    days: int | None = Query(30, ge=1, le=365),
+    date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    all_time: bool = False,
+):
+    try:
+        return query_platform_overview(days=days, date=date, all_time=all_time)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ─── games ────────────────────────────────────────────────────────────────────

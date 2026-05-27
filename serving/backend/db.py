@@ -1,5 +1,6 @@
 """StarRocks connection + query helpers."""
 
+import datetime as dt
 import os
 import random
 import time
@@ -152,22 +153,59 @@ def _to_iso_date(value) -> str | None:
     return str(value)
 
 
-def query_platform_overview() -> dict:
+def _parse_iso_date(value: str) -> dt.date:
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("date must be YYYY-MM-DD") from exc
+
+
+def _date_range_filter(column: str, start_date: str | None, end_date: str | None) -> tuple[str, tuple]:
+    if start_date and end_date:
+        return f"WHERE {column} BETWEEN %s AND %s", (start_date, end_date)
+    return "", ()
+
+
+def query_platform_overview(days: int | None = 30, date: str | None = None, all_time: bool = False) -> dict:
     latest = _run(
         f"""
         SELECT MAX(date) AS date
         FROM {PLAYER_GAMES}
         """
     )
-    date = _to_iso_date((latest[0] if latest else {}).get("date"))
-    if not date:
+    latest_date = _to_iso_date((latest[0] if latest else {}).get("date"))
+    if not latest_date:
         return {
             "date": None,
+            "start_date": None,
+            "end_date": None,
+            "range": "empty",
             "totals": {"games": 0, "player_game_rows": 0, "players": 0},
             "speed_mix": [],
             "top_openings": [],
             "phase_mistakes": [],
         }
+
+    if date:
+        selected = _parse_iso_date(date).isoformat()
+        start_date = selected
+        end_date = selected
+        range_label = "date"
+    elif all_time:
+        start_date = None
+        end_date = None
+        range_label = "all"
+    else:
+        window_days = max(1, min(int(days or 30), 365))
+        end = _parse_iso_date(latest_date)
+        start = end - dt.timedelta(days=window_days - 1)
+        start_date = start.isoformat()
+        end_date = end.isoformat()
+        range_label = f"{window_days}d"
+
+    player_filter, player_params = _date_range_filter("date", start_date, end_date)
+    opening_filter, opening_params = _date_range_filter("date", start_date, end_date)
+    phase_filter, phase_params = _date_range_filter("date", start_date, end_date)
 
     totals = _run(
         f"""
@@ -176,9 +214,9 @@ def query_platform_overview() -> dict:
             COUNT(*) AS player_game_rows,
             COUNT(DISTINCT player_id) AS players
         FROM {PLAYER_GAMES}
-        WHERE date = %s
+        {player_filter}
         """,
-        (date,),
+        player_params,
     )
     speed_mix = _run(
         f"""
@@ -188,12 +226,12 @@ def query_platform_overview() -> dict:
             COUNT(*) AS player_game_rows,
             ROUND(AVG(my_rating), 0) AS avg_rating
         FROM {PLAYER_GAMES}
-        WHERE date = %s
+        {player_filter}
         GROUP BY speed
         ORDER BY games DESC
         LIMIT 8
         """,
-        (date,),
+        player_params,
     )
     top_openings = _run(
         f"""
@@ -204,13 +242,13 @@ def query_platform_overview() -> dict:
             ROUND(SUM(wins) * 100.0 / NULLIF(SUM(games), 0), 1) AS win_rate_pct,
             SUM(critical_positions) AS critical_positions
         FROM {PLAYER_OPENING_STATS}
-        WHERE date = %s
+        {opening_filter}
         GROUP BY opening_eco, opening_name
         HAVING SUM(games) >= 20
         ORDER BY games DESC
         LIMIT 10
         """,
-        (date,),
+        opening_params,
     )
     phase_mistakes = _run(
         f"""
@@ -221,15 +259,18 @@ def query_platform_overview() -> dict:
             SUM(mistakes) AS mistakes,
             SUM(inaccuracies) AS inaccuracies
         FROM {PLAYER_PHASE_STATS}
-        WHERE date = %s
+        {phase_filter}
         GROUP BY phase
         ORDER BY critical_positions DESC
         """,
-        (date,),
+        phase_params,
     )
 
     return {
-        "date": date,
+        "date": end_date or latest_date,
+        "start_date": start_date,
+        "end_date": end_date,
+        "range": range_label,
         "totals": totals[0] if totals else {"games": 0, "player_game_rows": 0, "players": 0},
         "speed_mix": speed_mix,
         "top_openings": top_openings,
