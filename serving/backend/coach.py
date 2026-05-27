@@ -83,6 +83,66 @@ def get_weakness_summary(player_id: str, days: int = 60) -> dict:
     return query_weakness_summary(player_id, days=days)
 
 
+def _coach_brief(profile: dict, weakness: dict, phase_stats: list[dict], opening_stats: list[dict], examples: list[dict]) -> dict:
+    totals = profile.get("totals") or {}
+    by_color = profile.get("by_color") or []
+    worst_color = min(by_color, key=lambda row: row.get("win_pct") or 0) if by_color else None
+    best_color = max(by_color, key=lambda row: row.get("win_pct") or 0) if by_color else None
+    color_gap = None
+    if worst_color and best_color:
+        color_gap = round((best_color.get("win_pct") or 0) - (worst_color.get("win_pct") or 0), 1)
+
+    top_phase = phase_stats[0] if phase_stats else {}
+    top_opening = opening_stats[0] if opening_stats else {}
+    top_example = examples[0] if examples else {}
+
+    diagnosis = []
+    if totals:
+        diagnosis.append(
+            f"Win rate {totals.get('win_pct')}% trên {totals.get('games')} ván, rating TB {totals.get('avg_rating')}."
+        )
+    if worst_color:
+        diagnosis.append(
+            f"Cầm {worst_color.get('color')} là điểm rơi lớn nhất: {worst_color.get('win_pct')}% thắng"
+            + (f", lệch {color_gap} điểm % so với màu tốt hơn." if color_gap is not None else ".")
+        )
+    if top_phase:
+        diagnosis.append(
+            f"Phase yếu nhất là {top_phase.get('phase')}: {top_phase.get('critical_positions')} critical positions, "
+            f"{top_phase.get('blunders')} blunders, {top_phase.get('mistakes')} mistakes."
+        )
+    if top_opening:
+        diagnosis.append(
+            f"Opening cần ưu tiên: {top_opening.get('opening_eco')} {top_opening.get('opening_name')} khi cầm "
+            f"{top_opening.get('color')}, win rate {top_opening.get('win_rate_pct')}%, "
+            f"{top_opening.get('critical_positions')} critical positions."
+        )
+
+    drills = []
+    if top_opening:
+        drills.append(
+            f"Review 5 ván gần nhất trong {top_opening.get('opening_eco')} {top_opening.get('opening_name')}; "
+            "dừng sau khai cuộc và ghi lại kế hoạch quân trước khi xem engine."
+        )
+    if top_phase:
+        drills.append(
+            f"Làm drill theo phase {top_phase.get('phase')}: mỗi vị trí tự chọn 3 candidate moves, "
+            "loại tactical blunder trước rồi mới so engine."
+        )
+    if top_example:
+        drills.append(
+            f"Review game {top_example.get('game_id')} ply {top_example.get('ply')}: so sánh "
+            f"{top_example.get('played_move') or 'nước đã chơi'} với {top_example.get('best_move') or 'best move'}."
+        )
+    elif worst_color:
+        drills.append(f"Tạo session 20 phút chỉ luyện các ván cầm {worst_color.get('color')} trong opening yếu nhất.")
+
+    return {
+        "diagnosis": diagnosis[:4],
+        "drills": drills[:3],
+    }
+
+
 def inspect_student_style(player_id: str, days: int = 60) -> dict:
     """One-shot scouting report for the coach before giving advice."""
     days = max(1, min(int(days), 365))
@@ -96,17 +156,19 @@ def inspect_student_style(player_id: str, days: int = 60) -> dict:
         limit=5,
         phase=top_phase if top_phase in {"opening", "middlegame", "endgame"} else None,
     )
+    profile_slice = {
+        "range": profile.get("range"),
+        "totals": profile.get("totals"),
+        "by_speed": profile.get("by_speed", [])[:5],
+        "by_color": profile.get("by_color", []),
+        "vs_rating": profile.get("vs_rating", []),
+        "rating_history": profile.get("rating_history", [])[-20:],
+    }
     return {
         "player_id": player_id,
         "days": days,
-        "profile": {
-            "range": profile.get("range"),
-            "totals": profile.get("totals"),
-            "by_speed": profile.get("by_speed", [])[:5],
-            "by_color": profile.get("by_color", []),
-            "vs_rating": profile.get("vs_rating", []),
-            "rating_history": profile.get("rating_history", [])[-20:],
-        },
+        "coach_brief": _coach_brief(profile_slice, weakness, phase_stats, opening_stats, examples),
+        "profile": profile_slice,
         "weakness": weakness,
         "phase_stats": phase_stats,
         "opening_stats": opening_stats,
@@ -385,11 +447,12 @@ Workflow khi trả lời:
 2. Nếu cần đào sâu, gọi thêm tool cụ thể như get_blunder_examples, get_opening_stats, get_phase_stats hoặc analyze_game.
 3. Chẩn đoán bằng cách tìm mẫu lặp lại giữa nhiều nguồn dữ liệu, không chỉ đọc lại bảng.
 4. Ưu tiên 1-2 vấn đề có tác động lớn nhất đến kết quả.
-5. Trả lời đúng 3 phần:
+5. Nếu tool trả về coach_brief, dùng coach_brief làm khung chính và chỉ diễn đạt lại cho tự nhiên hơn.
+6. Trả lời đúng 3 phần:
    - Chẩn đoán chính: 2-3 câu, nói thẳng vấn đề lớn nhất.
    - Bằng chứng từ dữ liệu: 3-5 bullet có số liệu cụ thể.
    - Bài tập tiếp theo: 3 bullet hành động cụ thể, có phase/opening/game/example nếu dữ liệu có.
-6. Viết như huấn luyện viên: trực tiếp, cụ thể, có nước đi/giai đoạn/kế hoạch luyện tập khi có dữ liệu."""
+7. Viết như huấn luyện viên: trực tiếp, cụ thể, có nước đi/giai đoạn/kế hoạch luyện tập khi có dữ liệu."""
 
 
 # ─── streaming engine ────────────────────────────────────────────────────────

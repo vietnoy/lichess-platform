@@ -174,6 +174,8 @@ def test_inspect_student_style_combines_coaching_evidence(monkeypatch):
     assert result["days"] == 365
     assert result["profile"]["totals"]["games"] == 10
     assert result["weakness"]["top_phase"] == "middlegame"
+    assert result["coach_brief"]["diagnosis"]
+    assert result["coach_brief"]["drills"]
     assert result["critical_examples"] == [{"game_id": "g1", "phase": "middlegame"}]
 
 
@@ -208,6 +210,7 @@ def test_get_time_pressure_stats_binds_params_in_sql_order(monkeypatch):
 def test_coach_system_prompt_is_vietnamese_and_action_oriented():
     assert "Trả lời bằng tiếng Việt" in coach._SYSTEM_PROMPT
     assert "inspect_student_style" in coach._SYSTEM_PROMPT
+    assert "coach_brief" in coach._SYSTEM_PROMPT
     assert "Không nhắc tên tool" in coach._SYSTEM_PROMPT
     assert "Chẩn đoán" in coach._SYSTEM_PROMPT
     assert "Bài tập" in coach._SYSTEM_PROMPT
