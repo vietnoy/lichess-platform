@@ -211,6 +211,9 @@ def test_gemini_final_answer_uses_tool_evidence(monkeypatch):
     captured = {}
 
     class Response:
+        status_code = 200
+        text = ""
+
         def raise_for_status(self):
             return None
 

@@ -107,7 +107,8 @@ def _gemini_final_answer(messages: list[dict]) -> str:
         },
         timeout=45,
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        raise RuntimeError(f"Gemini API error {response.status_code}: {response.text[:1000]}")
     payload = response.json()
     parts = (
         payload.get("candidates", [{}])[0]
