@@ -235,6 +235,48 @@ def get_platform_overview(
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/cache/warmup")
+def warm_cache():
+    """Warm expensive read caches used by the public dashboards."""
+    started = time.monotonic()
+    results = []
+
+    def run(name: str, fn):
+        t0 = time.monotonic()
+        try:
+            fn()
+            results.append({"name": name, "ok": True, "latency_ms": round((time.monotonic() - t0) * 1000, 1)})
+        except Exception as exc:
+            log.warning("cache warmup failed for %s: %s", name, exc)
+            results.append({
+                "name": name,
+                "ok": False,
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+                "error": str(exc),
+            })
+
+    freshness = None
+
+    def load_freshness():
+        nonlocal freshness
+        freshness = get_freshness()
+
+    run("freshness", load_freshness)
+    run("system_summary", query_system_summary)
+    run("platform_14d", lambda: query_platform_overview(days=14))
+    run("platform_30d", lambda: query_platform_overview(days=30))
+    latest_date = freshness.get("data_through") if isinstance(freshness, dict) else None
+    if latest_date:
+        run("platform_latest_date", lambda: query_platform_overview(date=latest_date))
+
+    ok = all(item["ok"] for item in results)
+    return {
+        "ok": ok,
+        "latency_ms": round((time.monotonic() - started) * 1000, 1),
+        "results": results,
+    }
+
+
 # ─── games ────────────────────────────────────────────────────────────────────
 @app.get("/api/games/{game_id}")
 def get_game(game_id: str):

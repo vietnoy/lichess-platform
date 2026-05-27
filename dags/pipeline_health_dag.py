@@ -25,3 +25,14 @@ with DAG(
         task_id="run_pipeline_health",
         bash_command="python /git/repo/ops/pipeline_health.py",
     )
+
+    warm_webapp_cache = BashOperator(
+        task_id="warm_webapp_cache",
+        bash_command=(
+            "curl -fsS --max-time 60 -X POST "
+            "http://webapp-backend:8000/api/cache/warmup "
+            ">/tmp/webapp_cache_warmup.json || true"
+        ),
+    )
+
+    run_health_check >> warm_webapp_cache

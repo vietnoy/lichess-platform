@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -43,6 +44,7 @@ function loadSession(): string {
 }
 
 export default function CoachPage() {
+  const searchParams = useSearchParams();
   const [sessionId, setSessionId] = useState("");
   const [username, setUsername] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -51,11 +53,25 @@ export default function CoachPage() {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const seededRef = useRef(false);
   // Generation counter: each new send/clear bumps it. Late events from an aborted stream are dropped.
   const genRef = useRef(0);
 
   useEffect(() => { setSessionId(loadSession()); }, []);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [messages]);
+  useEffect(() => {
+    if (!sessionId || seededRef.current) return;
+    const seededUsername = searchParams.get("username") ?? "";
+    const seededPrompt = searchParams.get("prompt") ?? "";
+    const auto = searchParams.get("auto") === "1";
+    if (!seededUsername && !seededPrompt) return;
+    seededRef.current = true;
+    if (seededUsername) setUsername(seededUsername);
+    if (seededPrompt) {
+      setInput(seededPrompt);
+      if (auto) void send(seededPrompt, seededUsername);
+    }
+  }, [searchParams, sessionId]);
 
   function clearConversation() {
     genRef.current += 1;
@@ -69,10 +85,10 @@ export default function CoachPage() {
     setBusy(false);
   }
 
-  async function send() {
-    const text = input.trim();
+  async function send(textOverride?: string, usernameOverride?: string) {
+    const text = (textOverride ?? input).trim();
     if (!text || busy) return;
-    setInput("");
+    if (!textOverride) setInput("");
     setError(null);
 
     const userMsg: ChatMessage = { role: "user", text, toolCalls: [] };
@@ -89,7 +105,7 @@ export default function CoachPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId, message: text, username: username || null }),
+          body: JSON.stringify({ session_id: sessionId, message: text, username: usernameOverride || username || null }),
         },
         ctrl.signal,
       );
@@ -194,7 +210,7 @@ export default function CoachPage() {
         </div>
 
         <form
-          onSubmit={(e) => { e.preventDefault(); send(); }}
+          onSubmit={(e) => { e.preventDefault(); void send(); }}
           className="mt-3 flex gap-2"
         >
           <input
@@ -271,6 +287,7 @@ function Bubble({ msg }: { msg: ChatMessage }) {
 }
 
 function ToolChip({ tool }: { tool: ToolCall }) {
+  const label = toolLabel(tool.name);
   const tone =
     tool.status === "running" ? "bg-accent/15 text-accent" :
     tool.status === "error"   ? "bg-rose-500/15 text-rose-400" :
@@ -278,8 +295,26 @@ function ToolChip({ tool }: { tool: ToolCall }) {
   return (
     <span className={`inline-flex items-center gap-2 px-2 py-1 rounded-md text-[11px] font-mono ${tone}`}>
       {tool.status === "running" && <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
-      {tool.name}
+      {label}
       {tool.summary && <span className="text-muted">· {tool.summary}</span>}
     </span>
   );
+}
+
+function toolLabel(name: string) {
+  const labels: Record<string, string> = {
+    inspect_student_style: "Đọc hồ sơ",
+    get_player_overview: "Tổng quan",
+    get_weakness_summary: "Điểm yếu",
+    get_blunder_examples: "Ví dụ lỗi",
+    get_opening_stats: "Khai cuộc",
+    get_phase_stats: "Giai đoạn",
+    get_time_pressure_stats: "Áp lực giờ",
+    get_clock_usage_by_phase: "Thời gian",
+    get_performance_by_color: "Màu quân",
+    get_performance_vs_rating: "Đối thủ",
+    get_recent_games: "Ván gần đây",
+    analyze_game: "Phân tích ván",
+  };
+  return labels[name] ?? name;
 }

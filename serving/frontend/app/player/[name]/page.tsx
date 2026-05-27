@@ -282,6 +282,8 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
   }, [username, currentProfilePath, currentAggregateDays]);
 
   const playerLoaded = Boolean(profile || weakness || coachLoaded);
+  const coachPrompt = `Hãy phân tích lối chơi của ${username} trong ${rangeMode === "all" ? "365 ngày gần đây" : `${currentAggregateDays} ngày gần đây`} như một huấn luyện viên. Ưu tiên điểm yếu lớn nhất, bằng chứng từ dữ liệu, và 3 bài tập cụ thể.`;
+  const coachHref = `/coach?username=${encodeURIComponent(username)}&prompt=${encodeURIComponent(coachPrompt)}&auto=1`;
 
   return (
     <>
@@ -293,12 +295,20 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
           {coachError && <StatusPill tone="error">{coachError}</StatusPill>}
           {profile && <StatusPill tone="ok">Đã tải · {profile.totals.games.toLocaleString()} ván</StatusPill>}
           {playerLoaded && (
-            <a
-              href={`/patterns/${encodeURIComponent(username)}`}
-              className="ml-auto text-xs px-3 py-1 rounded-md border border-border hover:border-accent text-muted hover:text-text"
-            >
-              Mẫu lỗi lặp lại →
-            </a>
+            <div className="ml-auto flex items-center gap-2">
+              <a
+                href={coachHref}
+                className="text-xs px-3 py-1 rounded-md border border-accent bg-accent text-white hover:opacity-90"
+              >
+                Coach phân tích
+              </a>
+              <a
+                href={`/patterns/${encodeURIComponent(username)}`}
+                className="text-xs px-3 py-1 rounded-md border border-border hover:border-accent text-muted hover:text-text"
+              >
+                Mẫu lỗi lặp lại →
+              </a>
+            </div>
           )}
         </div>
 
