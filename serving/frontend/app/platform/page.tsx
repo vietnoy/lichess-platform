@@ -122,6 +122,17 @@ function Card({ children, className = "" }: { children: ReactNode; className?: s
   return <section className={`border border-border bg-surface rounded-md p-4 ${className}`}>{children}</section>;
 }
 
+function ChartEmpty({ title, desc }: { title: string; desc: string }) {
+  return (
+    <div className="h-full min-h-[220px] border border-dashed border-border rounded-md flex items-center justify-center p-6 text-center">
+      <div className="space-y-2 max-w-sm">
+        <div className="text-sm font-medium">{title}</div>
+        <p className="text-xs text-muted leading-relaxed">{desc}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function PlatformPage() {
   const [overview, setOverview] = useState<PlatformOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -266,14 +277,18 @@ export default function PlatformPage() {
               desc="Trả lời: phần lớn người chơi đang chơi ở nhịp nào? Điều này quyết định sản phẩm nên ưu tiên fast tactical insight hay deep review."
             />
             <div className="grid md:grid-cols-[240px_1fr] gap-4 items-center">
-              <ResponsiveContainer width="100%" height={240}>
-                <PieChart>
-                  <Pie data={speedData} dataKey="games" nameKey="speed" innerRadius={58} outerRadius={92} paddingAngle={2}>
-                    {speedData.map((row, index) => <Cell key={row.speed} fill={COLORS[index % COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: number) => [number(value), "games"]} />
-                </PieChart>
-              </ResponsiveContainer>
+              {speedData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={240}>
+                  <PieChart>
+                    <Pie data={speedData} dataKey="games" nameKey="speed" innerRadius={58} outerRadius={92} paddingAngle={2}>
+                      {speedData.map((row, index) => <Cell key={row.speed} fill={COLORS[index % COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: number) => [number(value), "games"]} />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <ChartEmpty title="Chưa có speed mix" desc="Khi nightly process nạp player-game facts, chart này sẽ hiện phân bổ bullet, blitz, rapid và các mode khác." />
+              )}
               <div className="space-y-2">
                 {speedData.map((row, index) => (
                   <div key={row.speed} className="flex items-center justify-between gap-3 text-sm">
@@ -294,18 +309,22 @@ export default function PlatformPage() {
               title="Volume vs average Elo"
               desc="Trả lời: mode nào vừa đông người chơi vừa có level trung bình cao? Đây là nơi meta có nhiều ý nghĩa nhất."
             />
-            <ResponsiveContainer width="100%" height={288}>
-              <BarChart data={speedData} margin={{ left: 8, right: 20 }}>
-                <CartesianGrid stroke="rgb(220 220 228)" vertical={false} />
-                <XAxis dataKey="speed" stroke="#777" fontSize={12} />
-                <YAxis yAxisId="left" stroke="#777" fontSize={12} tickFormatter={compact} />
-                <YAxis yAxisId="right" orientation="right" stroke="#777" fontSize={12} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar yAxisId="left" dataKey="games" name="Games" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                <Bar yAxisId="right" dataKey="avg_rating" name="Avg Elo" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {speedData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={288}>
+                <BarChart data={speedData} margin={{ left: 8, right: 20 }}>
+                  <CartesianGrid stroke="rgb(220 220 228)" vertical={false} />
+                  <XAxis dataKey="speed" stroke="#777" fontSize={12} />
+                  <YAxis yAxisId="left" stroke="#777" fontSize={12} tickFormatter={compact} />
+                  <YAxis yAxisId="right" orientation="right" stroke="#777" fontSize={12} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar yAxisId="left" dataKey="games" name="Games" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                  <Bar yAxisId="right" dataKey="avg_rating" name="Avg Elo" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <ChartEmpty title="Chưa có rating distribution" desc="Chart này cần player-game facts từ prod table để so sánh volume và average Elo theo speed." />
+            )}
           </Card>
         </section>
 
@@ -316,22 +335,26 @@ export default function PlatformPage() {
               title="Opening popularity map"
               desc="Trả lời: người chơi gặp opening nào nhiều nhất? Đây là map để quyết định nên review repertoire nào trước."
             />
-            <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={openingData.slice(0, 8).reverse()} layout="vertical" margin={{ left: 12, right: 20 }}>
-                <CartesianGrid stroke="rgb(220 220 228)" horizontal={false} />
-                <XAxis type="number" stroke="#777" fontSize={12} tickFormatter={compact} />
-                <YAxis
-                  dataKey="label"
-                  type="category"
-                  width={230}
-                  stroke="#777"
-                  fontSize={11}
-                  tickFormatter={(value: string) => (value.length > 34 ? `${value.slice(0, 33)}...` : value)}
-                />
-                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: number) => [number(value), "games"]} />
-                <Bar dataKey="games" name="Games" fill="#10b981" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {openingData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={360}>
+                <BarChart data={openingData.slice(0, 8).reverse()} layout="vertical" margin={{ left: 12, right: 20 }}>
+                  <CartesianGrid stroke="rgb(220 220 228)" horizontal={false} />
+                  <XAxis type="number" stroke="#777" fontSize={12} tickFormatter={compact} />
+                  <YAxis
+                    dataKey="label"
+                    type="category"
+                    width={230}
+                    stroke="#777"
+                    fontSize={11}
+                    tickFormatter={(value: string) => (value.length > 34 ? `${value.slice(0, 33)}...` : value)}
+                  />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: number) => [number(value), "games"]} />
+                  <Bar dataKey="games" name="Games" fill="#10b981" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <ChartEmpty title="Opening meta chưa sẵn sàng" desc="Khi analyzer-derived tables có dữ liệu cho partition mới, chart này sẽ xếp hạng opening theo popularity và training signal." />
+            )}
           </Card>
 
           <Card className="space-y-4">
@@ -340,18 +363,22 @@ export default function PlatformPage() {
               title="Mistake stack by phase"
               desc="Trả lời: lỗi ở phase nào là blunder, mistake hay inaccuracy? Chart này nối meta với personalized drill."
             />
-            <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={phaseData} margin={{ left: 8, right: 20 }}>
-                <CartesianGrid stroke="rgb(220 220 228)" vertical={false} />
-                <XAxis dataKey="phaseLabel" stroke="#777" fontSize={12} />
-                <YAxis stroke="#777" fontSize={12} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="blunders" stackId="a" name="Blunders" fill="#ef4444" />
-                <Bar dataKey="mistakes" stackId="a" name="Mistakes" fill="#f59e0b" />
-                <Bar dataKey="inaccuracies" stackId="a" name="Inaccuracies" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {phaseData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={360}>
+                <BarChart data={phaseData} margin={{ left: 8, right: 20 }}>
+                  <CartesianGrid stroke="rgb(220 220 228)" vertical={false} />
+                  <XAxis dataKey="phaseLabel" stroke="#777" fontSize={12} />
+                  <YAxis stroke="#777" fontSize={12} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="blunders" stackId="a" name="Blunders" fill="#ef4444" />
+                  <Bar dataKey="mistakes" stackId="a" name="Mistakes" fill="#f59e0b" />
+                  <Bar dataKey="inaccuracies" stackId="a" name="Inaccuracies" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <ChartEmpty title="Chưa có mistake stack" desc="Chart này cần critical positions từ move evaluations để phân tích lỗi theo opening, middlegame và endgame." />
+            )}
           </Card>
         </section>
 
