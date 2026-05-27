@@ -49,7 +49,7 @@ with DAG(
     default_args=default_args,
     description="Explode moves with clocks and metadata, write chess_move_events to Polaris Iceberg",
     start_date=datetime(2026, 4, 14),
-    schedule="15 1 * * *",
+    schedule="15 0 * * *",
     catchup=True,
     # Serial execution: each date depends on its own MinIO partition and the
     # Spark cluster only has one slot of headroom on this node. Parallel runs
