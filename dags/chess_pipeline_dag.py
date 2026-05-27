@@ -206,7 +206,7 @@ with DAG(
     default_args=default_args,
     description="Nightly full rebuild of analyzer aggregate summary tables",
     start_date=datetime(2026, 5, 24),
-    schedule="35 0 * * *",
+    schedule="35 1 * * *",
     catchup=False,
     max_active_runs=1,
     tags=["chess", "processing", "analyzer", "summaries"],
