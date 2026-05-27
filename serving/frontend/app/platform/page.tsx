@@ -1,7 +1,22 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { BarChart3, Gauge, Swords, Trophy } from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import type { LucideIcon } from "lucide-react";
+import { Activity, BarChart3, Crosshair, Gauge, PieChart as PieIcon, Swords, Trophy } from "lucide-react";
 import Header from "@/components/Header";
 import StatusPill from "@/components/StatusPill";
 import { ApiError, api } from "@/lib/api";
@@ -41,16 +56,30 @@ interface PlatformOverview {
   phase_mistakes: PhaseRow[];
 }
 
+const COLORS = ["#f59e0b", "#10b981", "#3b82f6", "#ef4444", "#8b5cf6", "#64748b"];
+const TOOLTIP_STYLE = {
+  background: "rgb(255 255 255)",
+  border: "1px solid rgb(220 220 228)",
+  borderRadius: 6,
+  fontSize: 12,
+  color: "rgb(18 18 22)",
+};
+
 const PHASE_LABELS: Record<string, string> = {
-  opening: "Khai cuộc",
-  middlegame: "Trung cuộc",
-  endgame: "Tàn cuộc",
-  unknown: "Không rõ",
+  opening: "Opening",
+  middlegame: "Middlegame",
+  endgame: "Endgame",
+  unknown: "Unknown",
 };
 
 function number(value: number | null | undefined) {
   if (value === null || value === undefined) return "-";
   return new Intl.NumberFormat("vi-VN").format(value);
+}
+
+function compact(value: number | null | undefined) {
+  if (value === null || value === undefined) return "-";
+  return new Intl.NumberFormat("vi-VN", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 function percent(value: number | null | undefined) {
@@ -63,13 +92,34 @@ function share(value: number, total: number | undefined) {
   return percent((value * 100) / total);
 }
 
-function Bar({ value, max }: { value: number; max: number }) {
-  const width = max > 0 ? Math.max(4, Math.round((value / max) * 100)) : 0;
+function openingLabel(row: OpeningRow) {
+  return `${row.opening_eco ?? "-"} · ${row.opening_name ?? "Unknown"}`;
+}
+
+function SectionHeader({
+  icon: Icon,
+  title,
+  desc,
+}: {
+  icon: LucideIcon;
+  title: string;
+  desc: string;
+}) {
   return (
-    <div className="h-2 bg-border rounded overflow-hidden">
-      <div className="h-full bg-accent rounded" style={{ width: `${width}%` }} />
+    <div className="flex items-start justify-between gap-4">
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <Icon size={18} className="text-accent" />
+          <h2 className="font-medium">{title}</h2>
+        </div>
+        <p className="text-xs text-muted leading-relaxed max-w-2xl">{desc}</p>
+      </div>
     </div>
   );
+}
+
+function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <section className={`border border-border bg-surface rounded-md p-4 ${className}`}>{children}</section>;
 }
 
 export default function PlatformPage() {
@@ -97,189 +147,245 @@ export default function PlatformPage() {
     };
   }, []);
 
-  const maxSpeedGames = useMemo(
-    () => Math.max(0, ...(overview?.speed_mix ?? []).map((row) => row.games)),
+  const speedData = useMemo(() => overview?.speed_mix ?? [], [overview]);
+  const phaseData = useMemo(
+    () => (overview?.phase_mistakes ?? []).map((row) => ({ ...row, phaseLabel: PHASE_LABELS[row.phase] ?? row.phase })),
     [overview],
   );
-  const maxOpeningGames = useMemo(
-    () => Math.max(0, ...(overview?.top_openings ?? []).map((row) => row.games)),
+  const openingData = useMemo(
+    () => (overview?.top_openings ?? []).map((row) => ({ ...row, label: openingLabel(row) })),
     [overview],
   );
-  const maxPhasePositions = useMemo(
-    () => Math.max(0, ...(overview?.phase_mistakes ?? []).map((row) => row.critical_positions)),
-    [overview],
-  );
-  const leadingSpeed = overview?.speed_mix[0];
-  const leadingOpening = overview?.top_openings[0];
-  const leadingPhase = overview?.phase_mistakes[0];
+  const leadingSpeed = speedData[0];
+  const leadingPhase = phaseData[0];
+  const leadingOpening = openingData[0];
+  const sharpestOpening = useMemo(() => {
+    return [...openingData]
+      .filter((row) => row.win_rate_pct !== null)
+      .sort((a, b) => Math.abs((b.win_rate_pct ?? 50) - 50) - Math.abs((a.win_rate_pct ?? 50) - 50))[0];
+  }, [openingData]);
 
   return (
     <div className="min-h-screen">
-      <Header subtitle="Meta nền tảng" />
-      <main className="max-w-6xl mx-auto px-6 py-8 space-y-8">
-        <section className="space-y-5">
-          <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+      <Header subtitle="Meta dashboard" />
+      <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
+        <section className="grid xl:grid-cols-[1.15fr_0.85fr] gap-4 items-stretch">
+          <div className="border border-border bg-surface rounded-md p-5 space-y-4">
+            <StatusPill tone={loading ? "loading" : error ? "error" : "ok"}>
+              {loading ? "Đang tải meta" : error ? "Cần kiểm tra" : `Latest partition · ${overview?.date ?? "-"}`}
+            </StatusPill>
             <div className="space-y-3">
-              <StatusPill tone={loading ? "loading" : error ? "error" : "ok"}>
-                {loading ? "Đang tải meta" : error ? "Cần kiểm tra" : `Dữ liệu ${overview?.date ?? "-"}`}
-              </StatusPill>
-              <h1 className="text-3xl md:text-4xl font-medium tracking-tight">Meta cờ vua trên nền tảng</h1>
-              <p className="text-muted max-w-2xl leading-relaxed">
-                Dashboard này biến một lượng lớn game data thành insight: người chơi đang chơi gì,
-                meta opening nào xuất hiện nhiều, lỗi thường xảy ra ở phase nào, và hệ thống nên tạo
-                coach/drill theo hướng nào.
+              <h1 className="text-3xl md:text-4xl font-medium tracking-tight">Platform Meta</h1>
+              <p className="text-muted leading-relaxed max-w-3xl">
+                Một dashboard để nhìn toàn cảnh cộng đồng đang chơi gì, opening nào nổi bật, phase nào sinh nhiều lỗi,
+                và hệ thống nên biến các pattern đó thành training decision như thế nào.
               </p>
             </div>
-            <div className="grid grid-cols-3 gap-3 md:min-w-[420px]">
-              <div className="border border-border bg-surface rounded-md p-4">
-                <div className="flex items-center gap-2 text-xs text-muted"><Trophy size={14} /> Ván</div>
-                <div className="text-2xl font-medium mt-1">{number(overview?.totals.games)}</div>
-              </div>
-              <div className="border border-border bg-surface rounded-md p-4">
-                <div className="flex items-center gap-2 text-xs text-muted"><Swords size={14} /> Người chơi</div>
-                <div className="text-2xl font-medium mt-1">{number(overview?.totals.players)}</div>
-              </div>
-              <div className="border border-border bg-surface rounded-md p-4">
-                <div className="flex items-center gap-2 text-xs text-muted"><Gauge size={14} /> Lượt hồ sơ</div>
-                <div className="text-2xl font-medium mt-1">{number(overview?.totals.player_game_rows)}</div>
-              </div>
-            </div>
+            {error && <div className="border border-red-200 bg-red-50 text-red-700 rounded-md px-4 py-3 text-sm">{error}</div>}
           </div>
-          {error && (
-            <div className="border border-red-200 bg-red-50 text-red-700 rounded-md px-4 py-3 text-sm">
-              Không tải được meta nền tảng: {error}
-            </div>
-          )}
+
+          <div className="grid grid-cols-3 gap-3">
+            <Card>
+              <div className="flex items-center gap-2 text-xs text-muted"><Trophy size={14} /> Games</div>
+              <div className="text-2xl font-medium mt-2">{compact(overview?.totals.games)}</div>
+              <div className="text-xs text-muted mt-1">raw match volume</div>
+            </Card>
+            <Card>
+              <div className="flex items-center gap-2 text-xs text-muted"><Swords size={14} /> Players</div>
+              <div className="text-2xl font-medium mt-2">{compact(overview?.totals.players)}</div>
+              <div className="text-xs text-muted mt-1">unique accounts</div>
+            </Card>
+            <Card>
+              <div className="flex items-center gap-2 text-xs text-muted"><Gauge size={14} /> Rows</div>
+              <div className="text-2xl font-medium mt-2">{compact(overview?.totals.player_game_rows)}</div>
+              <div className="text-xs text-muted mt-1">player-game facts</div>
+            </Card>
+          </div>
         </section>
 
-        <section className="grid lg:grid-cols-3 gap-3">
-          <div className="border border-border bg-surface rounded-md p-4 space-y-2">
-            <div className="text-xs text-muted">Insight 1 · Player behavior</div>
+        <section className="grid lg:grid-cols-4 gap-3">
+          <Card className="space-y-2">
+            <div className="text-xs text-muted">Main behavior</div>
             <p className="text-sm leading-relaxed">
               {leadingSpeed ? (
                 <>
-                  <span className="font-medium capitalize">{leadingSpeed.speed}</span> đang chiếm{" "}
-                  <span className="font-mono">{share(leadingSpeed.games, overview?.totals.games)}</span> số ván.
-                  Product nên ưu tiên phân tích nhịp chơi nhanh, time pressure và lỗi tactical ngắn hạn.
+                  <span className="font-medium capitalize">{leadingSpeed.speed}</span> chiếm{" "}
+                  <span className="font-mono">{share(leadingSpeed.games, overview?.totals.games)}</span>. Training nên
+                  ưu tiên pattern recognition và speed decision.
                 </>
-              ) : "Chưa đủ dữ liệu để kết luận time control chính."}
+              ) : (
+                "Chưa đủ dữ liệu."
+              )}
             </p>
-          </div>
-          <div className="border border-border bg-surface rounded-md p-4 space-y-2">
-            <div className="text-xs text-muted">Insight 2 · Training focus</div>
+          </Card>
+          <Card className="space-y-2">
+            <div className="text-xs text-muted">Training hotspot</div>
             <p className="text-sm leading-relaxed">
               {leadingPhase ? (
                 <>
-                  Critical positions tập trung nhiều nhất ở{" "}
-                  <span className="font-medium">{PHASE_LABELS[leadingPhase.phase] ?? leadingPhase.phase}</span>.
-                  Drill generator nên lấy nhiều bài ở phase này để tăng xác suất sửa đúng lỗi thật.
+                  <span className="font-medium">{leadingPhase.phaseLabel}</span> có nhiều critical positions nhất. Drill
+                  nên lấy position từ phase này.
                 </>
-              ) : "Analyzer chưa có đủ critical positions cho partition mới nhất."}
+              ) : (
+                "Chưa có critical positions."
+              )}
             </p>
-          </div>
-          <div className="border border-border bg-surface rounded-md p-4 space-y-2">
-            <div className="text-xs text-muted">Insight 3 · Opening meta</div>
+          </Card>
+          <Card className="space-y-2">
+            <div className="text-xs text-muted">Opening trend</div>
             <p className="text-sm leading-relaxed">
               {leadingOpening ? (
                 <>
-                  Opening được chơi nhiều nhất là{" "}
-                  <span className="font-medium">{leadingOpening.opening_eco ?? "-"} · {leadingOpening.opening_name}</span>.
-                  Đây là candidate tốt để so sánh win rate, mistake pattern và gợi ý repertoire.
+                  <span className="font-medium">{leadingOpening.label}</span> là opening phổ biến nhất trong sample mới.
                 </>
-              ) : "Chưa có dữ liệu opening meta."}
+              ) : (
+                "Chưa có opening meta."
+              )}
             </p>
-          </div>
+          </Card>
+          <Card className="space-y-2">
+            <div className="text-xs text-muted">Decision signal</div>
+            <p className="text-sm leading-relaxed">
+              {sharpestOpening ? (
+                <>
+                  <span className="font-medium">{sharpestOpening.opening_eco}</span> có win rate lệch khỏi 50% rõ nhất.
+                  Đây là candidate để phân tích repertoire.
+                </>
+              ) : (
+                "Chưa đủ win rate signal."
+              )}
+            </p>
+          </Card>
         </section>
 
-        <section className="grid lg:grid-cols-2 gap-4">
-          <div className="border border-border bg-surface rounded-md p-4 space-y-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <BarChart3 size={18} className="text-accent" />
-                <h2 className="font-medium">Time control mix</h2>
-              </div>
-              <p className="text-xs text-muted">
-                Cho biết người dùng đang chơi loại ván nào để quyết định feature focus: speed, clock pressure, hay deep analysis.
-              </p>
-            </div>
-            <div className="space-y-3">
-              {(overview?.speed_mix ?? []).map((row) => (
-                <div key={row.speed} className="space-y-1.5">
-                  <div className="flex justify-between gap-3 text-sm">
-                    <span className="capitalize">{row.speed}</span>
-                    <span className="font-mono text-muted">
-                      {number(row.games)} ván · {share(row.games, overview?.totals.games)} · avg Elo {number(row.avg_rating)}
-                    </span>
+        <section className="grid xl:grid-cols-[0.9fr_1.1fr] gap-4">
+          <Card className="space-y-4">
+            <SectionHeader
+              icon={PieIcon}
+              title="Time control share"
+              desc="Trả lời: phần lớn người chơi đang chơi ở nhịp nào? Điều này quyết định sản phẩm nên ưu tiên fast tactical insight hay deep review."
+            />
+            <div className="grid md:grid-cols-[240px_1fr] gap-4 items-center">
+              <ResponsiveContainer width="100%" height={240}>
+                <PieChart>
+                  <Pie data={speedData} dataKey="games" nameKey="speed" innerRadius={58} outerRadius={92} paddingAngle={2}>
+                    {speedData.map((row, index) => <Cell key={row.speed} fill={COLORS[index % COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: number) => [number(value), "games"]} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="space-y-2">
+                {speedData.map((row, index) => (
+                  <div key={row.speed} className="flex items-center justify-between gap-3 text-sm">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: COLORS[index % COLORS.length] }} />
+                      <span className="capitalize truncate">{row.speed}</span>
+                    </div>
+                    <span className="font-mono text-muted whitespace-nowrap">{share(row.games, overview?.totals.games)}</span>
                   </div>
-                  <Bar value={row.games} max={maxSpeedGames} />
-                </div>
-              ))}
-              {!loading && overview?.speed_mix.length === 0 && <p className="text-sm text-muted">Chưa có dữ liệu.</p>}
+                ))}
+              </div>
             </div>
-          </div>
+          </Card>
 
-          <div className="border border-border bg-surface rounded-md p-4 space-y-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Swords size={18} className="text-accent" />
-                <h2 className="font-medium">Mistake distribution by phase</h2>
-              </div>
-              <p className="text-xs text-muted">
-                Cho biết lỗi nghiêm trọng đến từ opening, middlegame hay endgame để AI Coach chọn bài học đúng trọng tâm.
-              </p>
-            </div>
-            <div className="space-y-3">
-              {(overview?.phase_mistakes ?? []).map((row) => (
-                <div key={row.phase} className="space-y-1.5">
-                  <div className="flex justify-between gap-3 text-sm">
-                    <span>{PHASE_LABELS[row.phase] ?? row.phase}</span>
-                    <span className="font-mono text-muted">
-                      {number(row.critical_positions)} điểm · {number(row.blunders)} blunder
-                    </span>
-                  </div>
-                  <Bar value={row.critical_positions} max={maxPhasePositions} />
-                </div>
-              ))}
-              {!loading && overview?.phase_mistakes.length === 0 && <p className="text-sm text-muted">Chưa có dữ liệu.</p>}
-            </div>
-          </div>
+          <Card className="space-y-4">
+            <SectionHeader
+              icon={BarChart3}
+              title="Volume vs average Elo"
+              desc="Trả lời: mode nào vừa đông người chơi vừa có level trung bình cao? Đây là nơi meta có nhiều ý nghĩa nhất."
+            />
+            <ResponsiveContainer width="100%" height={288}>
+              <BarChart data={speedData} margin={{ left: 8, right: 20 }}>
+                <CartesianGrid stroke="rgb(220 220 228)" vertical={false} />
+                <XAxis dataKey="speed" stroke="#777" fontSize={12} />
+                <YAxis yAxisId="left" stroke="#777" fontSize={12} tickFormatter={compact} />
+                <YAxis yAxisId="right" orientation="right" stroke="#777" fontSize={12} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar yAxisId="left" dataKey="games" name="Games" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                <Bar yAxisId="right" dataKey="avg_rating" name="Avg Elo" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        </section>
+
+        <section className="grid xl:grid-cols-[1.05fr_0.95fr] gap-4">
+          <Card className="space-y-4">
+            <SectionHeader
+              icon={Crosshair}
+              title="Opening popularity map"
+              desc="Trả lời: người chơi gặp opening nào nhiều nhất? Đây là map để quyết định nên review repertoire nào trước."
+            />
+            <ResponsiveContainer width="100%" height={360}>
+              <BarChart data={openingData.slice(0, 8).reverse()} layout="vertical" margin={{ left: 12, right: 20 }}>
+                <CartesianGrid stroke="rgb(220 220 228)" horizontal={false} />
+                <XAxis type="number" stroke="#777" fontSize={12} tickFormatter={compact} />
+                <YAxis
+                  dataKey="label"
+                  type="category"
+                  width={230}
+                  stroke="#777"
+                  fontSize={11}
+                  tickFormatter={(value: string) => (value.length > 34 ? `${value.slice(0, 33)}...` : value)}
+                />
+                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: number) => [number(value), "games"]} />
+                <Bar dataKey="games" name="Games" fill="#10b981" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          <Card className="space-y-4">
+            <SectionHeader
+              icon={Swords}
+              title="Mistake stack by phase"
+              desc="Trả lời: lỗi ở phase nào là blunder, mistake hay inaccuracy? Chart này nối meta với personalized drill."
+            />
+            <ResponsiveContainer width="100%" height={360}>
+              <BarChart data={phaseData} margin={{ left: 8, right: 20 }}>
+                <CartesianGrid stroke="rgb(220 220 228)" vertical={false} />
+                <XAxis dataKey="phaseLabel" stroke="#777" fontSize={12} />
+                <YAxis stroke="#777" fontSize={12} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="blunders" stackId="a" name="Blunders" fill="#ef4444" />
+                <Bar dataKey="mistakes" stackId="a" name="Mistakes" fill="#f59e0b" />
+                <Bar dataKey="inaccuracies" stackId="a" name="Inaccuracies" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
         </section>
 
         <section className="space-y-3">
-          <div className="space-y-1">
-            <h2 className="text-xl font-medium">Opening meta</h2>
-            <p className="text-sm text-muted max-w-3xl leading-relaxed">
-              Bảng này không chỉ xếp hạng opening theo popularity. Nó giúp trả lời: người chơi gặp cấu trúc nào nhiều nhất,
-              opening nào có win rate đáng chú ý, và opening nào nên được đưa vào coach/drill/repertoire recommendation.
-            </p>
-          </div>
+          <SectionHeader
+            icon={Activity}
+            title="Opening leaderboard"
+            desc="Bảng ranking để scan nhanh opening nào phổ biến, win rate đang lệch, và có critical positions đáng chú ý."
+          />
           <div className="overflow-x-auto border border-border rounded-md bg-surface">
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-muted border-b border-border">
                 <tr>
-                  <th className="px-4 py-3 font-medium">Khai cuộc</th>
+                  <th className="px-4 py-3 font-medium">#</th>
+                  <th className="px-4 py-3 font-medium">Opening</th>
                   <th className="px-4 py-3 font-medium text-right">Games</th>
+                  <th className="px-4 py-3 font-medium text-right">Share</th>
                   <th className="px-4 py-3 font-medium text-right">Win rate</th>
-                  <th className="px-4 py-3 font-medium text-right">Critical positions</th>
-                  <th className="px-4 py-3 font-medium">Popularity</th>
+                  <th className="px-4 py-3 font-medium text-right">Critical</th>
                 </tr>
               </thead>
               <tbody>
-                {(overview?.top_openings ?? []).map((row) => (
-                  <tr key={`${row.opening_eco}-${row.opening_name}`} className="border-b border-border/60 last:border-0">
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{row.opening_eco ?? "-"} · {row.opening_name ?? "Unknown"}</div>
-                    </td>
+                {openingData.map((row, index) => (
+                  <tr key={row.label} className="border-b border-border/60 last:border-0">
+                    <td className="px-4 py-3 text-muted font-mono">{index + 1}</td>
+                    <td className="px-4 py-3 font-medium max-w-md truncate" title={row.label}>{row.label}</td>
                     <td className="px-4 py-3 text-right font-mono">{number(row.games)}</td>
+                    <td className="px-4 py-3 text-right font-mono">{share(row.games, overview?.totals.games)}</td>
                     <td className="px-4 py-3 text-right font-mono">{percent(row.win_rate_pct)}</td>
                     <td className="px-4 py-3 text-right font-mono">{number(row.critical_positions)}</td>
-                    <td className="px-4 py-3 min-w-[160px]"><Bar value={row.games} max={maxOpeningGames} /></td>
                   </tr>
                 ))}
-                {!loading && overview?.top_openings.length === 0 && (
-                  <tr>
-                    <td className="px-4 py-5 text-muted" colSpan={5}>Chưa có dữ liệu khai cuộc.</td>
-                  </tr>
+                {!loading && openingData.length === 0 && (
+                  <tr><td className="px-4 py-5 text-muted" colSpan={6}>Chưa có opening meta.</td></tr>
                 )}
               </tbody>
             </table>
@@ -289,15 +395,9 @@ export default function PlatformPage() {
         <section className="border border-border rounded-md p-4 space-y-3">
           <h2 className="font-medium">What this means for training</h2>
           <div className="grid md:grid-cols-3 gap-3 text-sm">
-            <p className="leading-relaxed">
-              Nếu phần lớn games là blitz/bullet, training nên ưu tiên pattern recognition và ra quyết định nhanh.
-            </p>
-            <p className="leading-relaxed">
-              Nếu critical positions tập trung ở một phase, drill nên lấy nhiều vị trí từ phase đó thay vì random puzzle.
-            </p>
-            <p className="leading-relaxed">
-              Nếu một opening phổ biến có win rate thấp hoặc nhiều mistake, đó là candidate tốt cho repertoire recommendation.
-            </p>
+            <p className="leading-relaxed">Time control mix quyết định training tempo: blitz/bullet cần fast pattern recognition, rapid/classical cần deeper review.</p>
+            <p className="leading-relaxed">Mistake stack quyết định drill source: phase nào nhiều blunder nhất thì lấy nhiều critical positions từ phase đó.</p>
+            <p className="leading-relaxed">Opening leaderboard quyết định repertoire focus: opening phổ biến nhưng win rate lệch là nơi coach nên giải thích trước.</p>
           </div>
         </section>
       </main>
