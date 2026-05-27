@@ -45,6 +45,9 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 COACH_FINAL_PROVIDER = os.getenv("COACH_FINAL_PROVIDER", "groq").lower()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GCP_PROJECT = os.getenv("GCP_PROJECT", "")
+GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
+VERTEX_MODEL = os.getenv("VERTEX_MODEL", "gemini-2.5-flash")
 
 _client: OpenAI | None = None
 
@@ -118,6 +121,91 @@ def _gemini_final_answer(messages: list[dict]) -> str:
     text = "".join(part.get("text", "") for part in parts)
     if not text.strip():
         raise RuntimeError("Gemini returned an empty response")
+    return text
+
+
+def _final_answer_payload(messages: list[dict]) -> dict[str, Any]:
+    last_user_idx = max((idx for idx, msg in enumerate(messages) if msg.get("role") == "user"), default=0)
+    user_message = messages[last_user_idx].get("content", "")
+    tool_evidence = [
+        {
+            "name": msg.get("name"),
+            "content": msg.get("content"),
+        }
+        for msg in messages[last_user_idx + 1:]
+        if msg.get("role") == "tool"
+    ]
+    evidence_json = json.dumps(tool_evidence, ensure_ascii=False, default=str)
+    if len(evidence_json) > 60_000:
+        evidence_json = evidence_json[:60_000] + "...[truncated]"
+    return {
+        "systemInstruction": {
+            "parts": [{"text": _SYSTEM_PROMPT}],
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": (
+                            "Yêu cầu người dùng:\n"
+                            f"{user_message}\n\n"
+                            "Dữ liệu tool đã lấy, chỉ được dùng các số liệu trong JSON này:\n"
+                            f"{evidence_json}"
+                        )
+                    }
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.35,
+            "maxOutputTokens": 1400,
+        },
+    }
+
+
+def _vertex_access_token() -> str:
+    try:
+        import google.auth
+        from google.auth.transport.requests import Request
+    except ImportError as exc:
+        raise RuntimeError("google-auth not installed; Vertex final answer unavailable") from exc
+
+    credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    credentials.refresh(Request())
+    if not credentials.token:
+        raise RuntimeError("Vertex authentication did not return an access token")
+    return credentials.token
+
+
+def _vertex_final_answer(messages: list[dict]) -> str:
+    if not GCP_PROJECT:
+        raise RuntimeError("GCP_PROJECT not set; Vertex final answer unavailable")
+
+    response = requests.post(
+        (
+            f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/"
+            f"projects/{GCP_PROJECT}/locations/{GCP_LOCATION}/publishers/google/"
+            f"models/{VERTEX_MODEL}:generateContent"
+        ),
+        headers={
+            "Authorization": f"Bearer {_vertex_access_token()}",
+            "Content-Type": "application/json",
+        },
+        json=_final_answer_payload(messages),
+        timeout=45,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Vertex API error {response.status_code}: {response.text[:1000]}")
+    payload = response.json()
+    parts = (
+        payload.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+    text = "".join(part.get("text", "") for part in parts)
+    if not text.strip():
+        raise RuntimeError("Vertex returned an empty response")
     return text
 
 
@@ -639,6 +727,12 @@ class CoachSession:
 
             if COACH_FINAL_PROVIDER == "gemini":
                 final_text = _gemini_final_answer(self.messages)
+                self.messages.append({"role": "assistant", "content": final_text})
+                yield {"type": "token", "text": final_text}
+                yield {"type": "done"}
+                return
+            if COACH_FINAL_PROVIDER == "vertex":
+                final_text = _vertex_final_answer(self.messages)
                 self.messages.append({"role": "assistant", "content": final_text})
                 yield {"type": "token", "text": final_text}
                 yield {"type": "done"}

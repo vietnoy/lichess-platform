@@ -249,6 +249,49 @@ def test_gemini_final_answer_uses_tool_evidence(monkeypatch):
     assert "inspect_student_style" in body_text
 
 
+def test_vertex_final_answer_uses_adc_token_and_project(monkeypatch):
+    captured = {}
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "candidates": [
+                    {"content": {"parts": [{"text": "Kế hoạch: tập trung endgame."}]}}
+                ]
+            }
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(coach, "GCP_PROJECT", "chess-platform-497604")
+    monkeypatch.setattr(coach, "GCP_LOCATION", "us-central1")
+    monkeypatch.setattr(coach, "VERTEX_MODEL", "gemini-2.5-flash")
+    monkeypatch.setattr(coach, "_vertex_access_token", lambda: "access-token")
+    monkeypatch.setattr(coach.requests, "post", fake_post)
+
+    text = coach._vertex_final_answer([
+        {"role": "system", "content": coach._SYSTEM_PROMPT},
+        {"role": "user", "content": "Coach alice"},
+        {"role": "tool", "name": "inspect_student_style", "content": '{"player_id":"alice"}'},
+    ])
+
+    assert text == "Kế hoạch: tập trung endgame."
+    assert captured["url"].endswith(
+        "/projects/chess-platform-497604/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+    )
+    assert captured["headers"]["Authorization"] == "Bearer access-token"
+    body_text = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "Coach alice" in body_text
+    assert "inspect_student_style" in body_text
+
+
 def test_coach_system_prompt_is_vietnamese_and_action_oriented():
     assert "Trả lời bằng tiếng Việt" in coach._SYSTEM_PROMPT
     assert "inspect_student_style" in coach._SYSTEM_PROMPT

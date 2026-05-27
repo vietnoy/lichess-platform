@@ -39,12 +39,16 @@ spec:
               value: "12"
             - name: CORS_ORIGINS
               value: "*"
+            - name: COACH_FINAL_PROVIDER
+              value: vertex
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: /secrets/gcp/service_account.json
             - name: GCP_PROJECT
-              value: sonat-game-new-installs-dash
+              value: chess-platform-497604
             - name: GCP_LOCATION
               value: us-central1
+            - name: VERTEX_MODEL
+              value: gemini-2.5-flash
           envFrom:
             - secretRef:
                 name: chess-secrets

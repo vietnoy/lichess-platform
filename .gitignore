@@ -7,6 +7,7 @@ venv/
 infra/k8s/secrets.yaml
 infra/.env
 credentials.txt
+service_account.json
 .claude/*
 !.claude/agents/
 !.claude/agents/**
