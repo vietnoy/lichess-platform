@@ -485,6 +485,16 @@ def post_game_analyze(game_id: str):
             temperature=0.4,
             max_output_tokens=1200,
         )
+        if len(narrative) < 400:
+            narrative = vertex_text_answer(
+                "Ban la HLV co vua. Tra loi bang tieng Viet, markdown gon gang, uu tien turning point va bai hoc thuc chien.",
+                prompt
+                + "\n\nCau tra loi truoc qua ngan. Bat buoc viet day du ca 5 muc, moi muc 2-4 cau, khong dung lai giua cau.",
+                temperature=0.25,
+                max_output_tokens=1800,
+            )
+        if len(narrative) < 400:
+            raise RuntimeError("Vertex returned an incomplete game analysis")
         result = {"narrative": narrative}
     except Exception as e:
         raise HTTPException(503, str(e))
