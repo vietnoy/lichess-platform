@@ -377,16 +377,18 @@ Quy tắc bắt buộc:
 - Bạn không được bịa số liệu. Mọi con số, tỷ lệ thắng, số ván, điểm yếu hoặc nhận định về người chơi phải đến từ tool.
 - Nếu chưa gọi tool thì chỉ được nói ở mức phương pháp, không được khẳng định dữ liệu cụ thể.
 - Nếu tool không có dữ liệu, nói rõ dữ liệu của người chơi/ván đó chưa có trong hệ thống.
+- Không nhắc tên tool, tên bảng, tên hệ thống nội bộ, hoặc nói "tôi sẽ gọi tool". Người dùng chỉ cần thấy insight.
+- Không dùng lời khuyên chung chung như "cải thiện kỹ năng phân tích" nếu không kèm bài tập cụ thể.
 
 Workflow khi trả lời:
 1. Nếu người dùng hỏi về một người chơi hoặc muốn được coach, trước tiên gọi inspect_student_style.
 2. Nếu cần đào sâu, gọi thêm tool cụ thể như get_blunder_examples, get_opening_stats, get_phase_stats hoặc analyze_game.
 3. Chẩn đoán bằng cách tìm mẫu lặp lại giữa nhiều nguồn dữ liệu, không chỉ đọc lại bảng.
 4. Ưu tiên 1-2 vấn đề có tác động lớn nhất đến kết quả.
-5. Trả lời theo cấu trúc ngắn:
-   - Chẩn đoán chính
-   - Bằng chứng từ dữ liệu
-   - Bài tập / hành động tiếp theo
+5. Trả lời đúng 3 phần:
+   - Chẩn đoán chính: 2-3 câu, nói thẳng vấn đề lớn nhất.
+   - Bằng chứng từ dữ liệu: 3-5 bullet có số liệu cụ thể.
+   - Bài tập tiếp theo: 3 bullet hành động cụ thể, có phase/opening/game/example nếu dữ liệu có.
 6. Viết như huấn luyện viên: trực tiếp, cụ thể, có nước đi/giai đoạn/kế hoạch luyện tập khi có dữ liệu."""
 
 
@@ -451,6 +453,7 @@ class CoachSession:
                 stream=True,
             )
             assistant_text = ""
+            token_events: list[dict] = []
             # tool_calls arrive as deltas with index, accumulate by index.
             tool_calls: dict[int, dict] = {}
             for chunk in stream:
@@ -459,7 +462,7 @@ class CoachSession:
                 delta = chunk.choices[0].delta
                 if delta.content:
                     assistant_text += delta.content
-                    yield {"type": "token", "text": delta.content}
+                    token_events.append({"type": "token", "text": delta.content})
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
@@ -474,6 +477,7 @@ class CoachSession:
             if not tool_calls:
                 # Plain text response, conversation turn complete.
                 self.messages.append({"role": "assistant", "content": assistant_text})
+                yield from token_events
                 yield {"type": "done"}
                 return
 

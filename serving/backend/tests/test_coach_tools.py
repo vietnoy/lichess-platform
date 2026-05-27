@@ -208,6 +208,7 @@ def test_get_time_pressure_stats_binds_params_in_sql_order(monkeypatch):
 def test_coach_system_prompt_is_vietnamese_and_action_oriented():
     assert "Trả lời bằng tiếng Việt" in coach._SYSTEM_PROMPT
     assert "inspect_student_style" in coach._SYSTEM_PROMPT
+    assert "Không nhắc tên tool" in coach._SYSTEM_PROMPT
     assert "Chẩn đoán" in coach._SYSTEM_PROMPT
     assert "Bài tập" in coach._SYSTEM_PROMPT
     assert "không được bịa số liệu" in coach._SYSTEM_PROMPT
