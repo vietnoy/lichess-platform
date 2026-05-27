@@ -105,7 +105,7 @@ def _gemini_final_answer(messages: list[dict]) -> str:
             ],
             "generationConfig": {
                 "temperature": 0.35,
-                "maxOutputTokens": 1400,
+                "maxOutputTokens": 2200,
             },
         },
         timeout=45,
@@ -159,7 +159,7 @@ def _final_answer_payload(messages: list[dict]) -> dict[str, Any]:
         ],
         "generationConfig": {
             "temperature": 0.35,
-            "maxOutputTokens": 1400,
+            "maxOutputTokens": 2200,
         },
     }
 
