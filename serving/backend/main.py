@@ -26,7 +26,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, PlainTextResponse
-from openai import OpenAI
 from pydantic import BaseModel
 
 from db import (
@@ -176,20 +175,6 @@ _FRESHNESS_TTL_S = 300
 _analyze_cache: dict[str, tuple[float, dict]] = {}
 _analyze_lock = threading.Lock()
 _ANALYZE_TTL_S = 24 * 60 * 60
-_analyze_client: OpenAI | None = None
-
-
-def _get_analyze_client() -> OpenAI:
-    global _analyze_client
-    if _analyze_client is None:
-        groq_api_key = os.getenv("GROQ_API_KEY", "")
-        if not groq_api_key:
-            raise RuntimeError("GROQ_API_KEY not set; game analysis unavailable")
-        _analyze_client = OpenAI(
-            api_key=groq_api_key,
-            base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
-        )
-    return _analyze_client
 
 
 @app.get("/api/freshness")
@@ -451,7 +436,7 @@ def get_exercise(username: str):
 
 @app.post("/api/games/{game_id}/analyze")
 def post_game_analyze(game_id: str):
-    """Use Groq to write a turning-point narrative based on the eval timeline."""
+    """Use Vertex Gemini to write a turning-point narrative based on the eval timeline."""
     now = time.monotonic()
     with _analyze_lock:
         cached = _analyze_cache.get(game_id)
@@ -492,20 +477,14 @@ def post_game_analyze(game_id: str):
     )
 
     try:
-        client = _get_analyze_client()
-        response = client.chat.completions.create(
-            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        from coach import vertex_text_answer
+
+        narrative = vertex_text_answer(
+            "Ban la HLV co vua. Tra loi bang tieng Viet, markdown gon gang, uu tien turning point va bai hoc thuc chien.",
+            prompt,
             temperature=0.4,
-            max_tokens=800,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Ban la HLV co vua. Tra loi bang tieng Viet, markdown gon gang, uu tien turning point va bai hoc thuc chien.",
-                },
-                {"role": "user", "content": prompt},
-            ],
+            max_output_tokens=1200,
         )
-        narrative = (response.choices[0].message.content or "").strip()
         result = {"narrative": narrative}
     except Exception as e:
         raise HTTPException(503, str(e))

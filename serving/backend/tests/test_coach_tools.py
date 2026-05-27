@@ -294,9 +294,9 @@ def test_vertex_final_answer_uses_adc_token_and_project(monkeypatch):
 
 def test_coach_system_prompt_is_vietnamese_and_action_oriented():
     assert "Trả lời bằng tiếng Việt" in coach._SYSTEM_PROMPT
-    assert "inspect_student_style" in coach._SYSTEM_PROMPT
     assert "coach_brief" in coach._SYSTEM_PROMPT
     assert "Không nhắc tên tool" in coach._SYSTEM_PROMPT
+    assert "username hoặc game id" in coach._SYSTEM_PROMPT
     assert "Chẩn đoán" in coach._SYSTEM_PROMPT
     assert "Bài tập" in coach._SYSTEM_PROMPT
     assert "không được bịa số liệu" in coach._SYSTEM_PROMPT
