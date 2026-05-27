@@ -177,6 +177,55 @@ _analyze_lock = threading.Lock()
 _ANALYZE_TTL_S = 24 * 60 * 60
 
 
+def _fallback_game_narrative(game_id: str, meta: dict, evaluations: list[dict]) -> str:
+    mistakes = [
+        r for r in evaluations
+        if (r.get("classification") or "").lower() in {"blunder", "mistake", "inaccuracy"}
+    ]
+
+    def severity(row: dict) -> int:
+        swing = row.get("eval_swing_cp")
+        if swing is None:
+            before = row.get("prev_eval_cp")
+            after = row.get("eval_cp")
+            if before is not None and after is not None:
+                swing = abs(int(after) - int(before))
+        return abs(int(swing or 0))
+
+    key_mistakes = sorted(mistakes, key=severity, reverse=True)[:3]
+    first = key_mistakes[0] if key_mistakes else (evaluations[0] if evaluations else {})
+    best = first.get("best_move") or "nước engine gợi ý"
+    played = first.get("played_move") or "nước đã chơi"
+    ply = first.get("ply") or "-"
+    classification = first.get("classification") or "điểm cần xem lại"
+    opening = f"{meta.get('opening_eco') or '-'} {meta.get('opening_name') or ''}".strip()
+    white = meta.get("white_id") or "White"
+    black = meta.get("black_id") or "Black"
+    speed = meta.get("speed") or "-"
+
+    evidence = "\n".join(
+        f"- Ply {r.get('ply')}: {r.get('classification') or 'review'}, "
+        f"played `{r.get('played_move') or '-'}`, best `{r.get('best_move') or '-'}`, "
+        f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}."
+        for r in key_mistakes
+    ) or "- Chưa có nhiều sai lầm được phân loại; nên xem lại các điểm dao động eval lớn nhất trong timeline."
+
+    return f"""### 1) Tổng quan
+Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}. Dựa trên timeline Stockfish, phần đáng học nhất là các vị trí mà nước đi thực tế lệch khỏi best move và làm đánh giá đổi hướng.
+
+### 2) Bước ngoặt quan trọng
+Bước ngoặt nổi bật nằm quanh ply {ply}: nước đã chơi là `{played}`, trong khi engine gợi ý `{best}`. Đây là vị trí nên dừng lại đầu tiên khi review vì nó đại diện cho kiểu lỗi `{classification}` trong ván.
+
+### 3) Sai lầm then chốt
+{evidence}
+
+### 4) Cơ hội bỏ lỡ
+Ở các vị trí trên, bài học không chỉ là nhớ best move, mà là hiểu candidate move nào giữ được thế chủ động. Khi review, hãy tự tìm 2-3 nước ứng viên trước khi bật engine, rồi so sánh vì sao `{best}` giải quyết được threat hoặc cải thiện quân tốt hơn.
+
+### 5) Bài học hành động
+Lấy các ply được liệt kê làm drill: đặt bàn cờ ở đúng FEN, tính trong 2 phút, ghi nước chọn và lý do. Nếu lỗi lặp lại ở trung cuộc, ưu tiên luyện tactical safety: kiểm tra quân bị treo, threat trực tiếp, và forcing moves trước khi đi nước kế hoạch."""
+
+
 @app.get("/api/freshness")
 def get_freshness():
     """Latest partition date + ingestion lag from chess_move_events. Cached 5 min."""
@@ -494,7 +543,8 @@ def post_game_analyze(game_id: str):
                 max_output_tokens=1800,
             )
         if len(narrative) < 400:
-            raise RuntimeError("Vertex returned an incomplete game analysis")
+            log.warning("Vertex returned short game analysis for %s; using deterministic fallback", game_id)
+            narrative = _fallback_game_narrative(game_id, meta, evaluations)
         result = {"narrative": narrative}
     except Exception as e:
         raise HTTPException(503, str(e))
