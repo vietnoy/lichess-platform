@@ -8,9 +8,13 @@ import logging
 import threading
 from contextlib import contextmanager
 import mysql.connector
+from mysql.connector import errors
 from mysql.connector import pooling
 
 log = logging.getLogger("db")
+
+STARROCKS_POOL_SIZE = int(os.getenv("STARROCKS_POOL_SIZE", "12"))
+STARROCKS_POOL_WAIT_SECONDS = float(os.getenv("STARROCKS_POOL_WAIT_SECONDS", "2.0"))
 
 TABLE = "polaris_catalog.prod.chess_move_events"
 PLAYER_GAMES = "polaris_catalog.prod.player_games"
@@ -49,14 +53,14 @@ class StarRocks:
                 return
             cls._pool = pooling.MySQLConnectionPool(
                 pool_name="sr",
-                pool_size=4,
+                pool_size=STARROCKS_POOL_SIZE,
                 host=os.getenv("STARROCKS_HOST", "starrocks-fe"),
                 port=int(os.getenv("STARROCKS_PORT", "9030")),
                 user=os.getenv("STARROCKS_USER", "root"),
                 password=os.getenv("STARROCKS_PASSWORD", ""),
                 connection_timeout=10,
             )
-            log.info("starrocks pool initialized")
+            log.info("starrocks pool initialized size=%s", STARROCKS_POOL_SIZE)
 
     @classmethod
     def close(cls):
@@ -77,7 +81,15 @@ class StarRocks:
     def cursor(cls):
         if cls._pool is None:
             cls.init()
-        conn = cls._pool.get_connection()
+        deadline = time.monotonic() + STARROCKS_POOL_WAIT_SECONDS
+        while True:
+            try:
+                conn = cls._pool.get_connection()
+                break
+            except errors.PoolError as exc:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
         try:
             # Pooled connections survive FE restarts as stale sockets; ping with reconnect to refresh.
             try:
