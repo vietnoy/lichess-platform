@@ -40,6 +40,23 @@ PROD_TABLES = [
 _PROFILE_TTL = 120
 _profile_cache: dict[str, tuple[float, dict | None]] = {}
 _profile_lock = threading.Lock()
+_SYSTEM_TTL = int(os.getenv("SYSTEM_QUERY_CACHE_TTL", "300"))
+_PLATFORM_TTL = int(os.getenv("PLATFORM_QUERY_CACHE_TTL", "300"))
+_PLAYER_AGG_TTL = int(os.getenv("PLAYER_AGG_QUERY_CACHE_TTL", "180"))
+_query_cache: dict[tuple, tuple[float, object]] = {}
+_query_cache_lock = threading.Lock()
+
+
+def _cached(key: tuple, ttl: int, loader):
+    now = time.time()
+    with _query_cache_lock:
+        cached = _query_cache.get(key)
+        if cached and now - cached[0] < ttl:
+            return cached[1]
+    value = loader()
+    with _query_cache_lock:
+        _query_cache[key] = (now, value)
+    return value
 
 
 class StarRocks:
@@ -112,6 +129,10 @@ def _run(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def query_system_summary() -> dict:
+    return _cached(("system_summary",), _SYSTEM_TTL, _query_system_summary_uncached)
+
+
+def _query_system_summary_uncached() -> dict:
     tables = []
     total_rows = 0
     for name, full_name, description in PROD_TABLES:
@@ -179,6 +200,11 @@ def _date_range_filter(column: str, start_date: str | None, end_date: str | None
 
 
 def query_platform_overview(days: int | None = 30, date: str | None = None, all_time: bool = False) -> dict:
+    key = ("platform_overview", int(days or 0), date, bool(all_time))
+    return _cached(key, _PLATFORM_TTL, lambda: _query_platform_overview_uncached(days=days, date=date, all_time=all_time))
+
+
+def _query_platform_overview_uncached(days: int | None = 30, date: str | None = None, all_time: bool = False) -> dict:
     latest = _run(
         f"""
         SELECT MAX(date) AS date
@@ -681,6 +707,11 @@ def clamp_int(value: int, minimum: int, maximum: int) -> int:
 
 def query_weakness_summary(username: str, days: int = 60) -> dict:
     days = clamp_int(days, 1, 365)
+    key = ("weakness_summary", username, days)
+    return _cached(key, _PLAYER_AGG_TTL, lambda: _query_weakness_summary_uncached(username, days))
+
+
+def _query_weakness_summary_uncached(username: str, days: int = 60) -> dict:
     rows = _run(
         f"""
         SELECT
@@ -778,6 +809,11 @@ def query_blunder_examples(
 def query_opening_stats(username: str, days: int = 60, top_n: int = 10) -> list[dict]:
     days = clamp_int(days, 1, 365)
     top_n = clamp_int(top_n, 1, 20)
+    key = ("opening_stats", username, days, top_n)
+    return _cached(key, _PLAYER_AGG_TTL, lambda: _query_opening_stats_uncached(username, days, top_n))
+
+
+def _query_opening_stats_uncached(username: str, days: int = 60, top_n: int = 10) -> list[dict]:
     return _run(
         f"""
         SELECT
@@ -808,6 +844,11 @@ def query_opening_stats(username: str, days: int = 60, top_n: int = 10) -> list[
 
 def query_phase_stats(username: str, days: int = 60) -> list[dict]:
     days = clamp_int(days, 1, 365)
+    key = ("phase_stats", username, days)
+    return _cached(key, _PLAYER_AGG_TTL, lambda: _query_phase_stats_uncached(username, days))
+
+
+def _query_phase_stats_uncached(username: str, days: int = 60) -> list[dict]:
     return _run(
         f"""
         SELECT
@@ -836,6 +877,11 @@ def _num(value, default=0):
 
 def query_player_insights(username: str, days: int = 60) -> dict:
     days = clamp_int(days, 1, 365)
+    key = ("player_insights", username, days)
+    return _cached(key, _PLAYER_AGG_TTL, lambda: _query_player_insights_uncached(username, days))
+
+
+def _query_player_insights_uncached(username: str, days: int = 60) -> dict:
     weakness = query_weakness_summary(username, days=days)
     phase_stats = query_phase_stats(username, days=days)
     opening_stats = query_opening_stats(username, days=days, top_n=10)
