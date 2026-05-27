@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
-  ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, Legend,
+  ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend,
 } from "recharts";
 
 import Header from "@/components/Header";
@@ -68,20 +68,24 @@ interface PlayerInsight {
   data?: Record<string, unknown>;
 }
 interface PlayerInsightsResponse { player_id: string; days: number; insights: PlayerInsight[]; }
+interface RatingPoint { date: string; avg_rating: number; games: number; }
 
 interface Profile {
   username: string;
+  range: { label: string; start_date: string | null; end_date: string | null; };
   totals: { games: number; wins: number; losses: number; draws: number; win_pct: number; avg_rating: number; };
   by_speed: OverviewBySpeed[];
   by_color: ByColor[];
   openings: OpeningRow[];
   clock_by_phase: ClockRow[];
   vs_rating: VsRatingRow[];
+  rating_history: RatingPoint[];
   recent_games: RecentRow[];
 }
 
 const RESULT_COLORS = { Win: "#10b981", Loss: "#f43f5e", Draw: "#737373" };
 const TOOLTIP_STYLE = { background: "rgb(255 255 255)", border: "1px solid rgb(220 220 228)", borderRadius: 6, fontSize: 12, color: "rgb(18 18 22)" };
+type RangeMode = "14" | "30" | "60" | "all" | "custom";
 
 function labelize(value: string | null | undefined) {
   if (!value) return "Chưa đủ dữ liệu";
@@ -103,6 +107,26 @@ function labelize(value: string | null | undefined) {
 
 function pct(value: number | null | undefined) {
   return typeof value === "number" ? `${value}%` : "0%";
+}
+
+function profilePath(username: string, rangeMode: RangeMode, customDate: string) {
+  const encoded = encodeURIComponent(username);
+  if (rangeMode === "all") return `/players/${encoded}/profile?all_time=true`;
+  if (rangeMode === "custom") return customDate ? `/players/${encoded}/profile?date=${encodeURIComponent(customDate)}` : null;
+  return `/players/${encoded}/profile?days=${rangeMode}`;
+}
+
+function aggregateDays(rangeMode: RangeMode) {
+  if (rangeMode === "all") return 365;
+  if (rangeMode === "custom") return 60;
+  return Number(rangeMode);
+}
+
+function rangeLabel(profile: Profile | null, rangeMode: RangeMode) {
+  if (rangeMode === "custom") return profile?.range?.start_date ?? "Chọn ngày";
+  if (rangeMode === "all") return "All time";
+  if (profile?.range?.start_date && profile?.range?.end_date) return `${profile.range.start_date} → ${profile.range.end_date}`;
+  return `${rangeMode} ngày`;
 }
 
 function Card({ title, children, className = "" }: { title?: string; children: React.ReactNode; className?: string }) {
@@ -189,7 +213,6 @@ function InsightBoard({ insights, loaded }: { insights: PlayerInsight[]; loaded:
               </div>
               <h3 className="font-medium leading-snug">{item.title}</h3>
               <p className="text-sm text-muted leading-relaxed">{item.evidence}</p>
-              <p className="text-sm leading-relaxed">{item.action}</p>
             </div>
           ))}
         </div>
@@ -213,8 +236,14 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
   const [coachLoaded, setCoachLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [coachError, setCoachError] = useState<string | null>(null);
+  const [rangeMode, setRangeMode] = useState<RangeMode>("60");
+  const [customDate, setCustomDate] = useState("");
+
+  const currentProfilePath = useMemo(() => profilePath(username, rangeMode, customDate), [username, rangeMode, customDate]);
+  const currentAggregateDays = aggregateDays(rangeMode);
 
   useEffect(() => {
+    if (!currentProfilePath) return;
     const controller = new AbortController();
     let alive = true;
     setError(null);
@@ -226,15 +255,15 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
     setInsights([]);
     setCoachLoaded(false);
 
-    api<Profile>(`/players/${encodeURIComponent(username)}/profile`, { signal: controller.signal })
+    api<Profile>(currentProfilePath, { signal: controller.signal })
       .then((p) => { if (alive) setProfile(p); })
       .catch((e) => { if (alive) setError(String(e.message ?? e)); });
 
     Promise.all([
-      api<WeaknessSummary>(`/players/${encodeURIComponent(username)}/weakness-summary?days=60`, { signal: controller.signal }),
-      api<OpeningStatsResponse>(`/players/${encodeURIComponent(username)}/opening-stats?days=60&top_n=8`, { signal: controller.signal }),
-      api<PhaseStatsResponse>(`/players/${encodeURIComponent(username)}/phase-stats?days=60`, { signal: controller.signal }),
-      api<PlayerInsightsResponse>(`/players/${encodeURIComponent(username)}/insights?days=60`, { signal: controller.signal }),
+      api<WeaknessSummary>(`/players/${encodeURIComponent(username)}/weakness-summary?days=${currentAggregateDays}`, { signal: controller.signal }),
+      api<OpeningStatsResponse>(`/players/${encodeURIComponent(username)}/opening-stats?days=${currentAggregateDays}&top_n=8`, { signal: controller.signal }),
+      api<PhaseStatsResponse>(`/players/${encodeURIComponent(username)}/phase-stats?days=${currentAggregateDays}`, { signal: controller.signal }),
+      api<PlayerInsightsResponse>(`/players/${encodeURIComponent(username)}/insights?days=${currentAggregateDays}`, { signal: controller.signal }),
     ])
       .then(([summary, openings, phases, insightResponse]) => {
         if (!alive) return;
@@ -250,7 +279,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
       alive = false;
       controller.abort();
     };
-  }, [username]);
+  }, [username, currentProfilePath, currentAggregateDays]);
 
   const playerLoaded = Boolean(profile || weakness || coachLoaded);
 
@@ -273,11 +302,49 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
           )}
         </div>
 
+        <div className="flex flex-col md:flex-row md:items-center gap-3 border border-border bg-surface rounded-md p-3">
+          <div className="text-sm text-muted min-w-[9rem]">Khoảng dữ liệu</div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              ["14", "14 ngày"],
+              ["30", "30 ngày"],
+              ["60", "60 ngày"],
+              ["all", "All time"],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setRangeMode(value as RangeMode)}
+                className={`h-9 px-3 rounded-md border text-sm transition ${
+                  rangeMode === value
+                    ? "border-accent bg-accent text-white"
+                    : "border-border bg-background hover:bg-border/40"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-sm text-muted md:ml-auto">
+            Một ngày
+            <input
+              type="date"
+              value={customDate}
+              onChange={(event) => {
+                setCustomDate(event.target.value);
+                setRangeMode("custom");
+              }}
+              className="h-9 rounded-md border border-border bg-background px-3 text-sm text-text"
+            />
+          </label>
+          <div className="text-xs text-muted md:min-w-[13rem] md:text-right">{rangeLabel(profile, rangeMode)}</div>
+        </div>
+
         <Diagnosis weakness={weakness} openingStats={openingStats} phaseStats={phaseStats} />
 
         <InsightBoard insights={insights} loaded={coachLoaded} />
 
-        <Card title="Chỉ số huấn luyện · 60 ngày gần đây">
+        <Card title={`Chỉ số huấn luyện · ${rangeMode === "all" ? "365 ngày aggregate" : rangeMode === "custom" ? "60 ngày aggregate" : `${currentAggregateDays} ngày gần đây`}`}>
           {weakness ? (
             <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
               <Metric label="Thế cờ quan trọng" value={weakness.critical_positions.toLocaleString()} />
@@ -367,6 +434,25 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
             </Card>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Card title="Elo theo thời gian">
+                {profile.rating_history.length < 2 ? (
+                  <div className="h-[240px] flex items-center text-muted text-sm">Chưa đủ điểm dữ liệu rating để vẽ đường xu hướng.</div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <LineChart data={profile.rating_history} margin={{ top: 12, right: 20, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgb(220 220 228)" />
+                      <XAxis dataKey="date" stroke="#888" fontSize={11} minTickGap={24} />
+                      <YAxis stroke="#888" fontSize={12} domain={["dataMin - 25", "dataMax + 25"]} />
+                      <Tooltip
+                        contentStyle={TOOLTIP_STYLE}
+                        formatter={(value: number, name: string) => [value, name === "avg_rating" ? "rating TB" : name]}
+                      />
+                      <Line type="monotone" dataKey="avg_rating" stroke="#3b82f6" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </Card>
+
               <Card title="Phân bố kết quả">
                 <ResponsiveContainer width="100%" height={240}>
                   <PieChart>

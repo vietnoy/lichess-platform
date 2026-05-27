@@ -131,10 +131,83 @@ def test_coach_dispatch_exposes_new_safe_tools(monkeypatch):
     assert '"days": 30' in result
     assert "get_weakness_summary" in coach._TOOL_FNS
     assert "get_blunder_examples" in coach._TOOL_FNS
+    assert "inspect_student_style" in coach._TOOL_FNS
+
+
+def test_inspect_student_style_combines_coaching_evidence(monkeypatch):
+    monkeypatch.setattr(
+        coach,
+        "query_player_profile",
+        lambda player_id, days=60: {
+            "range": {"label": f"{days}d", "start_date": "2026-05-01", "end_date": "2026-05-25"},
+            "totals": {"games": 10, "win_pct": 40.0, "avg_rating": 1800},
+            "by_speed": [{"speed": "rapid", "total_games": 10}],
+            "by_color": [{"color": "White", "games": 5, "win_pct": 60.0}],
+            "vs_rating": [{"opponent": "Higher rated", "games": 3, "win_pct": 33.3}],
+            "rating_history": [{"date": "2026-05-25", "avg_rating": 1800, "games": 2}],
+            "recent_games": [{"game_id": "g1"}],
+        },
+    )
+    monkeypatch.setattr(
+        coach,
+        "query_weakness_summary",
+        lambda player_id, days=60: {"player_id": player_id, "top_phase": "middlegame", "critical_positions": 7},
+    )
+    monkeypatch.setattr(
+        coach,
+        "query_phase_stats",
+        lambda player_id, days=60: [{"phase": "middlegame", "critical_positions": 7}],
+    )
+    monkeypatch.setattr(
+        coach,
+        "query_opening_stats",
+        lambda player_id, days=60, top_n=8: [{"opening_eco": "B01", "critical_positions": 3}],
+    )
+    monkeypatch.setattr(
+        coach,
+        "query_blunder_examples",
+        lambda player_id, limit=5, phase=None, time_pressure=None: [{"game_id": "g1", "phase": phase}],
+    )
+
+    result = coach.inspect_student_style("alice", days=600)
+
+    assert result["days"] == 365
+    assert result["profile"]["totals"]["games"] == 10
+    assert result["weakness"]["top_phase"] == "middlegame"
+    assert result["critical_examples"] == [{"game_id": "g1", "phase": "middlegame"}]
+
+
+def test_get_time_pressure_stats_binds_params_in_sql_order(monkeypatch):
+    calls = []
+
+    class Cursor:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+
+        def fetchall(self):
+            if len(calls) == 1:
+                import datetime as dt
+
+                return [{"date": dt.date(2026, 5, 25)}]
+            return []
+
+    class CursorContext:
+        def __enter__(self):
+            return Cursor()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(coach.StarRocks, "cursor", lambda: CursorContext())
+
+    coach.get_time_pressure_stats("alice")
+
+    assert calls[1][1] == ("alice", "alice", "alice", "alice", "2026-05-25", "alice", "alice")
 
 
 def test_coach_system_prompt_is_vietnamese_and_action_oriented():
     assert "Trả lời bằng tiếng Việt" in coach._SYSTEM_PROMPT
+    assert "inspect_student_style" in coach._SYSTEM_PROMPT
     assert "Chẩn đoán" in coach._SYSTEM_PROMPT
     assert "Bài tập" in coach._SYSTEM_PROMPT
     assert "không được bịa số liệu" in coach._SYSTEM_PROMPT

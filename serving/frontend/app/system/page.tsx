@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Activity, Database, GitBranch, Layers3, Server, Workflow } from "lucide-react";
 import Header from "@/components/Header";
 import StatusPill from "@/components/StatusPill";
@@ -21,6 +22,11 @@ interface SystemSummary {
     tables: number;
     latest_date?: string | null;
   };
+  rating_histogram?: Array<{
+    bucket_floor: number;
+    players: number;
+    player_game_rows: number;
+  }>;
 }
 
 const LAYERS = [
@@ -53,6 +59,14 @@ function fullNumber(value: number) {
   return new Intl.NumberFormat("vi-VN").format(value);
 }
 
+const TOOLTIP_STYLE = {
+  background: "rgb(255 255 255)",
+  border: "1px solid rgb(220 220 228)",
+  borderRadius: 6,
+  fontSize: 12,
+  color: "rgb(18 18 22)",
+};
+
 export default function SystemPage() {
   const [summary, setSummary] = useState<SystemSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -83,6 +97,12 @@ export default function SystemPage() {
 
   const sortedTables = useMemo(() => {
     return [...(summary?.tables ?? [])].sort((a, b) => b.latest_partition_rows - a.latest_partition_rows);
+  }, [summary]);
+  const ratingHistogram = useMemo(() => {
+    return (summary?.rating_histogram ?? []).map((row) => ({
+      ...row,
+      bucket: `${row.bucket_floor}-${row.bucket_floor + 199}`,
+    }));
   }, [summary]);
 
   return (
@@ -140,6 +160,30 @@ export default function SystemPage() {
                 </div>
               );
             })}
+          </div>
+        </section>
+
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-xl font-medium">Phân cụm rating người chơi</h2>
+            <span className="text-xs text-muted">Distinct players trong 60 ngày gần nhất</span>
+          </div>
+          <div className="border border-border bg-surface rounded-md p-4">
+            {ratingHistogram.length === 0 ? (
+              <div className="h-[260px] flex items-center justify-center text-muted text-sm">
+                {loading ? "Đang tải phân bố rating..." : "Chưa có dữ liệu rating để phân cụm."}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={ratingHistogram} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgb(220 220 228)" />
+                  <XAxis dataKey="bucket" stroke="#888" fontSize={11} interval={0} angle={-20} textAnchor="end" height={54} />
+                  <YAxis stroke="#888" fontSize={12} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: number) => [fullNumber(value), "người chơi"]} />
+                  <Bar dataKey="players" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </section>
 

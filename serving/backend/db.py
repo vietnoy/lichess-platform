@@ -38,7 +38,7 @@ PROD_TABLES = [
 
 # Tiny TTL cache so the slow profile query doesn't hit StarRocks on every page load.
 _PROFILE_TTL = 120
-_profile_cache: dict[str, tuple[float, dict | None]] = {}
+_profile_cache: dict[tuple, tuple[float, dict | None]] = {}
 _profile_lock = threading.Lock()
 _SYSTEM_TTL = int(os.getenv("SYSTEM_QUERY_CACHE_TTL", "300"))
 _PLATFORM_TTL = int(os.getenv("PLATFORM_QUERY_CACHE_TTL", "300"))
@@ -168,6 +168,19 @@ def _query_system_summary_uncached() -> dict:
         )
         total_rows += row_count
     latest_dates = [t["latest_date"] for t in tables if t["latest_date"]]
+    rating_histogram = _run(
+        f"""
+        SELECT
+            CAST(FLOOR(my_rating / 200) * 200 AS INT) AS bucket_floor,
+            COUNT(DISTINCT player_id) AS players,
+            COUNT(*) AS player_game_rows
+        FROM {PLAYER_GAMES}
+        WHERE my_rating IS NOT NULL
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+        GROUP BY bucket_floor
+        ORDER BY bucket_floor
+        """
+    )
     return {
         "tables": tables,
         "totals": {
@@ -175,6 +188,7 @@ def _query_system_summary_uncached() -> dict:
             "tables": len(tables),
             "latest_date": max(latest_dates) if latest_dates else None,
         },
+        "rating_histogram": rating_histogram,
     }
 
 
@@ -403,30 +417,65 @@ def query_game_evaluations(game_id: str) -> list[dict]:
     )
 
 
-def query_player_profile(username: str) -> dict | None:
+def query_player_profile(
+    username: str,
+    days: int | None = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> dict | None:
+    if date:
+        _parse_iso_date(date)
+    window_days = None if all_time or date else clamp_int(days or 60, 1, 365)
+    key = ("profile", username, int(window_days or 0), date, bool(all_time))
     now = time.time()
     with _profile_lock:
-        cached = _profile_cache.get(username)
+        cached = _profile_cache.get(key)
         if cached and now - cached[0] < _PROFILE_TTL:
             return cached[1]
-    profile = _query_player_profile_uncached(username)
+    profile = _query_player_profile_uncached(username, days=window_days, date=date, all_time=all_time)
     with _profile_lock:
-        _profile_cache[username] = (now, profile)
+        _profile_cache[key] = (now, profile)
     return profile
 
 
-def _query_player_profile_uncached(username: str) -> dict | None:
+def _query_player_profile_uncached(
+    username: str,
+    days: int | None = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> dict | None:
     # player_games is the denormalized projection (one row per game-side) built by
     # processing/build_player_games.py. Sorted by player_id within each partition so
     # parquet min/max stats let StarRocks skip whole files for WHERE player_id=?.
+    filters = ["player_id=%s"]
+    params: list = [username]
+    if date:
+        selected = _parse_iso_date(date).isoformat()
+        filters.append("date = DATE %s")
+        params.append(selected)
+        range_label = "date"
+        start_date = selected
+        end_date = selected
+    elif all_time:
+        range_label = "all"
+        start_date = None
+        end_date = None
+    else:
+        window_days = clamp_int(days or 60, 1, 365)
+        filters.append("date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)")
+        params.append(window_days)
+        range_label = f"{window_days}d"
+        start_date = None
+        end_date = None
+
     games = _run(
         f"""
         SELECT game_id, color, opponent_id, my_rating, opp_rating,
                speed, opening_eco, opening_name, winner, end_status, date
         FROM {PLAYER_GAMES}
-        WHERE player_id=%s
+        WHERE {" AND ".join(filters)}
         """,
-        (username,),
+        tuple(params),
     )
     if not games:
         return None
@@ -490,7 +539,10 @@ def _query_player_profile_uncached(username: str) -> dict | None:
         if result(g) == "Win": e["wins"] += 1
     vs_rating = [{**v, "win_pct": round(v["wins"] * 100 / v["games"], 1)} for v in vs_acc.values()]
 
-    recent = sorted(games, key=lambda g: g["date"] or "", reverse=True)[:15]
+    def date_key(g):
+        return _to_iso_date(g.get("date")) or ""
+
+    recent = sorted(games, key=date_key, reverse=True)[:15]
     recent_out = [{
         "game_id":      g["game_id"],
         "opponent":     g["opponent_id"],
@@ -500,8 +552,31 @@ def _query_player_profile_uncached(username: str) -> dict | None:
         "opening_name": g["opening_name"],
         "speed":        g["speed"],
         "result":       result(g),
-        "date":         g["date"],
+        "date":         _to_iso_date(g["date"]),
     } for g in recent]
+
+    rating_acc: dict[str, dict[str, int]] = {}
+    for g in games:
+        rating = g["my_rating"]
+        game_date = _to_iso_date(g["date"])
+        if rating is None or not game_date:
+            continue
+        entry = rating_acc.setdefault(game_date, {"rating_sum": 0, "games": 0})
+        entry["rating_sum"] += int(rating)
+        entry["games"] += 1
+    rating_history = [
+        {
+            "date": game_date,
+            "avg_rating": round(entry["rating_sum"] / entry["games"]),
+            "games": entry["games"],
+        }
+        for game_date, entry in sorted(rating_acc.items())
+    ]
+
+    if range_label.endswith("d") and games:
+        dates = sorted(date_key(g) for g in games if date_key(g))
+        start_date = dates[0] if dates else None
+        end_date = dates[-1] if dates else None
 
     total_games  = len(games)
     total_wins   = sum(1 for g in games if result(g) == "Win")
@@ -513,6 +588,11 @@ def _query_player_profile_uncached(username: str) -> dict | None:
 
     return {
         "username": username,
+        "range": {
+            "label": range_label,
+            "start_date": start_date,
+            "end_date": end_date,
+        },
         "totals": {
             "games": total_games,
             "wins": total_wins,
@@ -526,6 +606,7 @@ def _query_player_profile_uncached(username: str) -> dict | None:
         "openings": openings,
         "clock_by_phase": clock_rows,
         "vs_rating": vs_rating,
+        "rating_history": rating_history,
         "recent_games": recent_out,
     }
 

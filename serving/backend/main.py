@@ -348,8 +348,13 @@ def post_whatif(req: WhatIfRequest):
 
 # ─── player profile ───────────────────────────────────────────────────────────
 @app.get("/api/players/{username}/profile")
-def get_player_profile(username: str):
-    profile = query_player_profile(username)
+def get_player_profile(
+    username: str,
+    days: int | None = Query(default=60, ge=1, le=365),
+    date: str | None = None,
+    all_time: bool = False,
+):
+    profile = query_player_profile(username, days=days, date=date, all_time=all_time)
     if profile is None:
         raise HTTPException(404, f"No data for player '{username}'")
     return profile

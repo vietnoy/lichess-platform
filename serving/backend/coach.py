@@ -30,6 +30,8 @@ from db import (
     PLAYER_GAMES,
     query_blunder_examples,
     query_opening_stats,
+    query_phase_stats,
+    query_player_profile,
     query_weakness_summary,
 )
 from stockfish import eval_fen
@@ -81,6 +83,38 @@ def get_weakness_summary(player_id: str, days: int = 60) -> dict:
     return query_weakness_summary(player_id, days=days)
 
 
+def inspect_student_style(player_id: str, days: int = 60) -> dict:
+    """One-shot scouting report for the coach before giving advice."""
+    days = max(1, min(int(days), 365))
+    profile = query_player_profile(player_id, days=days) or {}
+    weakness = query_weakness_summary(player_id, days=days)
+    phase_stats = query_phase_stats(player_id, days=days)
+    opening_stats = query_opening_stats(player_id, days=days, top_n=8)
+    top_phase = weakness.get("top_phase") if isinstance(weakness, dict) else None
+    examples = query_blunder_examples(
+        player_id,
+        limit=5,
+        phase=top_phase if top_phase in {"opening", "middlegame", "endgame"} else None,
+    )
+    return {
+        "player_id": player_id,
+        "days": days,
+        "profile": {
+            "range": profile.get("range"),
+            "totals": profile.get("totals"),
+            "by_speed": profile.get("by_speed", [])[:5],
+            "by_color": profile.get("by_color", []),
+            "vs_rating": profile.get("vs_rating", []),
+            "rating_history": profile.get("rating_history", [])[-20:],
+        },
+        "weakness": weakness,
+        "phase_stats": phase_stats,
+        "opening_stats": opening_stats,
+        "critical_examples": examples,
+        "recent_games": profile.get("recent_games", [])[:8],
+    }
+
+
 def get_blunder_examples(
     player_id: str,
     limit: int = 5,
@@ -127,7 +161,7 @@ def get_time_pressure_stats(player_id: str) -> dict:
         ) t
         GROUP BY pressure
         """,
-        tuple(dates) + (player_id, player_id, player_id, player_id, player_id, player_id),
+        (player_id, player_id, player_id, player_id) + tuple(dates) + (player_id, player_id),
     )
     return {"player_id": player_id, "time_pressure": rows}
 
@@ -136,6 +170,13 @@ def get_opening_stats(player_id: str, top_n: int = 10, days: int = 60) -> dict:
     return {
         "player_id": player_id,
         "opening_stats": query_opening_stats(player_id, days=days, top_n=top_n),
+    }
+
+
+def get_phase_stats(player_id: str, days: int = 60) -> dict:
+    return {
+        "player_id": player_id,
+        "phase_stats": query_phase_stats(player_id, days=days),
     }
 
 
@@ -270,11 +311,13 @@ def analyze_game(game_id: str) -> dict:
 
 
 _TOOL_FNS: dict[str, Any] = {
+    "inspect_student_style":     inspect_student_style,
     "get_player_overview":       get_player_overview,
     "get_weakness_summary":      get_weakness_summary,
     "get_blunder_examples":      get_blunder_examples,
     "get_time_pressure_stats":   get_time_pressure_stats,
     "get_opening_stats":         get_opening_stats,
+    "get_phase_stats":           get_phase_stats,
     "get_clock_usage_by_phase":  get_clock_usage_by_phase,
     "get_performance_by_color":  get_performance_by_color,
     "get_performance_vs_rating": get_performance_vs_rating,
@@ -297,6 +340,8 @@ def _tool(name: str, description: str, props: dict, required: list[str]) -> dict
 _PLAYER_PROP = {"player_id": {"type": "string", "description": "Lichess username"}}
 
 _OPENAI_TOOLS: list[dict] = [
+    _tool("inspect_student_style", "One-shot scouting report for a player: profile totals, rating trend, speed/color/rating matchup, weakness summary, phase stats, opening leaks, recent games and critical examples. Use this first when the user asks for coaching or diagnosis.",
+          {**_PLAYER_PROP, "days": {"type": "integer", "description": "Lookback days, clamped to 1-365 (default 60)"}}, ["player_id"]),
     _tool("get_player_overview", "Total games, wins/losses/draws and average rating by time control.", _PLAYER_PROP, ["player_id"]),
     _tool("get_weakness_summary", "Aggregated recurring mistakes from the derived player_weakness_summary table.",
           {**_PLAYER_PROP, "days": {"type": "integer", "description": "Lookback days, clamped to 1-365 (default 60)"}}, ["player_id"]),
@@ -314,6 +359,8 @@ _OPENAI_TOOLS: list[dict] = [
               "top_n": {"type": "integer", "description": "Top N openings, clamped to 1-20 (default 10)"},
               "days": {"type": "integer", "description": "Lookback days, clamped to 1-365 (default 60)"},
           }, ["player_id"]),
+    _tool("get_phase_stats", "Critical positions and mistake counts by opening/middlegame/endgame from the derived player_phase_stats table.",
+          {**_PLAYER_PROP, "days": {"type": "integer", "description": "Lookback days, clamped to 1-365 (default 60)"}}, ["player_id"]),
     _tool("get_clock_usage_by_phase", "Average clock remaining in opening, middlegame, endgame.", _PLAYER_PROP, ["player_id"]),
     _tool("get_performance_by_color", "Win rate as white vs black.", _PLAYER_PROP, ["player_id"]),
     _tool("get_performance_vs_rating", "Win rate vs lower, equal and higher rated opponents.", _PLAYER_PROP, ["player_id"]),
@@ -332,14 +379,15 @@ Quy tắc bắt buộc:
 - Nếu tool không có dữ liệu, nói rõ dữ liệu của người chơi/ván đó chưa có trong hệ thống.
 
 Workflow khi trả lời:
-1. Gọi đủ tool cần thiết cho câu hỏi. Hỏi về người chơi thường cần overview + weakness + opening/phase hoặc ví dụ blunder.
-2. Chẩn đoán bằng cách tìm mẫu lặp lại giữa nhiều nguồn dữ liệu, không chỉ đọc lại bảng.
-3. Ưu tiên 1-2 vấn đề có tác động lớn nhất đến kết quả.
-4. Trả lời theo cấu trúc ngắn:
+1. Nếu người dùng hỏi về một người chơi hoặc muốn được coach, trước tiên gọi inspect_student_style.
+2. Nếu cần đào sâu, gọi thêm tool cụ thể như get_blunder_examples, get_opening_stats, get_phase_stats hoặc analyze_game.
+3. Chẩn đoán bằng cách tìm mẫu lặp lại giữa nhiều nguồn dữ liệu, không chỉ đọc lại bảng.
+4. Ưu tiên 1-2 vấn đề có tác động lớn nhất đến kết quả.
+5. Trả lời theo cấu trúc ngắn:
    - Chẩn đoán chính
    - Bằng chứng từ dữ liệu
    - Bài tập / hành động tiếp theo
-5. Viết như huấn luyện viên: trực tiếp, cụ thể, có nước đi/giai đoạn/kế hoạch luyện tập khi có dữ liệu."""
+6. Viết như huấn luyện viên: trực tiếp, cụ thể, có nước đi/giai đoạn/kế hoạch luyện tập khi có dữ liệu."""
 
 
 # ─── streaming engine ────────────────────────────────────────────────────────

@@ -219,7 +219,7 @@ export default function PlatformPage() {
               <h1 className="text-3xl md:text-4xl font-medium tracking-tight">Platform Meta</h1>
               <p className="text-muted leading-relaxed max-w-3xl">
                 Một dashboard để nhìn toàn cảnh cộng đồng đang chơi gì, opening nào nổi bật, phase nào sinh nhiều lỗi,
-                và hệ thống nên biến các pattern đó thành training decision như thế nào.
+                và những pattern nào đáng chú ý trong dữ liệu lớn.
               </p>
             </div>
             <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -484,14 +484,6 @@ export default function PlatformPage() {
           </div>
         </section>
 
-        <section className="border border-border rounded-md p-4 space-y-3">
-          <h2 className="font-medium">What this means for training</h2>
-          <div className="grid md:grid-cols-3 gap-3 text-sm">
-            <p className="leading-relaxed">Time control mix quyết định training tempo: blitz/bullet cần fast pattern recognition, rapid/classical cần deeper review.</p>
-            <p className="leading-relaxed">Mistake stack quyết định drill source: phase nào nhiều blunder nhất thì lấy nhiều critical positions từ phase đó.</p>
-            <p className="leading-relaxed">Opening leaderboard quyết định repertoire focus: opening phổ biến nhưng win rate lệch là nơi coach nên giải thích trước.</p>
-          </div>
-        </section>
       </main>
     </div>
   );
