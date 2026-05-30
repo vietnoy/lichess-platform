@@ -134,6 +134,8 @@ spec:
               value: 3g
             - name: SPARK_WORKER_CORES
               value: "2"
+            - name: SPARK_LOCAL_DIRS
+              value: /var/lib/spark-local
           ports:
             - containerPort: 8081
           livenessProbe:
@@ -144,17 +146,22 @@ spec:
                 - "curl -sf http://spark-master:8080/ | grep -q $(hostname -i)"
             initialDelaySeconds: 30
             periodSeconds: 30
+            timeoutSeconds: 5
             failureThreshold: 3
           volumeMounts:
             - name: git-data
               mountPath: /git
+            - name: spark-local
+              mountPath: /var/lib/spark-local
           resources:
             requests:
               memory: 512Mi
               cpu: 100m
+              ephemeral-storage: 4Gi
             limits:
               memory: 3Gi
               cpu: "2"
+              ephemeral-storage: 8Gi
         - name: git-sync
           image: registry.k8s.io/git-sync/git-sync:v4.2.1
           args:
@@ -176,4 +183,8 @@ spec:
               cpu: 100m
       volumes:
         - name: git-data
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: spark-local
+          emptyDir:
+            sizeLimit: 8Gi

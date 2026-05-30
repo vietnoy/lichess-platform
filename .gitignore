@@ -17,6 +17,8 @@ node_modules/
 serving/frontend/tsconfig.tsbuildinfo
 tmp/
 .pytest_cache/
+docs/datn/report/build/
+docs/datn/slide/build/
 
 # Playwright snapshots and ad-hoc screenshots
 .playwright-mcp/

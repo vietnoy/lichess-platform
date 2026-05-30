@@ -88,6 +88,15 @@ with DAG(
         "org.apache.iceberg:iceberg-aws-bundle:1.5.0"
     )
     _iceberg_pg_packages = _iceberg_packages + ",org.postgresql:postgresql:42.7.4"
+    _compact_conf = {
+        **_process_conf,
+        # The analyzer compaction is incremental and small enough to run
+        # serially. Keeping it to one executor prevents shuffle/local-disk
+        # pressure from evicting multiple Spark workers at once.
+        "spark.cores.max": "2",
+        "spark.executor.instances": "1",
+        "spark.executor.cores": "2",
+    }
 
     process = SparkSubmitOperator(
         task_id="run_process_to_polaris",
@@ -167,7 +176,7 @@ with DAG(
         application="/git/repo/processing/compact_ondemand_evals.py",
         conn_id="spark_default",
         packages=_iceberg_pg_packages,
-        conf=_process_conf,
+        conf=_compact_conf,
         verbose=True,
     )
 
@@ -206,7 +215,7 @@ with DAG(
     default_args=default_args,
     description="Nightly full rebuild of analyzer aggregate summary tables",
     start_date=datetime(2026, 5, 24),
-    schedule="35 1 * * *",
+    schedule="15 2 * * *",
     catchup=False,
     max_active_runs=1,
     tags=["chess", "processing", "analyzer", "summaries"],

@@ -5,7 +5,6 @@ import sys
 from dotenv import find_dotenv, load_dotenv
 import psycopg2
 from pyspark.sql import SparkSession
-from pyspark.storagelevel import StorageLevel
 
 # See process_to_polaris.py — same dotenv >=1.1.0 stack-frame assertion.
 load_dotenv(find_dotenv(usecwd=True))
@@ -67,7 +66,7 @@ def build_spark() -> SparkSession:
         .appName("chess-compact-ondemand-evals")
         .config("spark.jars.packages", ",".join(packages))
         .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.shuffle.partitions", "32")
+        .config("spark.sql.shuffle.partitions", "16")
         .config("spark.sql.catalog.polaris", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.polaris.type", "rest")
         .config("spark.sql.catalog.polaris.uri", POLARIS_URI)
@@ -170,6 +169,19 @@ def enrich_with_dates(spark: SparkSession, staging):
         .join(player_games, on=["game_id", "player_id"], how="inner")
         .dropDuplicates(["game_id", "ply", "player_id"])
     )
+
+
+def filter_new_evaluations(spark: SparkSession, compacted, dates: list[str]):
+    if not dates:
+        return compacted
+    date_list = ", ".join(f"DATE '{date}'" for date in dates)
+    existing_keys = (
+        spark.table("polaris.prod.move_evaluations_ondemand")
+        .where(f"date IN ({date_list})")
+        .select("game_id", "ply", "player_id")
+        .dropDuplicates(["game_id", "ply", "player_id"])
+    )
+    return compacted.join(existing_keys, on=["game_id", "ply", "player_id"], how="left_anti")
 
 
 def changed_dates(compacted) -> list[str]:
@@ -330,31 +342,47 @@ def run() -> int:
         if staging_count == 0:
             return 0
 
-        compacted = enrich_with_dates(spark, staging).persist(StorageLevel.DISK_ONLY)
+        compacted = enrich_with_dates(spark, staging)
         try:
             compacted_count = compacted.count()
             logger.info(f"joined with player_games -> {compacted_count} rows after date enrichment")
-            if staging_count != compacted_count:
+            if compacted_count < staging_count:
                 logger.warning(
                     "compaction dropped %d staging rows (no player_games match); "
                     "they remain in staging for the next run",
                     staging_count - compacted_count,
                 )
+            elif compacted_count > staging_count:
+                logger.warning(
+                    "compaction expanded by %d rows before key de-duplication; "
+                    "check duplicate player_games/staging keys",
+                    compacted_count - staging_count,
+                )
             if compacted_count == 0:
                 return 0
 
-            compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
-            logger.info(f"wrote {compacted_count} rows to iceberg")
-            append_critical_positions(spark, compacted)
-
             dates = changed_dates(compacted)
             logger.info("compacted analyzer partitions: %s", ", ".join(dates))
+
+            new_compacted = filter_new_evaluations(spark, compacted, dates)
+            new_count = new_compacted.count()
+            logger.info(
+                "filtered %d already-compacted rows; %d new rows remain",
+                compacted_count - new_count,
+                new_count,
+            )
+            if new_count > 0:
+                new_compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
+                logger.info(f"wrote {new_count} rows to iceberg")
+                append_critical_positions(spark, new_compacted)
 
             keys = compacted.select("game_id", "ply", "player_id").distinct().toLocalIterator()
             deleted_count = clear_staging(keys)
             logger.info(f"cleared {deleted_count} staging rows")
             return compacted_count
         finally:
+            # No explicit persist here. Keeping the joined batch as DISK_ONLY
+            # caused Spark workers to fill ephemeral storage during compaction.
             compacted.unpersist()
     finally:
         spark.stop()

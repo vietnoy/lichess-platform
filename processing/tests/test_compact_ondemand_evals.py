@@ -53,13 +53,24 @@ class FakeDataFrame:
                 unique_rows.append(row)
         return FakeDataFrame(unique_rows, name=self.name, append_error=self.append_error)
 
+    def where(self, condition):
+        self.where_condition = condition
+        return self
+
     def join(self, other, on, how):
-        assert how == "inner"
+        assert how in {"inner", "left_anti"}
         joined = []
         for left in self.rows:
-            for right in other.rows:
-                if all(left[column] == right[column] for column in on):
-                    joined.append({**left, **right})
+            matches = [
+                right for right in other.rows
+                if all(left[column] == right[column] for column in on)
+            ]
+            if how == "left_anti":
+                if not matches:
+                    joined.append(left)
+                continue
+            for right in matches:
+                joined.append({**left, **right})
         return FakeDataFrame(joined, name="joined", append_error=self.append_error)
 
     def dropDuplicates(self, columns):
@@ -119,16 +130,20 @@ class FakeReader:
 
 
 class FakeSpark:
-    def __init__(self, staging, player_games):
+    def __init__(self, staging, player_games, existing_evals=None):
         self.read = FakeReader(staging)
         self.player_games = player_games
+        self.existing_evals = existing_evals or FakeDataFrame([], name="existing_evals")
         self.sparkContext = SimpleNamespace(setLogLevel=MagicMock())
         self.sql = MagicMock(return_value=FakeDataFrame([], name="sql"))
         self.stop = MagicMock()
 
     def table(self, name):
-        assert name == "polaris.prod.player_games"
-        return self.player_games
+        if name == "polaris.prod.player_games":
+            return self.player_games
+        if name == "polaris.prod.move_evaluations_ondemand":
+            return self.existing_evals
+        raise AssertionError(name)
 
 
 @pytest.fixture
@@ -203,9 +218,7 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert module.run() == 1
     assert FakeDataFrame.last_write_target == "polaris.prod.move_evaluations_ondemand"
     assert FakeDataFrame.last_write_frame.append_called is True
-    assert FakeDataFrame.last_write_frame.persist_called is True
-    assert FakeDataFrame.last_write_frame.persist_level == "DISK_ONLY"
-    assert FakeDataFrame.last_write_frame.unpersist_called is True
+    assert FakeDataFrame.last_write_frame.persist_called is False
     append_critical_positions.assert_called_once()
     assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
 
@@ -218,6 +231,32 @@ def test_changed_dates_are_distinct_and_sorted(module):
     ])
 
     assert module.changed_dates(compacted) == ["2026-05-11", "2026-05-12"]
+
+
+def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, monkeypatch):
+    staging = FakeDataFrame([
+        {"game_id": "g1", "ply": 12, "player_id": "alice"},
+    ], name="staging")
+    player_games = FakeDataFrame([
+        {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
+    ], name="player_games")
+    existing_evals = FakeDataFrame([
+        {"game_id": "g1", "ply": 12, "player_id": "alice"},
+    ], name="existing_evals")
+    spark = FakeSpark(staging, player_games, existing_evals)
+    monkeypatch.setattr(module, "build_spark", lambda: spark)
+    clear_staging = MagicMock()
+    monkeypatch.setattr(module, "clear_staging", clear_staging)
+    append_critical_positions = MagicMock()
+    monkeypatch.setattr(module, "append_critical_positions", append_critical_positions)
+
+    assert module.run() == 1
+    assert FakeDataFrame.last_write_target is None
+    append_critical_positions.assert_not_called()
+    delete_keys = list(clear_staging.call_args.args[0])
+    assert [(key.game_id, key.ply, key.player_id) for key in delete_keys] == [
+        ("g1", 12, "alice")
+    ]
 
 
 def test_incremental_critical_positions_reads_only_compacted_batch(module):

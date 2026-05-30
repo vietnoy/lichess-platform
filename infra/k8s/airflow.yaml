@@ -101,6 +101,11 @@ spec:
                 secretKeyRef:
                   name: chess-secrets
                   key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__API__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: AIRFLOW_SECRET_KEY
             - name: AIRFLOW__API__AUTH_RUNTIME_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -159,6 +164,11 @@ spec:
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/airflow_db
             - name: AIRFLOW__WEBSERVER__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__API__SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: chess-secrets
@@ -285,6 +295,11 @@ spec:
                 secretKeyRef:
                   name: chess-secrets
                   key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__API__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: AIRFLOW_SECRET_KEY
             - name: AIRFLOW__API__AUTH_RUNTIME_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -391,6 +406,11 @@ spec:
                 secretKeyRef:
                   name: chess-secrets
                   key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__API__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: AIRFLOW_SECRET_KEY
             - name: AIRFLOW__API__AUTH_RUNTIME_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -471,6 +491,11 @@ spec:
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/airflow_db
             - name: AIRFLOW__WEBSERVER__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chess-secrets
+                  key: AIRFLOW_SECRET_KEY
+            - name: AIRFLOW__API__SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: chess-secrets
