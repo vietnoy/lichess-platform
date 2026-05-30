@@ -11,6 +11,7 @@ def test_daily_pipeline_only_builds_raw_tables_before_refresh():
 
 def test_analyzer_maintenance_compacts_eval_staging_without_history_rebuild():
     assert 'dag_id="analyzer_derived_maintenance"' in DAG_SOURCE
+    assert 'schedule="15,45 1-23 * * *"' in DAG_SOURCE
     assert 'task_id="run_compact_ondemand_evals"' in DAG_SOURCE
     assert 'application="/git/repo/processing/compact_ondemand_evals.py"' in DAG_SOURCE
     maintenance_block = DAG_SOURCE.split('dag_id="analyzer_derived_maintenance"', 1)[1].split(
