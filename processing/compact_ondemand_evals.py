@@ -21,7 +21,7 @@ POSTGRES_HOST      = "postgres"
 POSTGRES_PORT      = 5432
 POSTGRES_DB        = "chess_analyzer_db"
 JDBC_URL           = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-DEFAULT_STAGING_BATCH_ROWS = 500_000
+DEFAULT_STAGING_BATCH_ROWS = 200_000
 
 logging.basicConfig(
     level=logging.INFO,
