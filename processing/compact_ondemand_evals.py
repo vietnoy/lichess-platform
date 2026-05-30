@@ -21,6 +21,7 @@ POSTGRES_HOST      = "postgres"
 POSTGRES_PORT      = 5432
 POSTGRES_DB        = "chess_analyzer_db"
 JDBC_URL           = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+DEFAULT_STAGING_BATCH_ROWS = 75_000
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +31,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TEACHABLE_CLASSES = ("blunder", "mistake", "inaccuracy")
+
+
+def staging_batch_rows() -> int:
+    raw_value = os.getenv("COMPACT_ONDEMAND_BATCH_ROWS")
+    if raw_value is None:
+        return DEFAULT_STAGING_BATCH_ROWS
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "invalid COMPACT_ONDEMAND_BATCH_ROWS=%r; using default %s",
+            raw_value,
+            DEFAULT_STAGING_BATCH_ROWS,
+        )
+        return DEFAULT_STAGING_BATCH_ROWS
+    if value <= 0:
+        logger.warning(
+            "non-positive COMPACT_ONDEMAND_BATCH_ROWS=%r; using default %s",
+            raw_value,
+            DEFAULT_STAGING_BATCH_ROWS,
+        )
+        return DEFAULT_STAGING_BATCH_ROWS
+    return value
+
+
+def staging_batch_query(batch_rows: int) -> str:
+    return f"""
+        (
+            SELECT
+                game_id,
+                ply,
+                player_id,
+                fen,
+                played_move,
+                best_move,
+                eval_cp,
+                mate,
+                eval_swing_cp,
+                classification,
+                evaluated_at
+            FROM move_evaluations_ondemand
+            ORDER BY evaluated_at NULLS LAST, game_id, ply, player_id
+            LIMIT {batch_rows}
+        ) AS move_evaluations_ondemand_batch
+    """
 
 
 def positive_rowcount(rowcount) -> int:
@@ -145,11 +191,13 @@ def ensure_critical_positions_table(spark: SparkSession) -> None:
 
 
 def read_staging(spark: SparkSession):
+    batch_rows = staging_batch_rows()
+    logger.info("reading up to %s rows from analyzer staging", batch_rows)
     return (
         spark.read
         .format("jdbc")
         .option("url", JDBC_URL)
-        .option("dbtable", "move_evaluations_ondemand")
+        .option("dbtable", staging_batch_query(batch_rows))
         .option("user", POSTGRES_USER)
         .option("password", POSTGRES_PASSWORD)
         .option("driver", "org.postgresql.Driver")

@@ -195,6 +195,20 @@ def test_empty_staging_skips_write_and_delete(module, monkeypatch):
     spark.stop.assert_called_once()
 
 
+def test_read_staging_uses_bounded_ordered_jdbc_query(module, monkeypatch):
+    monkeypatch.setenv("COMPACT_ONDEMAND_BATCH_ROWS", "123")
+    staging = FakeDataFrame([], name="staging")
+    player_games = FakeDataFrame([], name="player_games")
+    spark = FakeSpark(staging, player_games)
+
+    assert module.read_staging(spark) is staging
+
+    dbtable = spark.read.options["dbtable"]
+    assert "FROM move_evaluations_ondemand" in dbtable
+    assert "ORDER BY evaluated_at NULLS LAST, game_id, ply, player_id" in dbtable
+    assert "LIMIT 123" in dbtable
+
+
 def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     staging = FakeDataFrame([
         {"game_id": "g1", "ply": 12, "player_id": "alice", "fen": "fen1"},
