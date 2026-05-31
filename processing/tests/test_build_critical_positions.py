@@ -76,3 +76,8 @@ def test_sql_can_run_without_legacy_daily_table(module):
     assert "FROM polaris.prod.move_context_by_ply m" in sql
     assert "FROM polaris.prod.move_evaluations e" not in sql
     assert "WHERE e.rn = 1" in sql
+
+
+def test_resolve_date_arg_supports_all_dates(module):
+    assert module.resolve_date_arg(["build_critical_positions.py", "--all"]) is None
+    assert module.resolve_date_arg(["build_critical_positions.py", "2026-05-20"]) == "2026-05-20"

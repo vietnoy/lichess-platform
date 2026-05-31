@@ -36,6 +36,20 @@ def test_analyzer_refresh_includes_player_phase_stats():
     )
 
 
+def test_analyzer_critical_positions_runs_as_separate_date_bounded_dag():
+    assert 'dag_id="analyzer_critical_positions"' in DAG_SOURCE
+    assert 'schedule="45 1-23/2 * * *"' in DAG_SOURCE
+    assert 'task_id="rebuild_critical_positions"' in DAG_SOURCE
+    assert 'application="/git/repo/processing/build_critical_positions.py"' in DAG_SOURCE
+    assert 'application_args=["{{ dag_run.conf.get(\'date\', ds) }}"]' in DAG_SOURCE
+    assert "rebuild_critical_positions >> refresh_critical_positions" in DAG_SOURCE
+
+    compaction_block = DAG_SOURCE.split('dag_id="analyzer_derived_maintenance"', 1)[1].split(
+        'dag_id="analyzer_critical_positions"', 1
+    )[0]
+    assert "build_critical_positions.py" not in compaction_block
+
+
 def test_historical_analyzer_dags_are_not_registered():
     assert 'dag_id="historical_analyzer_rebuild"' not in DAG_SOURCE
     assert 'dag_id="historical_analyzer_staleness_scan"' not in DAG_SOURCE

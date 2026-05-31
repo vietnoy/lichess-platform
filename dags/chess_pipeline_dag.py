@@ -220,7 +220,53 @@ starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_sta
     compact_ondemand >> refresh_analyzer_tables
 
 
-# ─── DAG 2c: Nightly analyzer aggregate summaries ────────────────────────────
+# ─── DAG 2c: Analyzer critical-position partitions ───────────────────────────
+with DAG(
+    dag_id="analyzer_critical_positions",
+    default_args=default_args,
+    description="Date-bounded rebuild of critical positions from compacted analyzer evals",
+    start_date=datetime(2026, 5, 24),
+    schedule="45 1-23/2 * * *",
+    catchup=False,
+    max_active_runs=1,
+    tags=["chess", "processing", "analyzer", "critical"],
+) as dag_analyzer_critical:
+    rebuild_critical_positions = SparkSubmitOperator(
+        task_id="rebuild_critical_positions",
+        application="/git/repo/processing/build_critical_positions.py",
+        conn_id="spark_default",
+        packages=_iceberg_packages,
+        conf=_compact_conf,
+        application_args=["{{ dag_run.conf.get('date', ds) }}"],
+        verbose=True,
+    )
+
+    refresh_critical_positions = BashOperator(
+        task_id="refresh_critical_positions",
+        bash_command=r"""
+starrocks_mysql() {
+  if [ -n "$STARROCKS_PASSWORD" ]; then
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -p"$STARROCKS_PASSWORD" "$@" 2>/tmp/starrocks_mysql.err || {
+      if grep -q "Access denied" /tmp/starrocks_mysql.err; then
+        mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+      else
+        cat /tmp/starrocks_mysql.err >&2
+        return 1
+      fi
+    }
+  else
+    mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" "$@"
+  fi
+}
+
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positions;" || true
+""",
+    )
+
+    rebuild_critical_positions >> refresh_critical_positions
+
+
+# ─── DAG 2d: Nightly analyzer aggregate summaries ────────────────────────────
 with DAG(
     dag_id="analyzer_summary_maintenance",
     default_args=default_args,
