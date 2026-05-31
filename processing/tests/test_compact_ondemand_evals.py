@@ -1,6 +1,5 @@
 import sys
 import types
-import re
 from importlib import util
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,15 +55,7 @@ class FakeDataFrame:
 
     def where(self, condition):
         self.where_condition = condition
-        date_values = re.findall(r"DATE '([^']+)'", condition)
-        if not date_values:
-            return self
-        allowed_dates = set(date_values)
-        return FakeDataFrame(
-            [row for row in self.rows if str(row.get("date")) in allowed_dates],
-            name=self.name,
-            append_error=self.append_error,
-        )
+        return self
 
     def join(self, other, on, how):
         assert how in {"inner", "left_anti"}
@@ -230,8 +221,6 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
-    append_critical_positions = MagicMock(return_value=1)
-    monkeypatch.setattr(module, "append_critical_positions", append_critical_positions)
 
     enriched = module.enrich_with_dates(spark, staging)
     assert enriched.rows == [
@@ -242,8 +231,6 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert FakeDataFrame.last_write_target == "polaris.prod.move_evaluations_ondemand"
     assert FakeDataFrame.last_write_frame.append_called is True
     assert FakeDataFrame.last_write_frame.persist_called is False
-    append_critical_positions.assert_called_once()
-    assert append_critical_positions.call_args.args[2] == ["2026-05-11"]
     assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
 
 
@@ -271,51 +258,20 @@ def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, m
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
-    append_critical_positions = MagicMock()
-    monkeypatch.setattr(module, "append_critical_positions", append_critical_positions)
 
     assert module.run() == 1
     assert FakeDataFrame.last_write_target is None
-    append_critical_positions.assert_called_once()
-    assert append_critical_positions.call_args.args[2] == ["2026-05-11"]
     delete_keys = list(clear_staging.call_args.args[0])
     assert [(key.game_id, key.ply, key.player_id) for key in delete_keys] == [
         ("g1", 12, "alice")
     ]
 
 
-def test_incremental_critical_positions_merges_by_key_without_left_anti_join(module):
-    compacted = MagicMock()
-    critical_rows = MagicMock()
-    critical_rows.count.return_value = 3
-    spark = MagicMock()
-    spark.sql.return_value = critical_rows
+def test_compaction_does_not_touch_critical_positions(module):
+    source = Path(module.__file__).read_text()
 
-    assert module.append_critical_positions(
-        spark,
-        compacted,
-        ["2026-05-20", "2026-05-21"],
-    ) == 3
-
-    compacted.createOrReplaceTempView.assert_called_once_with("new_move_evaluations_ondemand")
-    critical_rows.createOrReplaceTempView.assert_called_once_with("new_critical_positions")
-    build_sql = spark.sql.call_args_list[1].args[0]
-    merge_sql = spark.sql.call_args_list[2].args[0]
-    assert "FROM new_move_evaluations_ondemand e" in build_sql
-    assert "FROM polaris.prod.move_evaluations e" not in build_sql
-    assert "LEFT ANTI JOIN" not in build_sql
-    assert "WHERE date IN (DATE '2026-05-20', DATE '2026-05-21')" in build_sql
-    assert "FROM polaris.prod.move_context_by_ply m" in build_sql
-    assert "WHERE m.date IN (DATE '2026-05-20', DATE '2026-05-21')" in build_sql
-    assert "AND m.date = b.date" in build_sql
-    assert "MERGE INTO polaris.prod.critical_positions AS target" in merge_sql
-    assert "USING new_critical_positions AS source" in merge_sql
-    assert "target.date = source.date" in merge_sql
-    assert "target.game_id = source.game_id" in merge_sql
-    assert "target.ply = source.ply" in merge_sql
-    assert "target.player_id = source.player_id" in merge_sql
-    assert "WHEN NOT MATCHED THEN INSERT" in merge_sql
-    critical_rows.writeTo.assert_not_called()
+    assert "critical_positions" not in source
+    assert "MERGE INTO" not in source
 
 
 def test_successful_write_deletes_postgres_rows(module, monkeypatch):
