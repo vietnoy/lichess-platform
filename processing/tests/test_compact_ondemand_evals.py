@@ -1,5 +1,6 @@
 import sys
 import types
+import re
 from importlib import util
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,7 +56,15 @@ class FakeDataFrame:
 
     def where(self, condition):
         self.where_condition = condition
-        return self
+        date_values = re.findall(r"DATE '([^']+)'", condition)
+        if not date_values:
+            return self
+        allowed_dates = set(date_values)
+        return FakeDataFrame(
+            [row for row in self.rows if str(row.get("date")) in allowed_dates],
+            name=self.name,
+            append_error=self.append_error,
+        )
 
     def join(self, other, on, how):
         assert how in {"inner", "left_anti"}
@@ -256,7 +265,7 @@ def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, m
         {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
     ], name="player_games")
     existing_evals = FakeDataFrame([
-        {"game_id": "g1", "ply": 12, "player_id": "alice"},
+        {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11"},
     ], name="existing_evals")
     spark = FakeSpark(staging, player_games, existing_evals)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
@@ -267,14 +276,15 @@ def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, m
 
     assert module.run() == 1
     assert FakeDataFrame.last_write_target is None
-    append_critical_positions.assert_not_called()
+    append_critical_positions.assert_called_once()
+    assert append_critical_positions.call_args.args[2] == ["2026-05-11"]
     delete_keys = list(clear_staging.call_args.args[0])
     assert [(key.game_id, key.ply, key.player_id) for key in delete_keys] == [
         ("g1", 12, "alice")
     ]
 
 
-def test_incremental_critical_positions_prunes_by_affected_dates(module):
+def test_incremental_critical_positions_merges_by_key_without_left_anti_join(module):
     compacted = MagicMock()
     critical_rows = MagicMock()
     critical_rows.count.return_value = 3
@@ -288,18 +298,24 @@ def test_incremental_critical_positions_prunes_by_affected_dates(module):
     ) == 3
 
     compacted.createOrReplaceTempView.assert_called_once_with("new_move_evaluations_ondemand")
-    sql = spark.sql.call_args.args[0]
-    assert "FROM new_move_evaluations_ondemand e" in sql
-    assert "FROM polaris.prod.move_evaluations e" not in sql
-    assert "WHERE date IN (DATE '2026-05-20', DATE '2026-05-21')" in sql
-    assert "FROM polaris.prod.move_context_by_ply m" in sql
-    assert "WHERE m.date IN (DATE '2026-05-20', DATE '2026-05-21')" in sql
-    assert "AND m.date = b.date" in sql
-    assert "FROM polaris.prod.critical_positions" in sql
-    assert ") existing" in sql
-    assert "AND c.date = existing.date" in sql
-    critical_rows.writeTo.assert_called_once_with("polaris.prod.critical_positions")
-    critical_rows.writeTo.return_value.append.assert_called_once()
+    critical_rows.createOrReplaceTempView.assert_called_once_with("new_critical_positions")
+    build_sql = spark.sql.call_args_list[1].args[0]
+    merge_sql = spark.sql.call_args_list[2].args[0]
+    assert "FROM new_move_evaluations_ondemand e" in build_sql
+    assert "FROM polaris.prod.move_evaluations e" not in build_sql
+    assert "LEFT ANTI JOIN" not in build_sql
+    assert "WHERE date IN (DATE '2026-05-20', DATE '2026-05-21')" in build_sql
+    assert "FROM polaris.prod.move_context_by_ply m" in build_sql
+    assert "WHERE m.date IN (DATE '2026-05-20', DATE '2026-05-21')" in build_sql
+    assert "AND m.date = b.date" in build_sql
+    assert "MERGE INTO polaris.prod.critical_positions AS target" in merge_sql
+    assert "USING new_critical_positions AS source" in merge_sql
+    assert "target.date = source.date" in merge_sql
+    assert "target.game_id = source.game_id" in merge_sql
+    assert "target.ply = source.ply" in merge_sql
+    assert "target.player_id = source.player_id" in merge_sql
+    assert "WHEN NOT MATCHED THEN INSERT" in merge_sql
+    critical_rows.writeTo.assert_not_called()
 
 
 def test_successful_write_deletes_postgres_rows(module, monkeypatch):

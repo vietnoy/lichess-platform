@@ -21,7 +21,7 @@ POSTGRES_HOST      = "postgres"
 POSTGRES_PORT      = 5432
 POSTGRES_DB        = "chess_analyzer_db"
 JDBC_URL           = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-DEFAULT_STAGING_BATCH_ROWS = 200_000
+DEFAULT_STAGING_BATCH_ROWS = 500_000
 
 logging.basicConfig(
     level=logging.INFO,
@@ -222,10 +222,9 @@ def enrich_with_dates(spark: SparkSession, staging):
 def filter_new_evaluations(spark: SparkSession, compacted, dates: list[str]):
     if not dates:
         return compacted
-    date_list = ", ".join(f"DATE '{date}'" for date in dates)
     existing_keys = (
         spark.table("polaris.prod.move_evaluations_ondemand")
-        .where(f"date IN ({date_list})")
+        .where(f"date IN ({date_list_sql(dates)})")
         .select("game_id", "ply", "player_id")
         .dropDuplicates(["game_id", "ply", "player_id"])
     )
@@ -236,14 +235,18 @@ def changed_dates(compacted) -> list[str]:
     return sorted(str(row.date) for row in compacted.select("date").distinct().collect())
 
 
+def date_list_sql(dates: list[str]) -> str:
+    return ", ".join(f"DATE '{date}'" for date in dates)
+
+
 def append_critical_positions(spark: SparkSession, compacted, dates: list[str]) -> int:
-    """Append critical-position facts from this compaction batch only."""
+    """Upsert critical-position facts from this compaction batch only."""
     if not dates:
         logger.info("no affected dates for critical_positions append")
         return 0
     ensure_critical_positions_table(spark)
     compacted.createOrReplaceTempView("new_move_evaluations_ondemand")
-    date_list = ", ".join(f"DATE '{date}'" for date in dates)
+    date_list = date_list_sql(dates)
     class_list = ", ".join(f"'{value}'" for value in TEACHABLE_CLASSES)
     critical_rows = spark.sql(
         f"""
@@ -317,23 +320,69 @@ def append_critical_positions(spark: SparkSession, compacted, dates: list[str]) 
         )
         SELECT c.*
         FROM candidates c
-        LEFT ANTI JOIN (
-            SELECT game_id, ply, player_id, date
-            FROM polaris.prod.critical_positions
-            WHERE date IN ({date_list})
-        ) existing
-          ON c.game_id = existing.game_id
-         AND c.ply = existing.ply
-         AND c.player_id = existing.player_id
-         AND c.date = existing.date
         """
     )
     row_count = critical_rows.count()
     if row_count == 0:
         logger.info("no new critical_positions rows in this compaction")
         return 0
-    critical_rows.writeTo("polaris.prod.critical_positions").append()
-    logger.info("appended %s critical_positions rows", row_count)
+    critical_rows.createOrReplaceTempView("new_critical_positions")
+    spark.sql(
+        """
+        MERGE INTO polaris.prod.critical_positions AS target
+        USING new_critical_positions AS source
+        ON target.date = source.date
+           AND target.game_id = source.game_id
+           AND target.ply = source.ply
+           AND target.player_id = source.player_id
+        WHEN NOT MATCHED THEN INSERT (
+            player_id,
+            game_id,
+            ply,
+            date,
+            fen,
+            played_move,
+            best_move,
+            eval_cp,
+            mate,
+            eval_swing_cp,
+            classification,
+            phase,
+            clock_remaining,
+            time_pressure,
+            color,
+            opponent_id,
+            opening_eco,
+            opening_name,
+            speed,
+            perf,
+            eval_source
+        ) VALUES (
+            source.player_id,
+            source.game_id,
+            source.ply,
+            source.date,
+            source.fen,
+            source.played_move,
+            source.best_move,
+            source.eval_cp,
+            source.mate,
+            source.eval_swing_cp,
+            source.classification,
+            source.phase,
+            source.clock_remaining,
+            source.time_pressure,
+            source.color,
+            source.opponent_id,
+            source.opening_eco,
+            source.opening_name,
+            source.speed,
+            source.perf,
+            source.eval_source
+        )
+        """
+    )
+    logger.info("merged up to %s critical_positions rows", row_count)
     return row_count
 
 
@@ -435,7 +484,7 @@ def run() -> int:
             if new_count > 0:
                 new_compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
                 logger.info(f"wrote {new_count} rows to iceberg")
-                append_critical_positions(spark, new_compacted, dates)
+            append_critical_positions(spark, compacted, dates)
 
             keys = compacted.select("game_id", "ply", "player_id").distinct().toLocalIterator()
             deleted_count = clear_staging(keys)
