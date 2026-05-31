@@ -272,20 +272,19 @@ def append_critical_positions(spark: SparkSession, compacted, dates: list[str]) 
         move_context AS (
             SELECT
                 m.game_id,
-                m.move_number AS ply,
+                m.ply,
                 m.date,
-                max(m.clock_remaining) AS clock_remaining,
-                max(m.opening_eco) AS opening_eco,
-                max(m.opening_name) AS opening_name,
-                max(m.speed) AS speed,
-                max(m.perf) AS perf
-            FROM polaris.prod.chess_move_events m
+                m.clock_remaining,
+                m.opening_eco,
+                m.opening_name,
+                m.speed,
+                m.perf
+            FROM polaris.prod.move_context_by_ply m
             JOIN (SELECT DISTINCT game_id, ply, date FROM batch_evals) b
               ON m.game_id = b.game_id
-             AND m.move_number = b.ply
+             AND m.ply = b.ply
              AND m.date = b.date
             WHERE m.date IN ({date_list})
-            GROUP BY m.game_id, m.move_number, m.date
         ),
         candidates AS (
             SELECT

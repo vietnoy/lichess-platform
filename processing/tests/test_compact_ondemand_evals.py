@@ -292,7 +292,7 @@ def test_incremental_critical_positions_prunes_by_affected_dates(module):
     assert "FROM new_move_evaluations_ondemand e" in sql
     assert "FROM polaris.prod.move_evaluations e" not in sql
     assert "WHERE date IN (DATE '2026-05-20', DATE '2026-05-21')" in sql
-    assert "FROM polaris.prod.chess_move_events m" in sql
+    assert "FROM polaris.prod.move_context_by_ply m" in sql
     assert "WHERE m.date IN (DATE '2026-05-20', DATE '2026-05-21')" in sql
     assert "AND m.date = b.date" in sql
     assert "FROM polaris.prod.critical_positions" in sql

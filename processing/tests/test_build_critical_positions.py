@@ -57,6 +57,8 @@ def test_sql_uses_ondemand_only_and_dedupes_by_player_game_ply(module):
 
     assert "SELECT DISTINCT game_id, player_id, color, opponent_id, date" in sql
     assert "FROM polaris.prod.move_evaluations_ondemand e" in sql
+    assert "FROM polaris.prod.move_context_by_ply m" in sql
+    assert "FROM polaris.prod.chess_move_events m" not in sql
     assert "UNION ALL" not in sql
     assert "FROM polaris.prod.move_evaluations e" not in sql
     assert "eval_swing_cp_from_prev" not in sql
@@ -64,11 +66,13 @@ def test_sql_uses_ondemand_only_and_dedupes_by_player_game_ply(module):
     assert "ORDER BY source_priority" in sql
     assert "WHERE e.rn = 1" in sql
     assert "e.date = DATE '2026-05-20'" in sql
+    assert "m.date = DATE '2026-05-20'" in sql
 
 
 def test_sql_can_run_without_legacy_daily_table(module):
     sql = module.build_critical_positions_sql("2026-05-20", include_legacy_daily=False)
 
     assert "FROM polaris.prod.move_evaluations_ondemand e" in sql
+    assert "FROM polaris.prod.move_context_by_ply m" in sql
     assert "FROM polaris.prod.move_evaluations e" not in sql
     assert "WHERE e.rn = 1" in sql

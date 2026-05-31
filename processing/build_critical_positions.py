@@ -123,9 +123,7 @@ def build_critical_positions_sql(
 ) -> str:
     class_list = ", ".join(f"'{value}'" for value in TEACHABLE_CLASSES)
     player_games_filter = date_filter("pg", date_str)
-    move_context_filter = ""
-    if date_str:
-        move_context_filter = f"WHERE to_date(m.date) = DATE '{date_str}'"
+    move_context_filter = date_filter("m", date_str)
 
     return f"""
     WITH player_games AS (
@@ -136,16 +134,15 @@ def build_critical_positions_sql(
     move_context AS (
         SELECT
             m.game_id,
-            m.move_number AS ply,
-            max(m.whose_moved) AS whose_moved,
-            max(m.clock_remaining) AS clock_remaining,
-            max(m.opening_eco) AS opening_eco,
-            max(m.opening_name) AS opening_name,
-            max(m.speed) AS speed,
-            max(m.perf) AS perf
-        FROM polaris.prod.chess_move_events m
+            m.ply,
+            m.date,
+            m.clock_remaining,
+            m.opening_eco,
+            m.opening_name,
+            m.speed,
+            m.perf
+        FROM polaris.prod.move_context_by_ply m
         {move_context_filter}
-        GROUP BY m.game_id, m.move_number
     ),
     normalized_evals AS (
         SELECT
@@ -201,7 +198,7 @@ def build_critical_positions_sql(
     JOIN player_games pg
       ON e.game_id = pg.game_id AND e.player_id = pg.player_id
     LEFT JOIN move_context m
-      ON e.game_id = m.game_id AND e.ply = m.ply
+      ON e.game_id = m.game_id AND e.ply = m.ply AND e.date = m.date
     WHERE e.rn = 1
     """
 

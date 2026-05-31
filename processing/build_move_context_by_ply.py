@@ -35,10 +35,10 @@ def build_spark() -> SparkSession:
     ]
     return (
         SparkSession.builder
-        .appName("chess-build-player-phase-stats")
+        .appName("chess-build-move-context-by-ply")
         .config("spark.jars.packages", ",".join(packages))
         .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.shuffle.partitions", "32")
+        .config("spark.sql.shuffle.partitions", "16")
         .config("spark.sql.catalog.polaris", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.polaris.type", "rest")
         .config("spark.sql.catalog.polaris.uri", POLARIS_URI)
@@ -63,19 +63,15 @@ def build_spark() -> SparkSession:
 def ensure_table(spark: SparkSession) -> None:
     spark.sql(
         """
-        CREATE TABLE IF NOT EXISTS polaris.prod.player_phase_stats (
-            player_id               STRING NOT NULL,
-            date                    DATE   NOT NULL,
-            phase                   STRING NOT NULL,
-            games_with_positions    INT,
-            critical_positions      INT,
-            blunders                INT,
-            mistakes                INT,
-            inaccuracies            INT,
-            time_pressure_positions INT,
-            avg_eval_swing_cp       DOUBLE,
-            max_eval_swing_cp       INT,
-            updated_at              TIMESTAMP
+        CREATE TABLE IF NOT EXISTS polaris.prod.move_context_by_ply (
+            date            DATE   NOT NULL,
+            game_id         STRING NOT NULL,
+            ply             INT    NOT NULL,
+            clock_remaining INT,
+            opening_eco     STRING,
+            opening_name    STRING,
+            speed           STRING,
+            perf            STRING
         )
         USING iceberg
         PARTITIONED BY (date)
@@ -83,42 +79,21 @@ def ensure_table(spark: SparkSession) -> None:
     )
 
 
-def date_filter(date_str: str | None) -> str:
-    if not date_str:
-        return ""
-    return f"WHERE date = DATE '{date_str}'"
-
-
-def build_player_phase_stats_sql(date_str: str | None) -> str:
+def build_move_context_sql(date_str: str | None) -> str:
+    date_filter = f"WHERE date = DATE '{date_str}'" if date_str else ""
     return f"""
-    WITH source AS (
-        SELECT
-            player_id,
-            game_id,
-            date,
-            COALESCE(phase, 'unknown') AS phase,
-            classification,
-            time_pressure,
-            eval_swing_cp
-        FROM polaris.prod.critical_positions
-        {date_filter(date_str)}
-    )
     SELECT
-        player_id,
         date,
-        phase,
-        CAST(COUNT(DISTINCT game_id) AS INT) AS games_with_positions,
-        CAST(COUNT(*) AS INT) AS critical_positions,
-        CAST(SUM(CASE WHEN classification = 'blunder' THEN 1 ELSE 0 END) AS INT) AS blunders,
-        CAST(SUM(CASE WHEN classification = 'mistake' THEN 1 ELSE 0 END) AS INT) AS mistakes,
-        CAST(SUM(CASE WHEN classification = 'inaccuracy' THEN 1 ELSE 0 END) AS INT) AS inaccuracies,
-        CAST(SUM(CASE WHEN time_pressure IN ('under_10s', 'under_30s') THEN 1 ELSE 0 END) AS INT)
-            AS time_pressure_positions,
-        ROUND(AVG(ABS(eval_swing_cp)), 1) AS avg_eval_swing_cp,
-        CAST(MAX(ABS(eval_swing_cp)) AS INT) AS max_eval_swing_cp,
-        current_timestamp() AS updated_at
-    FROM source
-    GROUP BY player_id, date, phase
+        game_id,
+        move_number AS ply,
+        max(clock_remaining) AS clock_remaining,
+        max(opening_eco) AS opening_eco,
+        max(opening_name) AS opening_name,
+        max(speed) AS speed,
+        max(perf) AS perf
+    FROM polaris.prod.chess_move_events
+    {date_filter}
+    GROUP BY date, game_id, move_number
     """
 
 
@@ -127,32 +102,26 @@ def run(date_str: str | None) -> int:
     spark.sparkContext.setLogLevel("WARN")
     try:
         ensure_table(spark)
-        logger.info("Building player_phase_stats for date=%s", date_str or "ALL")
-        output = spark.sql(build_player_phase_stats_sql(date_str))
+        logger.info("Building move_context_by_ply for date=%s", date_str or "ALL")
+        output = spark.sql(build_move_context_sql(date_str))
         row_count = output.count()
-        logger.info("player_phase_stats output rows=%s", row_count)
+        logger.info("move_context_by_ply output rows=%s", row_count)
         if row_count == 0:
             if date_str:
-                spark.sql(f"DELETE FROM polaris.prod.player_phase_stats WHERE date = DATE '{date_str}'")
-                logger.info("cleared empty player_phase_stats partition for date=%s", date_str)
+                spark.sql(f"DELETE FROM polaris.prod.move_context_by_ply WHERE date = DATE '{date_str}'")
+                logger.info("cleared empty move_context_by_ply partition for date=%s", date_str)
             return 0
 
-        output.writeTo("polaris.prod.player_phase_stats").overwritePartitions()
+        output.writeTo("polaris.prod.move_context_by_ply").overwritePartitions()
         logger.info("Done")
         return row_count
     finally:
         spark.stop()
 
 
-def resolve_date_arg(argv: list[str]) -> str | None:
-    if len(argv) > 1 and argv[1] == "--all":
-        return None
-
-    arg = argv[1] if len(argv) > 1 else None
+if __name__ == "__main__":
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
     today = datetime.today().strftime("%Y-%m-%d")
     yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    return yesterday if (arg is None or arg >= today) else arg
-
-
-if __name__ == "__main__":
-    run(resolve_date_arg(sys.argv))
+    date = yesterday if (arg is None or arg >= today) else arg
+    run(date)

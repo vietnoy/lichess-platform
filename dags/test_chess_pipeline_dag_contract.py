@@ -4,8 +4,9 @@ from pathlib import Path
 DAG_SOURCE = Path(__file__).with_name("chess_pipeline_dag.py").read_text()
 
 
-def test_daily_pipeline_only_builds_raw_tables_before_refresh():
-    assert "process >> build_player_games >> refresh_starrocks_catalog" in DAG_SOURCE
+def test_daily_pipeline_builds_context_before_refresh():
+    assert "process >> build_player_games >> build_move_context >> refresh_starrocks_catalog" in DAG_SOURCE
+    assert 'application="/git/repo/processing/build_move_context_by_ply.py"' in DAG_SOURCE
     assert "process >> build_player_games >> compact_ondemand" not in DAG_SOURCE
 
 

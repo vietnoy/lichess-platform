@@ -118,6 +118,16 @@ with DAG(
         verbose=True,
     )
 
+    build_move_context = SparkSubmitOperator(
+        task_id="run_build_move_context_by_ply",
+        application="/git/repo/processing/build_move_context_by_ply.py",
+        conn_id="spark_default",
+        packages=_iceberg_packages,
+        conf=_process_conf,
+        application_args=["{{ ds }}"],
+        verbose=True,
+    )
+
     refresh_starrocks_catalog = BashOperator(
         task_id="refresh_starrocks_catalog",
         bash_command=r"""
@@ -154,10 +164,11 @@ PROPERTIES (
 "
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;"
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;"
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_context_by_ply;" || true
 """,
     )
 
-    process >> build_player_games >> refresh_starrocks_catalog
+    process >> build_player_games >> build_move_context >> refresh_starrocks_catalog
 
 
 # ─── DAG 2b: Analyzer eval compaction → derived product partitions ────────────
@@ -320,6 +331,7 @@ PROPERTIES (
         bash_command=r"""
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.chess_move_events;"
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_games;"
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_context_by_ply;" || true
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations;" || true
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.move_evaluations_ondemand;" || true
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positions;" || true
