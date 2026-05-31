@@ -236,10 +236,14 @@ def changed_dates(compacted) -> list[str]:
     return sorted(str(row.date) for row in compacted.select("date").distinct().collect())
 
 
-def append_critical_positions(spark: SparkSession, compacted) -> int:
+def append_critical_positions(spark: SparkSession, compacted, dates: list[str]) -> int:
     """Append critical-position facts from this compaction batch only."""
+    if not dates:
+        logger.info("no affected dates for critical_positions append")
+        return 0
     ensure_critical_positions_table(spark)
     compacted.createOrReplaceTempView("new_move_evaluations_ondemand")
+    date_list = ", ".join(f"DATE '{date}'" for date in dates)
     class_list = ", ".join(f"'{value}'" for value in TEACHABLE_CLASSES)
     critical_rows = spark.sql(
         f"""
@@ -263,20 +267,25 @@ def append_critical_positions(spark: SparkSession, compacted) -> int:
         player_games AS (
             SELECT DISTINCT game_id, player_id, color, opponent_id, date
             FROM polaris.prod.player_games
+            WHERE date IN ({date_list})
         ),
         move_context AS (
             SELECT
                 m.game_id,
                 m.move_number AS ply,
+                m.date,
                 max(m.clock_remaining) AS clock_remaining,
                 max(m.opening_eco) AS opening_eco,
                 max(m.opening_name) AS opening_name,
                 max(m.speed) AS speed,
                 max(m.perf) AS perf
             FROM polaris.prod.chess_move_events m
-            JOIN (SELECT DISTINCT game_id, ply FROM batch_evals) b
-              ON m.game_id = b.game_id AND m.move_number = b.ply
-            GROUP BY m.game_id, m.move_number
+            JOIN (SELECT DISTINCT game_id, ply, date FROM batch_evals) b
+              ON m.game_id = b.game_id
+             AND m.move_number = b.ply
+             AND m.date = b.date
+            WHERE m.date IN ({date_list})
+            GROUP BY m.game_id, m.move_number, m.date
         ),
         candidates AS (
             SELECT
@@ -305,14 +314,19 @@ def append_critical_positions(spark: SparkSession, compacted) -> int:
             JOIN player_games pg
               ON e.game_id = pg.game_id AND e.player_id = pg.player_id
             LEFT JOIN move_context m
-              ON e.game_id = m.game_id AND e.ply = m.ply
+              ON e.game_id = m.game_id AND e.ply = m.ply AND e.date = m.date
         )
         SELECT c.*
         FROM candidates c
-        LEFT ANTI JOIN polaris.prod.critical_positions existing
+        LEFT ANTI JOIN (
+            SELECT game_id, ply, player_id, date
+            FROM polaris.prod.critical_positions
+            WHERE date IN ({date_list})
+        ) existing
           ON c.game_id = existing.game_id
          AND c.ply = existing.ply
          AND c.player_id = existing.player_id
+         AND c.date = existing.date
         """
     )
     row_count = critical_rows.count()
@@ -422,7 +436,7 @@ def run() -> int:
             if new_count > 0:
                 new_compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
                 logger.info(f"wrote {new_count} rows to iceberg")
-                append_critical_positions(spark, new_compacted)
+                append_critical_positions(spark, new_compacted, dates)
 
             keys = compacted.select("game_id", "ply", "player_id").distinct().toLocalIterator()
             deleted_count = clear_staging(keys)

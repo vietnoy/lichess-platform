@@ -234,6 +234,7 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert FakeDataFrame.last_write_frame.append_called is True
     assert FakeDataFrame.last_write_frame.persist_called is False
     append_critical_positions.assert_called_once()
+    assert append_critical_positions.call_args.args[2] == ["2026-05-11"]
     assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
 
 
@@ -273,20 +274,30 @@ def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, m
     ]
 
 
-def test_incremental_critical_positions_reads_only_compacted_batch(module):
+def test_incremental_critical_positions_prunes_by_affected_dates(module):
     compacted = MagicMock()
     critical_rows = MagicMock()
     critical_rows.count.return_value = 3
     spark = MagicMock()
     spark.sql.return_value = critical_rows
 
-    assert module.append_critical_positions(spark, compacted) == 3
+    assert module.append_critical_positions(
+        spark,
+        compacted,
+        ["2026-05-20", "2026-05-21"],
+    ) == 3
 
     compacted.createOrReplaceTempView.assert_called_once_with("new_move_evaluations_ondemand")
     sql = spark.sql.call_args.args[0]
     assert "FROM new_move_evaluations_ondemand e" in sql
     assert "FROM polaris.prod.move_evaluations e" not in sql
-    assert "LEFT ANTI JOIN polaris.prod.critical_positions existing" in sql
+    assert "WHERE date IN (DATE '2026-05-20', DATE '2026-05-21')" in sql
+    assert "FROM polaris.prod.chess_move_events m" in sql
+    assert "WHERE m.date IN (DATE '2026-05-20', DATE '2026-05-21')" in sql
+    assert "AND m.date = b.date" in sql
+    assert "FROM polaris.prod.critical_positions" in sql
+    assert ") existing" in sql
+    assert "AND c.date = existing.date" in sql
     critical_rows.writeTo.assert_called_once_with("polaris.prod.critical_positions")
     critical_rows.writeTo.return_value.append.assert_called_once()
 
