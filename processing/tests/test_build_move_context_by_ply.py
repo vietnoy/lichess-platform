@@ -36,7 +36,8 @@ def test_sql_builds_one_date_partition(module):
     sql = module.build_move_context_sql("2026-05-30")
 
     assert "FROM polaris.prod.chess_move_events" in sql
-    assert "WHERE date = DATE '2026-05-30'" in sql
+    assert "WHERE date = '2026-05-30'" in sql
+    assert "to_date(date) AS date" in sql
     assert "GROUP BY date, game_id, move_number" in sql
     assert "move_number AS ply" in sql
 
