@@ -41,7 +41,10 @@ def test_analyzer_critical_positions_runs_as_separate_date_bounded_dag():
     assert 'schedule="45 1-23/2 * * *"' in DAG_SOURCE
     assert 'task_id="rebuild_critical_positions"' in DAG_SOURCE
     assert 'application="/git/repo/processing/build_critical_positions.py"' in DAG_SOURCE
-    assert 'application_args=["{{ dag_run.conf.get(\'date\', ds) }}"]' in DAG_SOURCE
+    assert (
+        'application_args=["{{ (dag_run.conf or {}).get(\'date\') or \'--next-queued\' }}"]'
+        in DAG_SOURCE
+    )
     assert "rebuild_critical_positions >> refresh_critical_positions" in DAG_SOURCE
 
     compaction_block = DAG_SOURCE.split('dag_id="analyzer_derived_maintenance"', 1)[1].split(

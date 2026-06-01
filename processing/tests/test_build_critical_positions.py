@@ -22,6 +22,11 @@ def module(monkeypatch):
     pyspark_sql.SparkSession = SimpleNamespace(builder=SimpleNamespace())
     pyspark_sql_utils = types.ModuleType("pyspark.sql.utils")
     pyspark_sql_utils.AnalysisException = Exception
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg2",
+        SimpleNamespace(connect=lambda *args, **kwargs: None),
+    )
     monkeypatch.setitem(sys.modules, "pyspark", pyspark)
     monkeypatch.setitem(sys.modules, "pyspark.sql", pyspark_sql)
     monkeypatch.setitem(sys.modules, "pyspark.sql.utils", pyspark_sql_utils)
@@ -81,3 +86,47 @@ def test_sql_can_run_without_legacy_daily_table(module):
 def test_resolve_date_arg_supports_all_dates(module):
     assert module.resolve_date_arg(["build_critical_positions.py", "--all"]) is None
     assert module.resolve_date_arg(["build_critical_positions.py", "2026-05-20"]) == "2026-05-20"
+
+
+def test_next_queued_run_claims_builds_and_marks_done(module, monkeypatch):
+    calls = []
+    monkeypatch.setattr(module, "claim_next_rebuild_date", lambda: "2026-05-29")
+    monkeypatch.setattr(module, "run", lambda date: calls.append(("run", date)) or 5029)
+    monkeypatch.setattr(module, "complete_rebuild_date", lambda date, rows: calls.append(("done", date, rows)))
+    monkeypatch.setattr(module, "fail_rebuild_date", lambda date, error: calls.append(("failed", date, str(error))))
+
+    assert module.run_next_queued() == 5029
+
+    assert calls == [
+        ("run", "2026-05-29"),
+        ("done", "2026-05-29", 5029),
+    ]
+
+
+def test_next_queued_run_is_noop_when_queue_empty(module, monkeypatch):
+    monkeypatch.setattr(module, "claim_next_rebuild_date", lambda: None)
+    run = lambda date: pytest.fail("run should not be called")
+    monkeypatch.setattr(module, "run", run)
+
+    assert module.run_next_queued() == 0
+
+
+def test_next_queued_run_marks_failed_before_reraising(module, monkeypatch):
+    calls = []
+    error = RuntimeError("spark failed")
+    monkeypatch.setattr(module, "claim_next_rebuild_date", lambda: "2026-05-29")
+
+    def fail_run(date):
+        calls.append(("run", date))
+        raise error
+
+    monkeypatch.setattr(module, "run", fail_run)
+    monkeypatch.setattr(module, "fail_rebuild_date", lambda date, exc: calls.append(("failed", date, str(exc))))
+
+    with pytest.raises(RuntimeError, match="spark failed"):
+        module.run_next_queued()
+
+    assert calls == [
+        ("run", "2026-05-29"),
+        ("failed", "2026-05-29", "spark failed"),
+    ]

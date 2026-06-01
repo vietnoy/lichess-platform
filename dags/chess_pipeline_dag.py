@@ -237,7 +237,7 @@ with DAG(
         conn_id="spark_default",
         packages=_iceberg_packages,
         conf=_compact_conf,
-        application_args=["{{ dag_run.conf.get('date', ds) }}"],
+        application_args=["{{ (dag_run.conf or {}).get('date') or '--next-queued' }}"],
         verbose=True,
     )
 

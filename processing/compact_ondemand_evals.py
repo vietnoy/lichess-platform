@@ -22,6 +22,7 @@ POSTGRES_PORT      = 5432
 POSTGRES_DB        = "chess_analyzer_db"
 JDBC_URL           = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 DEFAULT_STAGING_BATCH_ROWS = 50_000
+CRITICAL_REBUILD_QUEUE_TABLE = "critical_position_rebuild_queue"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -137,6 +138,88 @@ def ensure_table(spark: SparkSession) -> None:
         PARTITIONED BY (date)
         """
     )
+
+
+def ensure_critical_rebuild_queue() -> None:
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {CRITICAL_REBUILD_QUEUE_TABLE} (
+                    date DATE PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INT NOT NULL DEFAULT 0,
+                    row_count INT,
+                    last_error TEXT,
+                    enqueued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    locked_at TIMESTAMPTZ,
+                    locked_by TEXT
+                )
+                """
+            )
+            cur.execute(f"ALTER TABLE {CRITICAL_REBUILD_QUEUE_TABLE} ADD COLUMN IF NOT EXISTS row_count INT")
+
+
+def enqueue_critical_rebuild_dates(dates: list[str]) -> int:
+    if not dates:
+        return 0
+
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {CRITICAL_REBUILD_QUEUE_TABLE} (
+                    date DATE PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INT NOT NULL DEFAULT 0,
+                    row_count INT,
+                    last_error TEXT,
+                    enqueued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    locked_at TIMESTAMPTZ,
+                    locked_by TEXT
+                )
+                """
+            )
+            cur.execute(f"ALTER TABLE {CRITICAL_REBUILD_QUEUE_TABLE} ADD COLUMN IF NOT EXISTS row_count INT")
+            values_sql = ", ".join(["(%s::date)"] * len(dates))
+            cur.execute(
+                f"""
+                INSERT INTO {CRITICAL_REBUILD_QUEUE_TABLE} (date)
+                VALUES {values_sql}
+                ON CONFLICT (date) DO UPDATE
+                SET
+                    status = CASE
+                        WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running'
+                        THEN {CRITICAL_REBUILD_QUEUE_TABLE}.status
+                        ELSE 'pending'
+                    END,
+                    attempts = CASE
+                        WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running'
+                        THEN {CRITICAL_REBUILD_QUEUE_TABLE}.attempts
+                        ELSE 0
+                    END,
+                    last_error = NULL,
+                    row_count = NULL,
+                    enqueued_at = now(),
+                    updated_at = now()
+                """,
+                dates,
+            )
+            return positive_rowcount(cur.rowcount)
 
 
 def read_staging(spark: SparkSession):
@@ -286,6 +369,8 @@ def run() -> int:
             if new_count > 0:
                 new_compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
                 logger.info(f"wrote {new_count} rows to iceberg")
+                enqueued_count = enqueue_critical_rebuild_dates(changed_dates(new_compacted))
+                logger.info("enqueued %s critical-position rebuild dates", enqueued_count)
 
             keys = compacted.select("game_id", "ply", "player_id").distinct().toLocalIterator()
             deleted_count = clear_staging(keys)

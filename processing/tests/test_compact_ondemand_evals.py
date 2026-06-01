@@ -221,6 +221,8 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
+    enqueue_dates = MagicMock()
+    monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", enqueue_dates)
 
     enriched = module.enrich_with_dates(spark, staging)
     assert enriched.rows == [
@@ -231,6 +233,7 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert FakeDataFrame.last_write_target == "polaris.prod.move_evaluations_ondemand"
     assert FakeDataFrame.last_write_frame.append_called is True
     assert FakeDataFrame.last_write_frame.persist_called is False
+    enqueue_dates.assert_called_once_with(["2026-05-11"])
     assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
 
 
@@ -258,9 +261,12 @@ def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, m
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
+    enqueue_dates = MagicMock()
+    monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", enqueue_dates)
 
     assert module.run() == 1
     assert FakeDataFrame.last_write_target is None
+    enqueue_dates.assert_not_called()
     delete_keys = list(clear_staging.call_args.args[0])
     assert [(key.game_id, key.ply, key.player_id) for key in delete_keys] == [
         ("g1", 12, "alice")
@@ -283,6 +289,8 @@ def test_successful_write_deletes_postgres_rows(module, monkeypatch):
     ], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    enqueue_dates = MagicMock()
+    monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", enqueue_dates)
 
     cursor = MagicMock()
     cursor.__enter__.return_value = cursor
@@ -293,6 +301,7 @@ def test_successful_write_deletes_postgres_rows(module, monkeypatch):
     monkeypatch.setattr(module.psycopg2, "connect", connect)
 
     assert module.run() == 1
+    enqueue_dates.assert_called_once_with(["2026-05-11"])
 
     delete_calls = [
         call for call in cursor.execute.call_args_list
@@ -335,12 +344,15 @@ def test_unmatched_staging_row_stays_out_of_delete_keys(module, monkeypatch):
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
+    enqueue_dates = MagicMock()
+    monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", enqueue_dates)
 
     compacted = module.enrich_with_dates(spark, staging)
     assert compacted.count() == 1
 
     assert module.run() == 1
 
+    enqueue_dates.assert_called_once_with(["2026-05-11"])
     clear_staging.assert_called_once()
     delete_keys = list(clear_staging.call_args.args[0])
     assert len(delete_keys) == 1
@@ -361,6 +373,7 @@ def test_clear_staging_failure_after_successful_append_is_raised(module, monkeyp
     ], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", MagicMock())
 
     cursor_error = RuntimeError("postgres delete failed")
     cursor = MagicMock()

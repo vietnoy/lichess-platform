@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import socket
 
 from datetime import datetime, timedelta
 from dotenv import find_dotenv, load_dotenv
+import psycopg2
 from pyspark.sql import SparkSession
 
 # See process_to_polaris.py — same dotenv >=1.1.0 stack-frame assertion.
@@ -17,8 +19,14 @@ MINIO_SECRET_KEY   = os.getenv("MINIO_SECRET_KEY")
 POLARIS_URI        = os.getenv("POLARIS_URI")
 POLARIS_CREDENTIAL = f"{os.getenv('POLARIS_ETL_CLIENT_ID')}:{os.getenv('POLARIS_ETL_CLIENT_SECRET')}"
 POLARIS_WAREHOUSE  = os.getenv("POLARIS_WAREHOUSE")
+POSTGRES_USER      = os.getenv("POSTGRES_USER")
+POSTGRES_PASSWORD  = os.getenv("POSTGRES_PASSWORD")
+POSTGRES_HOST      = "postgres"
+POSTGRES_PORT      = 5432
+POSTGRES_DB        = "chess_analyzer_db"
 
 TEACHABLE_CLASSES = ("blunder", "mistake", "inaccuracy")
+CRITICAL_REBUILD_QUEUE_TABLE = "critical_position_rebuild_queue"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -92,6 +100,121 @@ def ensure_table(spark: SparkSession) -> None:
         PARTITIONED BY (date)
         """
     )
+
+
+def ensure_rebuild_queue() -> None:
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {CRITICAL_REBUILD_QUEUE_TABLE} (
+                    date DATE PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INT NOT NULL DEFAULT 0,
+                    row_count INT,
+                    last_error TEXT,
+                    enqueued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    locked_at TIMESTAMPTZ,
+                    locked_by TEXT
+                )
+                """
+            )
+            cur.execute(f"ALTER TABLE {CRITICAL_REBUILD_QUEUE_TABLE} ADD COLUMN IF NOT EXISTS row_count INT")
+
+
+def claim_next_rebuild_date(worker_id: str | None = None) -> str | None:
+    worker_id = worker_id or socket.gethostname()
+    ensure_rebuild_queue()
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                WITH next_date AS (
+                    SELECT date
+                    FROM {CRITICAL_REBUILD_QUEUE_TABLE}
+                    WHERE status = 'pending'
+                    ORDER BY date DESC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                UPDATE {CRITICAL_REBUILD_QUEUE_TABLE} q
+                SET
+                    status = 'running',
+                    attempts = attempts + 1,
+                    locked_at = now(),
+                    locked_by = %s,
+                    updated_at = now(),
+                    last_error = NULL
+                FROM next_date
+                WHERE q.date = next_date.date
+                RETURNING q.date
+                """,
+                (worker_id,),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row else None
+
+
+def complete_rebuild_date(date_str: str, row_count: int) -> None:
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {CRITICAL_REBUILD_QUEUE_TABLE}
+                SET
+                    status = 'done',
+                    row_count = %s,
+                    updated_at = now(),
+                    locked_at = NULL,
+                    locked_by = NULL,
+                    last_error = NULL
+                WHERE date = %s::date
+                """,
+                (row_count, date_str),
+            )
+
+
+def fail_rebuild_date(date_str: str, error: BaseException) -> None:
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {CRITICAL_REBUILD_QUEUE_TABLE}
+                SET
+                    status = 'failed',
+                    updated_at = now(),
+                    locked_at = NULL,
+                    locked_by = NULL,
+                    last_error = left(%s, 1000)
+                WHERE date = %s::date
+                """,
+                (str(error), date_str),
+            )
 
 
 def phase_case(ply_expr: str = "ply") -> str:
@@ -225,6 +348,24 @@ def run(date_str: str | None) -> int:
         spark.stop()
 
 
+def run_next_queued() -> int:
+    date_str = claim_next_rebuild_date()
+    if not date_str:
+        logger.info("No pending critical-position rebuild dates")
+        return 0
+
+    logger.info("Claimed critical-position rebuild date=%s", date_str)
+    try:
+        row_count = run(date_str)
+    except Exception as exc:
+        fail_rebuild_date(date_str, exc)
+        raise
+
+    complete_rebuild_date(date_str, row_count)
+    logger.info("Completed queued critical-position rebuild date=%s rows=%s", date_str, row_count)
+    return row_count
+
+
 def resolve_date_arg(argv: list[str]) -> str | None:
     if len(argv) > 1 and argv[1] == "--all":
         return None
@@ -236,4 +377,7 @@ def resolve_date_arg(argv: list[str]) -> str | None:
 
 
 if __name__ == "__main__":
-    run(resolve_date_arg(sys.argv))
+    if len(sys.argv) > 1 and sys.argv[1] == "--next-queued":
+        run_next_queued()
+    else:
+        run(resolve_date_arg(sys.argv))
