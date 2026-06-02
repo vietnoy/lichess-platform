@@ -280,6 +280,12 @@ def test_compaction_does_not_touch_critical_positions(module):
     assert "MERGE INTO" not in source
 
 
+def test_rebuild_queue_does_not_requeue_done_or_running_dates(module):
+    source = Path(module.__file__).read_text()
+
+    assert "WHERE {CRITICAL_REBUILD_QUEUE_TABLE}.status NOT IN ('done', 'running')" in source
+
+
 def test_successful_write_deletes_postgres_rows(module, monkeypatch):
     staging = FakeDataFrame([
         {"game_id": "g1", "ply": 12, "player_id": "alice"},

@@ -202,20 +202,13 @@ def enqueue_critical_rebuild_dates(dates: list[str]) -> int:
                 VALUES {values_sql}
                 ON CONFLICT (date) DO UPDATE
                 SET
-                    status = CASE
-                        WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running'
-                        THEN {CRITICAL_REBUILD_QUEUE_TABLE}.status
-                        ELSE 'pending'
-                    END,
-                    attempts = CASE
-                        WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running'
-                        THEN {CRITICAL_REBUILD_QUEUE_TABLE}.attempts
-                        ELSE 0
-                    END,
+                    status = 'pending',
+                    attempts = 0,
                     last_error = NULL,
                     row_count = NULL,
                     enqueued_at = now(),
                     updated_at = now()
+                WHERE {CRITICAL_REBUILD_QUEUE_TABLE}.status NOT IN ('done', 'running')
                 """,
                 dates,
             )
