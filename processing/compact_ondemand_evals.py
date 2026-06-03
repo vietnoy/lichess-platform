@@ -160,11 +160,18 @@ def ensure_critical_rebuild_queue() -> None:
                     enqueued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     locked_at TIMESTAMPTZ,
-                    locked_by TEXT
+                    locked_by TEXT,
+                    rerun_after_running BOOLEAN NOT NULL DEFAULT FALSE
                 )
                 """
             )
             cur.execute(f"ALTER TABLE {CRITICAL_REBUILD_QUEUE_TABLE} ADD COLUMN IF NOT EXISTS row_count INT")
+            cur.execute(
+                f"""
+                ALTER TABLE {CRITICAL_REBUILD_QUEUE_TABLE}
+                ADD COLUMN IF NOT EXISTS rerun_after_running BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
 
 
 def enqueue_critical_rebuild_dates(dates: list[str]) -> int:
@@ -202,13 +209,25 @@ def enqueue_critical_rebuild_dates(dates: list[str]) -> int:
                 VALUES {values_sql}
                 ON CONFLICT (date) DO UPDATE
                 SET
-                    status = 'pending',
-                    attempts = 0,
+                    status = CASE
+                        WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running' THEN {CRITICAL_REBUILD_QUEUE_TABLE}.status
+                        ELSE 'pending'
+                    END,
+                    attempts = CASE
+                        WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running' THEN {CRITICAL_REBUILD_QUEUE_TABLE}.attempts
+                        ELSE 0
+                    END,
                     last_error = NULL,
-                    row_count = NULL,
+                    row_count = CASE
+                        WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running' THEN {CRITICAL_REBUILD_QUEUE_TABLE}.row_count
+                        ELSE NULL
+                    END,
                     enqueued_at = now(),
-                    updated_at = now()
-                WHERE {CRITICAL_REBUILD_QUEUE_TABLE}.status NOT IN ('done', 'running')
+                    updated_at = now(),
+                    rerun_after_running = CASE
+                        WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running' THEN TRUE
+                        ELSE FALSE
+                    END
                 """,
                 dates,
             )

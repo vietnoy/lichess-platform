@@ -280,10 +280,12 @@ def test_compaction_does_not_touch_critical_positions(module):
     assert "MERGE INTO" not in source
 
 
-def test_rebuild_queue_does_not_requeue_done_or_running_dates(module):
+def test_rebuild_queue_requeues_done_dates_without_overlapping_running_dates(module):
     source = Path(module.__file__).read_text()
 
-    assert "WHERE {CRITICAL_REBUILD_QUEUE_TABLE}.status NOT IN ('done', 'running')" in source
+    assert "WHEN {CRITICAL_REBUILD_QUEUE_TABLE}.status = 'running'" in source
+    assert "rerun_after_running = CASE" in source
+    assert "WHERE {CRITICAL_REBUILD_QUEUE_TABLE}.status NOT IN ('done', 'running')" not in source
 
 
 def test_successful_write_deletes_postgres_rows(module, monkeypatch):

@@ -130,3 +130,11 @@ def test_next_queued_run_marks_failed_before_reraising(module, monkeypatch):
         ("run", "2026-05-29"),
         ("failed", "2026-05-29", "spark failed"),
     ]
+
+
+def test_complete_rebuild_respects_rerun_after_running_flag(module):
+    source = Path(module.__file__).read_text()
+
+    assert "status = CASE WHEN rerun_after_running THEN 'pending' ELSE 'done' END" in source
+    assert "row_count = CASE WHEN rerun_after_running THEN NULL ELSE %s END" in source
+    assert "rerun_after_running = FALSE" in source

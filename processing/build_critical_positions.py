@@ -122,11 +122,18 @@ def ensure_rebuild_queue() -> None:
                     enqueued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     locked_at TIMESTAMPTZ,
-                    locked_by TEXT
+                    locked_by TEXT,
+                    rerun_after_running BOOLEAN NOT NULL DEFAULT FALSE
                 )
                 """
             )
             cur.execute(f"ALTER TABLE {CRITICAL_REBUILD_QUEUE_TABLE} ADD COLUMN IF NOT EXISTS row_count INT")
+            cur.execute(
+                f"""
+                ALTER TABLE {CRITICAL_REBUILD_QUEUE_TABLE}
+                ADD COLUMN IF NOT EXISTS rerun_after_running BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
 
 
 def claim_next_rebuild_date(worker_id: str | None = None) -> str | None:
@@ -181,12 +188,14 @@ def complete_rebuild_date(date_str: str, row_count: int) -> None:
                 f"""
                 UPDATE {CRITICAL_REBUILD_QUEUE_TABLE}
                 SET
-                    status = 'done',
-                    row_count = %s,
+                    status = CASE WHEN rerun_after_running THEN 'pending' ELSE 'done' END,
+                    attempts = CASE WHEN rerun_after_running THEN 0 ELSE attempts END,
+                    row_count = CASE WHEN rerun_after_running THEN NULL ELSE %s END,
                     updated_at = now(),
                     locked_at = NULL,
                     locked_by = NULL,
-                    last_error = NULL
+                    last_error = NULL,
+                    rerun_after_running = FALSE
                 WHERE date = %s::date
                 """,
                 (row_count, date_str),
