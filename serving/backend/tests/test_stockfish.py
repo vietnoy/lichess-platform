@@ -1,7 +1,7 @@
 import requests
 
 import stockfish
-from stockfish import clear_eval_cache, eval_fen
+from stockfish import clear_eval_cache, eval_cache_stats, eval_fen
 
 
 def setup_function():
@@ -63,6 +63,9 @@ def test_eval_uses_success_cache(monkeypatch):
     assert eval_fen("same-fen", depth=12) == {"cp": 12, "best_move": "e2e4", "mate": None}
     assert eval_fen("same-fen", depth=12) == {"cp": 12, "best_move": "e2e4", "mate": None}
     assert calls == 1
+    assert eval_cache_stats()["misses"] == 1
+    assert eval_cache_stats()["hits"] == 1
+    assert eval_cache_stats()["writes"] == 1
 
 
 def test_eval_cache_is_keyed_by_normalized_depth(monkeypatch):
@@ -110,3 +113,30 @@ def test_eval_cache_can_be_disabled(monkeypatch):
     eval_fen("same-fen", depth=12)
 
     assert calls == 2
+    assert eval_cache_stats()["entries"] == 0
+    assert eval_cache_stats()["misses"] == 2
+
+
+def test_eval_cache_stats_report_capacity_and_evictions(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"cp": 12, "best_move": "e2e4", "mate": None}
+
+    def fake_get(url, params, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr("stockfish.requests.get", fake_get)
+    monkeypatch.setattr(stockfish, "EVAL_CACHE_MAX_ENTRIES", 1)
+
+    eval_fen("first-fen", depth=12)
+    eval_fen("second-fen", depth=12)
+
+    stats = eval_cache_stats()
+    assert stats["entries"] == 1
+    assert stats["max_entries"] == 1
+    assert stats["ttl_seconds"] == stockfish.EVAL_CACHE_TTL_SECONDS
+    assert stats["writes"] == 2
+    assert stats["evictions"] == 1

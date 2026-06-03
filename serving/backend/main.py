@@ -43,7 +43,7 @@ from db import (
     query_system_summary,
     query_weakness_summary,
 )
-from stockfish import eval_fen
+from stockfish import eval_cache_stats, eval_fen
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("api")
@@ -94,6 +94,28 @@ class Metrics:
         lines.append("# HELP coach_throttled_total Number of /api/coach requests rate-limited (HTTP 429)")
         lines.append("# TYPE coach_throttled_total counter")
         lines.append(f"coach_throttled_total {coach_429}")
+        stockfish_cache = eval_cache_stats()
+        lines.append("# HELP stockfish_eval_cache_entries Current Stockfish eval cache entries")
+        lines.append("# TYPE stockfish_eval_cache_entries gauge")
+        lines.append(f"stockfish_eval_cache_entries {stockfish_cache['entries']}")
+        lines.append("# HELP stockfish_eval_cache_max_entries Configured Stockfish eval cache capacity")
+        lines.append("# TYPE stockfish_eval_cache_max_entries gauge")
+        lines.append(f"stockfish_eval_cache_max_entries {stockfish_cache['max_entries']}")
+        lines.append("# HELP stockfish_eval_cache_ttl_seconds Configured Stockfish eval cache TTL")
+        lines.append("# TYPE stockfish_eval_cache_ttl_seconds gauge")
+        lines.append(f"stockfish_eval_cache_ttl_seconds {stockfish_cache['ttl_seconds']}")
+        lines.append("# HELP stockfish_eval_cache_hits_total Stockfish eval cache hits")
+        lines.append("# TYPE stockfish_eval_cache_hits_total counter")
+        lines.append(f"stockfish_eval_cache_hits_total {stockfish_cache['hits']}")
+        lines.append("# HELP stockfish_eval_cache_misses_total Stockfish eval cache misses")
+        lines.append("# TYPE stockfish_eval_cache_misses_total counter")
+        lines.append(f"stockfish_eval_cache_misses_total {stockfish_cache['misses']}")
+        lines.append("# HELP stockfish_eval_cache_writes_total Stockfish eval cache writes")
+        lines.append("# TYPE stockfish_eval_cache_writes_total counter")
+        lines.append(f"stockfish_eval_cache_writes_total {stockfish_cache['writes']}")
+        lines.append("# HELP stockfish_eval_cache_evictions_total Stockfish eval cache evictions")
+        lines.append("# TYPE stockfish_eval_cache_evictions_total counter")
+        lines.append(f"stockfish_eval_cache_evictions_total {stockfish_cache['evictions']}")
         return "\n".join(lines) + "\n"
 
 

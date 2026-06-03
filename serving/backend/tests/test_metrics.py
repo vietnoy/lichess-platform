@@ -1,12 +1,16 @@
 from main import Metrics
+from stockfish import clear_eval_cache
 
 
 def test_render_empty():
+    clear_eval_cache()
     rendered = Metrics.render()
 
     assert "# HELP http_requests_total Total HTTP requests by route and status" in rendered
     assert "# HELP http_request_latency_ms_p99 99th percentile request latency in ms (rolling 500 samples)" in rendered
     assert "# HELP coach_throttled_total Number of /api/coach requests rate-limited (HTTP 429)" in rendered
+    assert "# HELP stockfish_eval_cache_hits_total Stockfish eval cache hits" in rendered
+    assert "stockfish_eval_cache_entries 0" in rendered
 
 
 def test_record_increments_counter():
