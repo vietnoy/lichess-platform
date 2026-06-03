@@ -267,7 +267,7 @@ def get_freshness():
         }
     except Exception as e:
         log.warning("freshness query failed: %s", e)
-        result = {"data_through": None, "days_available": 0, "error": str(e)}
+        return {"data_through": None, "days_available": 0, "error": str(e)}
     with _freshness_lock:
         _freshness_cache["v"] = (now, result)
     return result

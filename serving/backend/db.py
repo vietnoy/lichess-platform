@@ -139,51 +139,66 @@ def _query_system_summary_uncached() -> dict:
     tables = []
     total_rows = 0
     for name, full_name, description, date_column in PROD_TABLES:
-        latest_rows = _run(
-            f"""
-            SELECT MAX({date_column}) AS latest_date
-            FROM {full_name}
-            """
-        )
+        table_error = None
+        try:
+            latest_rows = _run(
+                f"""
+                SELECT MAX({date_column}) AS latest_date
+                FROM {full_name}
+                """
+            )
+        except errors.Error as exc:
+            log.warning("system summary latest-date query failed for %s: %s", name, exc)
+            latest_rows = []
+            table_error = str(exc)
         latest_row = latest_rows[0] if latest_rows else {}
         latest_date = latest_row.get("latest_date")
         if hasattr(latest_date, "isoformat"):
             latest_date = latest_date.isoformat()
         row_count = 0
-        if latest_date:
-            count_rows = _run(
-                f"""
-                SELECT COUNT(*) AS row_count
-                FROM {full_name}
-                WHERE {date_column} = %s
-                """,
-                (str(latest_date),),
-            )
-            row_count = int((count_rows[0] if count_rows else {}).get("row_count") or 0)
-        tables.append(
-            {
-                "name": name,
-                "full_name": full_name,
-                "description": description,
-                "latest_partition_rows": row_count,
-                "latest_date": str(latest_date) if latest_date else None,
-            }
-        )
+        if latest_date and table_error is None:
+            try:
+                count_rows = _run(
+                    f"""
+                    SELECT COUNT(*) AS row_count
+                    FROM {full_name}
+                    WHERE {date_column} = %s
+                    """,
+                    (str(latest_date),),
+                )
+                row_count = int((count_rows[0] if count_rows else {}).get("row_count") or 0)
+            except errors.Error as exc:
+                log.warning("system summary row-count query failed for %s: %s", name, exc)
+                table_error = str(exc)
+        table = {
+            "name": name,
+            "full_name": full_name,
+            "description": description,
+            "latest_partition_rows": row_count,
+            "latest_date": str(latest_date) if latest_date else None,
+        }
+        if table_error:
+            table["error"] = table_error
+        tables.append(table)
         total_rows += row_count
     latest_dates = [t["latest_date"] for t in tables if t["latest_date"]]
-    rating_histogram = _run(
-        f"""
-        SELECT
-            CAST(FLOOR(my_rating / 200) * 200 AS INT) AS bucket_floor,
-            COUNT(DISTINCT player_id) AS players,
-            COUNT(*) AS player_game_rows
-        FROM {PLAYER_GAMES}
-        WHERE my_rating IS NOT NULL
-          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-        GROUP BY bucket_floor
-        ORDER BY bucket_floor
-        """
-    )
+    try:
+        rating_histogram = _run(
+            f"""
+            SELECT
+                CAST(FLOOR(my_rating / 200) * 200 AS INT) AS bucket_floor,
+                COUNT(DISTINCT player_id) AS players,
+                COUNT(*) AS player_game_rows
+            FROM {PLAYER_GAMES}
+            WHERE my_rating IS NOT NULL
+              AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+            GROUP BY bucket_floor
+            ORDER BY bucket_floor
+            """
+        )
+    except errors.Error as exc:
+        log.warning("system summary rating histogram failed: %s", exc)
+        rating_histogram = []
     return {
         "tables": tables,
         "totals": {

@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import main
+
 
 def test_system_summary_endpoint_returns_table_health(client):
     expected = {
@@ -46,3 +48,35 @@ def test_cache_warmup_endpoint_runs_dashboard_queries(client):
     platform_overview.assert_any_call(days=14)
     platform_overview.assert_any_call(days=30)
     platform_overview.assert_any_call(date="2026-05-26")
+
+
+def test_freshness_failures_are_not_cached(client, monkeypatch):
+    main._freshness_cache.clear()
+    calls = {"count": 0}
+
+    class FakeCursor:
+        def execute(self, sql):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("catalog down")
+
+        def fetchone(self):
+            return {"max_date": "2026-06-02", "days": 42}
+
+    class FakeCursorContext:
+        def __enter__(self):
+            return FakeCursor()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(main.StarRocks, "cursor", classmethod(lambda cls: FakeCursorContext()))
+
+    failed = client.get("/api/freshness")
+    recovered = client.get("/api/freshness")
+
+    assert failed.status_code == 200
+    assert failed.json()["error"] == "catalog down"
+    assert recovered.status_code == 200
+    assert recovered.json() == {"data_through": "2026-06-02", "days_available": 42}
+    assert calls["count"] == 2
