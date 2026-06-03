@@ -445,29 +445,50 @@ def get_player_patterns(username: str):
 
 
 @app.get("/api/players/{username}/weakness-summary")
-def get_player_weakness_summary(username: str, days: int = 60):
-    return query_weakness_summary(username, days=days)
+def get_player_weakness_summary(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+):
+    return query_weakness_summary(username, days=days, date=date, all_time=all_time)
 
 
 @app.get("/api/players/{username}/opening-stats")
-def get_player_opening_stats(username: str, days: int = 60, top_n: int = 10):
+def get_player_opening_stats(
+    username: str,
+    days: int = 60,
+    top_n: int = 10,
+    date: str | None = None,
+    all_time: bool = False,
+):
     return {
         "player_id": username,
-        "opening_stats": query_opening_stats(username, days=days, top_n=top_n),
+        "opening_stats": query_opening_stats(username, days=days, top_n=top_n, date=date, all_time=all_time),
     }
 
 
 @app.get("/api/players/{username}/phase-stats")
-def get_player_phase_stats(username: str, days: int = 60):
+def get_player_phase_stats(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+):
     return {
         "player_id": username,
-        "phase_stats": query_phase_stats(username, days=days),
+        "phase_stats": query_phase_stats(username, days=days, date=date, all_time=all_time),
     }
 
 
 @app.get("/api/players/{username}/insights")
-def get_player_insights(username: str, days: int = 60):
-    return query_player_insights(username, days=days)
+def get_player_insights(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+):
+    return query_player_insights(username, days=days, date=date, all_time=all_time)
 
 
 # ─── exercise ────────────────────────────────────────────────────────────────

@@ -786,13 +786,41 @@ def clamp_int(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, int(value)))
 
 
-def query_weakness_summary(username: str, days: int = 60) -> dict:
-    days = clamp_int(days, 1, 365)
-    key = ("weakness_summary", username, days)
-    return _cached(key, _PLAYER_AGG_TTL, lambda: _query_weakness_summary_uncached(username, days))
+def _player_aggregate_date_filter(
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> tuple[str, tuple, int]:
+    if date:
+        selected = _parse_iso_date(date).isoformat()
+        return "AND date = DATE %s", (selected,), 1
+    if all_time:
+        return "", (), 0
+    clamped_days = clamp_int(days, 1, 365)
+    return "AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)", (clamped_days,), clamped_days
 
 
-def _query_weakness_summary_uncached(username: str, days: int = 60) -> dict:
+def query_weakness_summary(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> dict:
+    date_filter, date_params, effective_days = _player_aggregate_date_filter(days, date, all_time)
+    key = ("weakness_summary", username, effective_days, date, bool(all_time))
+    return _cached(
+        key,
+        _PLAYER_AGG_TTL,
+        lambda: _query_weakness_summary_uncached(username, effective_days, date_filter, date_params),
+    )
+
+
+def _query_weakness_summary_uncached(
+    username: str,
+    effective_days: int,
+    date_filter: str,
+    date_params: tuple,
+) -> dict:
     rows = _run(
         f"""
         SELECT
@@ -810,16 +838,16 @@ def _query_weakness_summary_uncached(username: str, days: int = 60) -> dict:
             MAX(top_classification) AS top_classification
         FROM {PLAYER_WEAKNESS_SUMMARY}
         WHERE player_id = %s
-          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)
+          {date_filter}
         GROUP BY player_id
         """,
-        (username, days),
+        (username,) + date_params,
     )
     if rows:
         return rows[0]
     return {
         "player_id": username,
-        "days": days,
+        "days": effective_days,
         "critical_positions": 0,
         "games_with_critical_positions": 0,
         "blunders": 0,
@@ -887,14 +915,29 @@ def query_blunder_examples(
     )
 
 
-def query_opening_stats(username: str, days: int = 60, top_n: int = 10) -> list[dict]:
-    days = clamp_int(days, 1, 365)
+def query_opening_stats(
+    username: str,
+    days: int = 60,
+    top_n: int = 10,
+    date: str | None = None,
+    all_time: bool = False,
+) -> list[dict]:
+    date_filter, date_params, effective_days = _player_aggregate_date_filter(days, date, all_time)
     top_n = clamp_int(top_n, 1, 20)
-    key = ("opening_stats", username, days, top_n)
-    return _cached(key, _PLAYER_AGG_TTL, lambda: _query_opening_stats_uncached(username, days, top_n))
+    key = ("opening_stats", username, effective_days, top_n, date, bool(all_time))
+    return _cached(
+        key,
+        _PLAYER_AGG_TTL,
+        lambda: _query_opening_stats_uncached(username, top_n, date_filter, date_params),
+    )
 
 
-def _query_opening_stats_uncached(username: str, days: int = 60, top_n: int = 10) -> list[dict]:
+def _query_opening_stats_uncached(
+    username: str,
+    top_n: int,
+    date_filter: str,
+    date_params: tuple,
+) -> list[dict]:
     return _run(
         f"""
         SELECT
@@ -913,23 +956,32 @@ def _query_opening_stats_uncached(username: str, days: int = 60, top_n: int = 10
             ROUND(AVG(avg_eval_swing_cp), 1) AS avg_eval_swing_cp
         FROM {PLAYER_OPENING_STATS}
         WHERE player_id = %s
-          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)
+          {date_filter}
         GROUP BY opening_eco, opening_name, color
         HAVING SUM(games) >= 2
         ORDER BY blunders DESC, mistakes DESC, critical_positions DESC, games DESC
         LIMIT %s
         """,
-        (username, days, top_n),
+        (username,) + date_params + (top_n,),
     )
 
 
-def query_phase_stats(username: str, days: int = 60) -> list[dict]:
-    days = clamp_int(days, 1, 365)
-    key = ("phase_stats", username, days)
-    return _cached(key, _PLAYER_AGG_TTL, lambda: _query_phase_stats_uncached(username, days))
+def query_phase_stats(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> list[dict]:
+    date_filter, date_params, effective_days = _player_aggregate_date_filter(days, date, all_time)
+    key = ("phase_stats", username, effective_days, date, bool(all_time))
+    return _cached(
+        key,
+        _PLAYER_AGG_TTL,
+        lambda: _query_phase_stats_uncached(username, date_filter, date_params),
+    )
 
 
-def _query_phase_stats_uncached(username: str, days: int = 60) -> list[dict]:
+def _query_phase_stats_uncached(username: str, date_filter: str, date_params: tuple) -> list[dict]:
     return _run(
         f"""
         SELECT
@@ -944,11 +996,11 @@ def _query_phase_stats_uncached(username: str, days: int = 60) -> list[dict]:
             MAX(max_eval_swing_cp) AS max_eval_swing_cp
         FROM {PLAYER_PHASE_STATS}
         WHERE player_id = %s
-          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)
+          {date_filter}
         GROUP BY phase
         ORDER BY critical_positions DESC, blunders DESC
         """,
-        (username, days),
+        (username,) + date_params,
     )
 
 
@@ -956,17 +1008,40 @@ def _num(value, default=0):
     return default if value is None else value
 
 
-def query_player_insights(username: str, days: int = 60) -> dict:
-    days = clamp_int(days, 1, 365)
-    key = ("player_insights", username, days)
-    return _cached(key, _PLAYER_AGG_TTL, lambda: _query_player_insights_uncached(username, days))
+def _insight_window_label(days: int, date: str | None, all_time: bool) -> str:
+    if date:
+        return f"ngày {date}"
+    if all_time:
+        return "toàn bộ dữ liệu"
+    return f"{days} ngày gần đây"
 
 
-def _query_player_insights_uncached(username: str, days: int = 60) -> dict:
-    weakness = query_weakness_summary(username, days=days)
-    phase_stats = query_phase_stats(username, days=days)
-    opening_stats = query_opening_stats(username, days=days, top_n=10)
-    profile = query_player_profile(username) or {}
+def query_player_insights(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> dict:
+    _, _, effective_days = _player_aggregate_date_filter(days, date, all_time)
+    key = ("player_insights", username, effective_days, date, bool(all_time))
+    return _cached(
+        key,
+        _PLAYER_AGG_TTL,
+        lambda: _query_player_insights_uncached(username, effective_days, date, all_time),
+    )
+
+
+def _query_player_insights_uncached(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> dict:
+    weakness = query_weakness_summary(username, days=days or 60, date=date, all_time=all_time)
+    phase_stats = query_phase_stats(username, days=days or 60, date=date, all_time=all_time)
+    opening_stats = query_opening_stats(username, days=days or 60, top_n=10, date=date, all_time=all_time)
+    profile = query_player_profile(username, days=days or 60, date=date, all_time=all_time) or {}
+    window_label = _insight_window_label(days, date, all_time)
 
     insights: list[dict] = []
 
@@ -984,7 +1059,7 @@ def _query_player_insights_uncached(username: str, days: int = 60) -> dict:
                     "title": f"Bạn đang mất điểm nhiều nhất ở {phase.get('phase')}",
                     "evidence": (
                         f"{critical} critical positions, {blunders} blunders và {mistakes} mistakes "
-                        f"trong {days} ngày gần đây."
+                        f"trong {window_label}."
                     ),
                     "action": "Ưu tiên drill theo phase này trước khi học thêm opening mới.",
                     "data": phase,

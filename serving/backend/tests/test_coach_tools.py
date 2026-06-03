@@ -39,6 +39,26 @@ def test_query_weakness_summary_returns_empty_shape_when_no_rows():
     assert result["top_phase"] is None
 
 
+def test_query_weakness_summary_supports_single_date_filter():
+    with patch("serving.backend.db._run", return_value=[]) as run:
+        db.query_weakness_summary("alice", date="2026-05-26")
+
+    sql, params = run.call_args.args
+    assert "date = DATE %s" in sql
+    assert "DATE_SUB" not in sql
+    assert params == ("alice", "2026-05-26")
+
+
+def test_query_phase_stats_supports_all_time_filter():
+    with patch("serving.backend.db._run", return_value=[]) as run:
+        db.query_phase_stats("alice", all_time=True)
+
+    sql, params = run.call_args.args
+    assert "DATE_SUB" not in sql
+    assert "date = DATE %s" not in sql
+    assert params == ("alice",)
+
+
 def test_query_blunder_examples_uses_allowlisted_filters_and_clamped_limit():
     with patch("serving.backend.db._run", return_value=[]) as run:
         db.query_blunder_examples(

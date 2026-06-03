@@ -12,7 +12,15 @@ def test_weakness_summary_endpoint_uses_aggregate_query(client):
 
     assert response.status_code == 200
     assert response.json() == expected
-    query.assert_called_once_with("alice", days=90)
+    query.assert_called_once_with("alice", days=90, date=None, all_time=False)
+
+
+def test_weakness_summary_endpoint_forwards_date_filter(client):
+    with patch("main.query_weakness_summary", return_value={"player_id": "alice"}) as query:
+        response = client.get("/api/players/alice/weakness-summary?date=2026-05-26")
+
+    assert response.status_code == 200
+    query.assert_called_once_with("alice", days=60, date="2026-05-26", all_time=False)
 
 
 def test_opening_stats_endpoint_uses_aggregate_query(client):
@@ -30,7 +38,15 @@ def test_opening_stats_endpoint_uses_aggregate_query(client):
 
     assert response.status_code == 200
     assert response.json() == {"player_id": "alice", "opening_stats": rows}
-    query.assert_called_once_with("alice", days=30, top_n=5)
+    query.assert_called_once_with("alice", days=30, top_n=5, date=None, all_time=False)
+
+
+def test_opening_stats_endpoint_forwards_all_time_filter(client):
+    with patch("main.query_opening_stats", return_value=[]) as query:
+        response = client.get("/api/players/alice/opening-stats?all_time=true&top_n=5")
+
+    assert response.status_code == 200
+    query.assert_called_once_with("alice", days=60, top_n=5, date=None, all_time=True)
 
 
 def test_phase_stats_endpoint_uses_aggregate_query(client):
@@ -46,4 +62,4 @@ def test_phase_stats_endpoint_uses_aggregate_query(client):
 
     assert response.status_code == 200
     assert response.json() == {"player_id": "alice", "phase_stats": rows}
-    query.assert_called_once_with("alice", days=14)
+    query.assert_called_once_with("alice", days=14, date=None, all_time=False)

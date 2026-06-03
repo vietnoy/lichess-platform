@@ -14,14 +14,14 @@ def test_player_insights_endpoint_returns_ranked_insights(client):
 
     assert response.status_code == 200
     assert response.json() == expected
-    query.assert_called_once_with("alice", days=60)
+    query.assert_called_once_with("alice", days=60, date=None, all_time=False)
 
 
 def test_query_player_insights_scores_actionable_patterns(monkeypatch):
     monkeypatch.setattr(
         db,
         "query_weakness_summary",
-        lambda username, days=60: {
+        lambda username, days=60, date=None, all_time=False: {
             "player_id": username,
             "critical_positions": 30,
             "blunders": 8,
@@ -34,7 +34,7 @@ def test_query_player_insights_scores_actionable_patterns(monkeypatch):
     monkeypatch.setattr(
         db,
         "query_phase_stats",
-        lambda username, days=60: [
+        lambda username, days=60, date=None, all_time=False: [
             {
                 "phase": "middlegame",
                 "critical_positions": 20,
@@ -48,7 +48,7 @@ def test_query_player_insights_scores_actionable_patterns(monkeypatch):
     monkeypatch.setattr(
         db,
         "query_opening_stats",
-        lambda username, days=60, top_n=10: [
+        lambda username, days=60, top_n=10, date=None, all_time=False: [
             {
                 "opening_eco": "B01",
                 "opening_name": "Scandinavian Defense",
@@ -64,7 +64,7 @@ def test_query_player_insights_scores_actionable_patterns(monkeypatch):
     monkeypatch.setattr(
         db,
         "query_player_profile",
-        lambda username: {
+        lambda username, days=60, date=None, all_time=False: {
             "by_color": [
                 {"color": "White", "games": 20, "win_pct": 60.0},
                 {"color": "Black", "games": 20, "win_pct": 35.0},

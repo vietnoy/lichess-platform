@@ -118,8 +118,14 @@ function profilePath(username: string, rangeMode: RangeMode, customDate: string)
 
 function aggregateDays(rangeMode: RangeMode) {
   if (rangeMode === "all") return 365;
-  if (rangeMode === "custom") return 60;
+  if (rangeMode === "custom") return 1;
   return Number(rangeMode);
+}
+
+function aggregateQuery(rangeMode: RangeMode, customDate: string) {
+  if (rangeMode === "all") return "all_time=true";
+  if (rangeMode === "custom") return customDate ? `date=${encodeURIComponent(customDate)}` : null;
+  return `days=${rangeMode}`;
 }
 
 function rangeLabel(profile: Profile | null, rangeMode: RangeMode) {
@@ -166,7 +172,7 @@ function Diagnosis({ weakness, openingStats, phaseStats }: {
         <div className="space-y-3">
           <p className="text-lg leading-relaxed">
             Điểm yếu lớn nhất hiện tại là <span className="text-accent font-medium">{labelize(topPhase)}</span>.
-            Trong 60 ngày gần đây, hệ thống tìm thấy{" "}
+            Trong khoảng dữ liệu này, hệ thống tìm thấy{" "}
             <span className="font-medium tabular-nums">{weakness.critical_positions.toLocaleString()}</span>{" "}
             thế cờ quan trọng từ các ván đã phân tích.
           </p>
@@ -240,10 +246,11 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
   const [customDate, setCustomDate] = useState("");
 
   const currentProfilePath = useMemo(() => profilePath(username, rangeMode, customDate), [username, rangeMode, customDate]);
+  const currentAggregateQuery = useMemo(() => aggregateQuery(rangeMode, customDate), [rangeMode, customDate]);
   const currentAggregateDays = aggregateDays(rangeMode);
 
   useEffect(() => {
-    if (!currentProfilePath) return;
+    if (!currentProfilePath || !currentAggregateQuery) return;
     const controller = new AbortController();
     let alive = true;
     setError(null);
@@ -260,10 +267,10 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
       .catch((e) => { if (alive) setError(String(e.message ?? e)); });
 
     Promise.all([
-      api<WeaknessSummary>(`/players/${encodeURIComponent(username)}/weakness-summary?days=${currentAggregateDays}`, { signal: controller.signal }),
-      api<OpeningStatsResponse>(`/players/${encodeURIComponent(username)}/opening-stats?days=${currentAggregateDays}&top_n=8`, { signal: controller.signal }),
-      api<PhaseStatsResponse>(`/players/${encodeURIComponent(username)}/phase-stats?days=${currentAggregateDays}`, { signal: controller.signal }),
-      api<PlayerInsightsResponse>(`/players/${encodeURIComponent(username)}/insights?days=${currentAggregateDays}`, { signal: controller.signal }),
+      api<WeaknessSummary>(`/players/${encodeURIComponent(username)}/weakness-summary?${currentAggregateQuery}`, { signal: controller.signal }),
+      api<OpeningStatsResponse>(`/players/${encodeURIComponent(username)}/opening-stats?${currentAggregateQuery}&top_n=8`, { signal: controller.signal }),
+      api<PhaseStatsResponse>(`/players/${encodeURIComponent(username)}/phase-stats?${currentAggregateQuery}`, { signal: controller.signal }),
+      api<PlayerInsightsResponse>(`/players/${encodeURIComponent(username)}/insights?${currentAggregateQuery}`, { signal: controller.signal }),
     ])
       .then(([summary, openings, phases, insightResponse]) => {
         if (!alive) return;
@@ -279,7 +286,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
       alive = false;
       controller.abort();
     };
-  }, [username, currentProfilePath, currentAggregateDays]);
+  }, [username, currentProfilePath, currentAggregateQuery]);
 
   const playerLoaded = Boolean(profile || weakness || coachLoaded);
   const coachPrompt = `Hãy phân tích lối chơi của ${username} trong ${rangeMode === "all" ? "365 ngày gần đây" : `${currentAggregateDays} ngày gần đây`} như một huấn luyện viên. Ưu tiên điểm yếu lớn nhất, bằng chứng từ dữ liệu, và 3 bài tập cụ thể.`;
