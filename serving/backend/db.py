@@ -28,14 +28,14 @@ PLAYER_PHASE_STATS = "polaris_catalog.prod.player_phase_stats"
 PLAYER_INSIGHT_CARDS = "polaris_catalog.prod.player_insight_cards"
 
 PROD_TABLES = [
-    ("chess_move_events", TABLE, "Raw move-level fact table"),
-    ("player_games", PLAYER_GAMES, "One row per player per game"),
-    ("move_evaluations_ondemand", EVAL_TABLE_ONDEMAND, "Stockfish evaluations from analyzer"),
-    ("critical_positions", CRITICAL_POSITIONS, "Teachable mistakes and swings"),
-    ("player_weakness_summary", PLAYER_WEAKNESS_SUMMARY, "Daily player weakness aggregate"),
-    ("player_opening_stats", PLAYER_OPENING_STATS, "Daily player opening aggregate"),
-    ("player_phase_stats", PLAYER_PHASE_STATS, "Daily player phase aggregate"),
-    ("player_insight_cards", PLAYER_INSIGHT_CARDS, "Precomputed player insight cards"),
+    ("chess_move_events", TABLE, "Raw move-level fact table", "date"),
+    ("player_games", PLAYER_GAMES, "One row per player per game", "date"),
+    ("move_evaluations_ondemand", EVAL_TABLE_ONDEMAND, "Stockfish evaluations from analyzer", "date"),
+    ("critical_positions", CRITICAL_POSITIONS, "Teachable mistakes and swings", "date"),
+    ("player_weakness_summary", PLAYER_WEAKNESS_SUMMARY, "Daily player weakness aggregate", "date"),
+    ("player_opening_stats", PLAYER_OPENING_STATS, "Daily player opening aggregate", "date"),
+    ("player_phase_stats", PLAYER_PHASE_STATS, "Daily player phase aggregate", "date"),
+    ("player_insight_cards", PLAYER_INSIGHT_CARDS, "Precomputed player insight cards", "as_of_date"),
 ]
 
 
@@ -138,10 +138,10 @@ def query_system_summary() -> dict:
 def _query_system_summary_uncached() -> dict:
     tables = []
     total_rows = 0
-    for name, full_name, description in PROD_TABLES:
+    for name, full_name, description, date_column in PROD_TABLES:
         latest_rows = _run(
             f"""
-            SELECT MAX(date) AS latest_date
+            SELECT MAX({date_column}) AS latest_date
             FROM {full_name}
             """
         )
@@ -155,7 +155,7 @@ def _query_system_summary_uncached() -> dict:
                 f"""
                 SELECT COUNT(*) AS row_count
                 FROM {full_name}
-                WHERE date = %s
+                WHERE {date_column} = %s
                 """,
                 (str(latest_date),),
             )
