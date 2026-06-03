@@ -1,6 +1,7 @@
 """StarRocks connection + query helpers."""
 
 import datetime as dt
+import json
 import os
 import random
 import time
@@ -24,6 +25,7 @@ CRITICAL_POSITIONS = "polaris_catalog.prod.critical_positions"
 PLAYER_WEAKNESS_SUMMARY = "polaris_catalog.prod.player_weakness_summary"
 PLAYER_OPENING_STATS = "polaris_catalog.prod.player_opening_stats"
 PLAYER_PHASE_STATS = "polaris_catalog.prod.player_phase_stats"
+PLAYER_INSIGHT_CARDS = "polaris_catalog.prod.player_insight_cards"
 
 PROD_TABLES = [
     ("chess_move_events", TABLE, "Raw move-level fact table"),
@@ -33,6 +35,7 @@ PROD_TABLES = [
     ("player_weakness_summary", PLAYER_WEAKNESS_SUMMARY, "Daily player weakness aggregate"),
     ("player_opening_stats", PLAYER_OPENING_STATS, "Daily player opening aggregate"),
     ("player_phase_stats", PLAYER_PHASE_STATS, "Daily player phase aggregate"),
+    ("player_insight_cards", PLAYER_INSIGHT_CARDS, "Precomputed player insight cards"),
 ]
 
 
@@ -1037,6 +1040,10 @@ def _query_player_insights_uncached(
     date: str | None = None,
     all_time: bool = False,
 ) -> dict:
+    precomputed = _query_precomputed_player_insights(username, days=days, date=date, all_time=all_time)
+    if precomputed is not None:
+        return precomputed
+
     weakness = query_weakness_summary(username, days=days or 60, date=date, all_time=all_time)
     phase_stats = query_phase_stats(username, days=days or 60, date=date, all_time=all_time)
     opening_stats = query_opening_stats(username, days=days or 60, top_n=10, date=date, all_time=all_time)
@@ -1128,6 +1135,71 @@ def _query_player_insights_uncached(
 
     insights.sort(key=lambda item: (-item["score"], item["type"]))
     return {"player_id": username, "days": days, "insights": insights[:6]}
+
+
+def _query_precomputed_player_insights(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> dict | None:
+    if date:
+        return None
+
+    window_days = 0 if all_time else clamp_int(days or 60, 1, 365)
+    try:
+        rows = _run(
+            f"""
+            SELECT
+                insight_type,
+                score,
+                title,
+                evidence,
+                action,
+                data_json
+            FROM {PLAYER_INSIGHT_CARDS}
+            WHERE player_id = %s
+              AND window_days = %s
+              AND as_of_date = (
+                SELECT MAX(as_of_date)
+                FROM {PLAYER_INSIGHT_CARDS}
+                WHERE player_id = %s
+                  AND window_days = %s
+              )
+            ORDER BY rank ASC, score DESC, insight_type
+            LIMIT %s
+            """,
+            (username, window_days, username, window_days, 6),
+        )
+    except errors.Error as exc:
+        log.warning("precomputed player insights unavailable: %s", exc)
+        return None
+
+    if not rows:
+        return None
+
+    insights = []
+    for row in rows:
+        data = {}
+        if row.get("data_json"):
+            try:
+                parsed = json.loads(row["data_json"])
+                if isinstance(parsed, dict):
+                    data = parsed
+            except (TypeError, json.JSONDecodeError):
+                data = {}
+        insights.append(
+            {
+                "type": row["insight_type"],
+                "score": row["score"],
+                "title": row["title"],
+                "evidence": row["evidence"],
+                "action": row["action"],
+                "data": data,
+            }
+        )
+
+    return {"player_id": username, "days": window_days, "insights": insights}
 
 
 def query_exercise(username: str) -> dict | None:

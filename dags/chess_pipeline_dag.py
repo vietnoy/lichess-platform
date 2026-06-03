@@ -214,6 +214,7 @@ starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.critical_positio
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;" || true
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_opening_stats;" || true
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_stats;" || true
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_insight_cards;" || true
 """,
     )
 
@@ -307,6 +308,16 @@ with DAG(
         verbose=True,
     )
 
+    rebuild_player_insight_cards = SparkSubmitOperator(
+        task_id="rebuild_player_insight_cards",
+        application="/git/repo/processing/build_player_insight_cards.py",
+        conn_id="spark_default",
+        packages=_iceberg_packages,
+        conf=_process_conf,
+        application_args=["{{ ds }}"],
+        verbose=True,
+    )
+
     refresh_summary_tables = BashOperator(
         task_id="refresh_summary_tables",
         execution_timeout=timedelta(hours=12),
@@ -329,6 +340,7 @@ starrocks_mysql() {
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;"
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_opening_stats;"
 starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_stats;"
+starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_insight_cards;"
 """,
     )
 
@@ -336,6 +348,7 @@ starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_sta
         rebuild_player_weakness_summary
         >> rebuild_player_opening_stats
         >> rebuild_player_phase_stats
+        >> rebuild_player_insight_cards
         >> refresh_summary_tables
     )
 
@@ -384,6 +397,7 @@ mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_weakness_summary;" || true
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_opening_stats;" || true
 mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_stats;" || true
+mysql -h "$STARROCKS_HOST" -P "$STARROCKS_PORT" -u "$STARROCKS_USER" -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_insight_cards;" || true
 """,
     )
 

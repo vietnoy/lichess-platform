@@ -36,6 +36,13 @@ def test_analyzer_refresh_includes_player_phase_stats():
     )
 
 
+def test_analyzer_refresh_includes_player_insight_cards():
+    assert (
+        'REFRESH EXTERNAL TABLE polaris_catalog.prod.player_insight_cards;'
+        in DAG_SOURCE
+    )
+
+
 def test_analyzer_critical_positions_runs_as_separate_date_bounded_dag():
     assert 'dag_id="analyzer_critical_positions"' in DAG_SOURCE
     assert 'schedule="45 1-23/2 * * *"' in DAG_SOURCE
@@ -66,6 +73,8 @@ def test_analyzer_summary_maintenance_rebuilds_all_summaries_nightly():
     assert 'task_id="rebuild_player_weakness_summary"' in DAG_SOURCE
     assert 'task_id="rebuild_player_opening_stats"' in DAG_SOURCE
     assert 'task_id="rebuild_player_phase_stats"' in DAG_SOURCE
+    assert 'task_id="rebuild_player_insight_cards"' in DAG_SOURCE
+    assert 'application="/git/repo/processing/build_player_insight_cards.py"' in DAG_SOURCE
     assert 'application_args=["--all"]' in DAG_SOURCE
     assert "analyzer_summary_maintenance pending=${pending}" not in DAG_SOURCE
     assert "rebuild_changed_analyzer_dates.py --max-dates 1" not in DAG_SOURCE
@@ -73,6 +82,7 @@ def test_analyzer_summary_maintenance_rebuilds_all_summaries_nightly():
         "rebuild_player_weakness_summary\n"
         "        >> rebuild_player_opening_stats\n"
         "        >> rebuild_player_phase_stats\n"
+        "        >> rebuild_player_insight_cards\n"
         "        >> refresh_summary_tables"
     ) in DAG_SOURCE
 
@@ -94,5 +104,12 @@ def test_starrocks_refresh_includes_player_opening_stats():
 def test_starrocks_refresh_includes_player_phase_stats():
     assert (
         'REFRESH EXTERNAL TABLE polaris_catalog.prod.player_phase_stats;'
+        in DAG_SOURCE
+    )
+
+
+def test_starrocks_refresh_includes_player_insight_cards():
+    assert (
+        'REFRESH EXTERNAL TABLE polaris_catalog.prod.player_insight_cards;'
         in DAG_SOURCE
     )

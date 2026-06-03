@@ -84,3 +84,67 @@ def test_query_player_insights_scores_actionable_patterns(monkeypatch):
         "time_pressure",
     }
     assert all(item["action"] for item in result["insights"])
+
+
+def test_query_player_insights_uses_precomputed_cards(monkeypatch):
+    db._query_cache.clear()
+
+    def fake_run(sql, params=()):
+        assert "player_insight_cards" in sql
+        assert params == ("alice", 60, "alice", 60, 6)
+        return [
+            {
+                "insight_type": "phase_weakness",
+                "score": 92,
+                "title": "Middlegame needs work",
+                "evidence": "12 blunders in 60 days.",
+                "action": "Train middlegame critical positions.",
+                "data_json": '{"phase":"middlegame"}',
+            }
+        ]
+
+    monkeypatch.setattr(db, "_run", fake_run)
+
+    result = db.query_player_insights("alice", days=60)
+
+    assert result == {
+        "player_id": "alice",
+        "days": 60,
+        "insights": [
+            {
+                "type": "phase_weakness",
+                "score": 92,
+                "title": "Middlegame needs work",
+                "evidence": "12 blunders in 60 days.",
+                "action": "Train middlegame critical positions.",
+                "data": {"phase": "middlegame"},
+            }
+        ],
+    }
+
+
+def test_query_player_insights_falls_back_when_precomputed_table_missing(monkeypatch):
+    db._query_cache.clear()
+
+    def missing_precomputed(sql, params=()):
+        if "player_insight_cards" in sql:
+            raise db.errors.ProgrammingError("missing table")
+        return []
+
+    monkeypatch.setattr(db, "_run", missing_precomputed)
+    monkeypatch.setattr(
+        db,
+        "query_weakness_summary",
+        lambda username, days=60, date=None, all_time=False: {
+            "player_id": username,
+            "critical_positions": 0,
+            "time_pressure_positions": 0,
+        },
+    )
+    monkeypatch.setattr(db, "query_phase_stats", lambda username, days=60, date=None, all_time=False: [])
+    monkeypatch.setattr(db, "query_opening_stats", lambda username, days=60, top_n=10, date=None, all_time=False: [])
+    monkeypatch.setattr(db, "query_player_profile", lambda username, days=60, date=None, all_time=False: {"by_color": []})
+
+    result = db.query_player_insights("alice", days=60)
+
+    assert result == {"player_id": "alice", "days": 60, "insights": []}
