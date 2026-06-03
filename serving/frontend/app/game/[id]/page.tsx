@@ -89,6 +89,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   const [playMode, setPlayMode] = useState(false);
   const [userTry, setUserTry] = useState<{ san: string; verdict: Verdict; userEval: EvalResult; bestMove: string | null } | null>(null);
   const evalCache = useRef<Map<number, EvalResult>>(new Map());
+  const userEvalAbortRef = useRef<AbortController | null>(null);
 
   // Per-ply Stockfish evaluation timeline (from move_evaluations, populated by the daily DAG).
   const [evals, setEvals] = useState<MoveEval[]>([]);
@@ -171,12 +172,30 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
     if (playMode) return; // freeze eval while user is trying their own line
     const cached = evalCache.current.get(ply);
     if (cached) { setEvalNow(cached); return; }
+    const controller = new AbortController();
+    let alive = true;
     setEvalLoading(true);
-    api<EvalResult>("/eval", { method: "POST", body: JSON.stringify({ fen }) })
-      .then((r) => { evalCache.current.set(ply, r); setEvalNow(r); })
-      .catch(() => setEvalNow(null))
-      .finally(() => setEvalLoading(false));
+    api<EvalResult>("/eval", { method: "POST", signal: controller.signal, body: JSON.stringify({ fen }) })
+      .then((r) => {
+        if (!alive) return;
+        evalCache.current.set(ply, r);
+        setEvalNow(r);
+      })
+      .catch(() => {
+        if (alive) setEvalNow(null);
+      })
+      .finally(() => {
+        if (alive) setEvalLoading(false);
+      });
+    return () => {
+      alive = false;
+      controller.abort();
+    };
   }, [game, ply, fen, playMode]);
+
+  useEffect(() => {
+    return () => userEvalAbortRef.current?.abort();
+  }, []);
 
   function jumpTo(p: number) {
     setUserTry(null);
@@ -185,10 +204,18 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
 
   async function handleUserMove(uci: string, san: string, nextFen: string) {
     if (!game) return;
+    userEvalAbortRef.current?.abort();
+    const controller = new AbortController();
+    userEvalAbortRef.current = controller;
     const baseEval = evalCache.current.get(ply) ?? evalNow;
     setEvalLoading(true);
     try {
-      const userEval = await api<EvalResult>("/eval", { method: "POST", body: JSON.stringify({ fen: nextFen }) });
+      const userEval = await api<EvalResult>("/eval", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({ fen: nextFen }),
+      });
+      if (controller.signal.aborted) return;
       const verdict = classifySwing(
         sideToMove,
         baseEval?.cp ?? null,
@@ -196,6 +223,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
       );
       setUserTry({ san, verdict, userEval, bestMove: baseEval?.best_move ?? null });
     } catch {
+      if (controller.signal.aborted) return;
       setUserTry({
         san,
         verdict: { tone: "warn", title: "Engine offline", detail: "Could not evaluate your move." },
@@ -203,7 +231,8 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
         bestMove: null,
       });
     } finally {
-      setEvalLoading(false);
+      if (userEvalAbortRef.current === controller) userEvalAbortRef.current = null;
+      if (!controller.signal.aborted) setEvalLoading(false);
     }
   }
 
