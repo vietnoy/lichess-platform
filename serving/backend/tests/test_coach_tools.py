@@ -179,32 +179,284 @@ def test_inspect_student_style_combines_coaching_evidence(monkeypatch):
     assert result["critical_examples"] == [{"game_id": "g1", "phase": "middlegame"}]
 
 
-def test_get_time_pressure_stats_binds_params_in_sql_order(monkeypatch):
+def test_coach_exposes_vertex_function_declarations_for_all_tools():
+    declared = {tool["name"] for tool in coach._TOOL_DECLARATIONS}
+
+    assert declared == set(coach._TOOL_FNS)
+    assert "inspect_student_style" in declared
+    assert "analyze_game" in declared
+    opening_tool = next(tool for tool in coach._TOOL_DECLARATIONS if tool["name"] == "get_opening_stats")
+    assert "player_id" in opening_tool["parameters"]["required"]
+    assert "days" in opening_tool["parameters"]["properties"]
+
+
+def test_vertex_agent_loop_executes_model_selected_tool(monkeypatch):
     calls = []
 
-    class Cursor:
-        def execute(self, sql, params):
-            calls.append((sql, params))
+    responses = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "name": "get_opening_stats",
+                                    "args": {"player_id": "alice", "days": 30, "top_n": 5},
+                                }
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "Alice cần ổn định repertoire khai cuộc."}],
+                    }
+                }
+            ]
+        },
+    ]
 
-        def fetchall(self):
-            if len(calls) == 1:
-                import datetime as dt
+    def fake_generate(payload, timeout=45):
+        calls.append(payload)
+        return responses.pop(0)
 
-                return [{"date": dt.date(2026, 5, 25)}]
-            return []
+    monkeypatch.setattr(coach, "_vertex_generate_content_payload", fake_generate)
+    monkeypatch.setattr(
+        coach,
+        "get_opening_stats",
+        lambda player_id, top_n=10, days=60: [{"player_id": player_id, "days": days, "top_n": top_n}],
+    )
 
-    class CursorContext:
-        def __enter__(self):
-            return Cursor()
+    session = coach.CoachSession()
+    events = list(session._run_vertex_agent("Hãy phân tích opening của [Player: alice] trong 30 ngày"))
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+    assert events[0]["type"] == "tool_start"
+    assert events[0]["name"] == "get_opening_stats"
+    assert events[1]["type"] == "tool_result"
+    assert events[-2] == {"type": "token", "text": "Alice cần ổn định repertoire khai cuộc."}
+    assert events[-1] == {"type": "done"}
+    assert calls[0]["tools"][0]["functionDeclarations"]
+    assert calls[0]["toolConfig"]["functionCallingConfig"]["mode"] == "AUTO"
+    assert "allowedFunctionNames" not in calls[0]["toolConfig"]["functionCallingConfig"]
+    second_contents = calls[1]["contents"]
+    assert any("functionResponse" in part for content in second_contents for part in content.get("parts", []))
 
-    monkeypatch.setattr(coach.StarRocks, "cursor", lambda: CursorContext())
 
-    coach.get_time_pressure_stats("alice")
+def test_vertex_agent_loop_groups_multiple_function_responses(monkeypatch):
+    calls = []
+    responses = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "name": "get_time_pressure_stats",
+                                    "args": {"player_id": "alice", "days": 30},
+                                }
+                            },
+                            {
+                                "functionCall": {
+                                    "name": "get_performance_by_color",
+                                    "args": {"player_id": "alice"},
+                                }
+                            },
+                        ],
+                    }
+                }
+            ]
+        },
+        {
+            "candidates": [
+                {"content": {"role": "model", "parts": [{"text": "Alice cần tập trung khi cầm Đen."}]}}
+            ]
+        },
+    ]
 
-    assert calls[1][1] == ("alice", "alice", "alice", "alice", "2026-05-25", "alice", "alice")
+    def fake_generate(payload, timeout=45):
+        calls.append(payload)
+        return responses.pop(0)
+
+    monkeypatch.setattr(coach, "_vertex_generate_content_payload", fake_generate)
+    monkeypatch.setattr(
+        coach,
+        "get_time_pressure_stats",
+        lambda player_id, days=60: {"player_id": player_id, "days": days},
+    )
+    monkeypatch.setattr(
+        coach,
+        "get_performance_by_color",
+        lambda player_id: {"player_id": player_id, "by_color": []},
+    )
+
+    events = list(coach.CoachSession()._run_vertex_agent("Coach [Player: alice]"))
+
+    assert [event["name"] for event in events if event["type"] == "tool_start"] == [
+        "get_time_pressure_stats",
+        "get_performance_by_color",
+    ]
+    response_contents = calls[1]["contents"]
+    response_messages = [
+        content for content in response_contents
+        if any("functionResponse" in part for part in content.get("parts", []))
+    ]
+    assert len(response_messages) == 1
+    assert len(response_messages[0]["parts"]) == 2
+    assert all("functionResponse" in part for part in response_messages[0]["parts"])
+
+
+def test_vertex_agent_includes_recent_chat_context_for_followups(monkeypatch):
+    calls = []
+    responses = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "name": "analyze_game",
+                                    "args": {"game_id": "8IzoF2q3"},
+                                }
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+        {"candidates": [{"content": {"role": "model", "parts": [{"text": "Đây là phân tích cụ thể."}]}}]},
+    ]
+
+    def fake_generate(payload, timeout=45):
+        calls.append(payload)
+        return responses.pop(0)
+
+    monkeypatch.setattr(coach, "_vertex_generate_content_payload", fake_generate)
+    monkeypatch.setattr(coach, "analyze_game", lambda game_id: {"game_id": game_id, "moves": []})
+
+    session = coach.CoachSession()
+    session.messages.extend(
+        [
+            {"role": "user", "content": "[Player: benirks] bạn thấy tôi có phong cách chơi như nào?"},
+            {
+                "role": "assistant",
+                "content": "Bạn có muốn tôi đi sâu hơn vào game 8IzoF2q3 trong Philidor Defense không?",
+            },
+            {"role": "user", "content": "okay phân tích cụ thể thử đi xem nào"},
+        ]
+    )
+
+    events = list(session._run_vertex_agent("okay phân tích cụ thể thử đi xem nào"))
+
+    first_prompt = calls[0]["contents"][0]["parts"][0]["text"]
+    assert "Bối cảnh hội thoại gần đây" in first_prompt
+    assert "8IzoF2q3" in first_prompt
+    assert "okay phân tích cụ thể" in first_prompt
+    assert events[0]["name"] == "analyze_game"
+
+
+def test_analyze_game_uses_stored_evaluations_without_live_stockfish(monkeypatch):
+    monkeypatch.setattr(
+        coach,
+        "query_game",
+        lambda game_id: [
+            {
+                "move_number": 1,
+                "whose_moved": "white",
+                "move": "e2e4",
+                "clock_s": 180.0,
+                "white_id": "alice",
+                "black_id": "bob",
+                "white_rating": 1500,
+                "black_rating": 1510,
+                "opening_name": "King's Pawn Game",
+                "speed": "blitz",
+                "winner": "white",
+                "end_status": "mate",
+            },
+            {
+                "move_number": 2,
+                "whose_moved": "black",
+                "move": "e7e5",
+                "clock_s": 179.0,
+                "white_id": "alice",
+                "black_id": "bob",
+                "white_rating": 1500,
+                "black_rating": 1510,
+                "opening_name": "King's Pawn Game",
+                "speed": "blitz",
+                "winner": "white",
+                "end_status": "mate",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        coach,
+        "query_game_evaluations",
+        lambda game_id: [
+            {
+                "ply": 1,
+                "played_move": "e2e4",
+                "best_move": "e2e4",
+                "eval_cp": 20,
+                "mate": None,
+                "eval_swing_cp_from_prev": 0,
+                "classification": "good",
+            },
+            {
+                "ply": 2,
+                "played_move": "e7e5",
+                "best_move": "c7c5",
+                "eval_cp": 80,
+                "mate": None,
+                "eval_swing_cp_from_prev": 120,
+                "classification": "mistake",
+            },
+        ],
+    )
+
+    result = coach.analyze_game("game1234")
+
+    assert result["evaluated_positions"] == 2
+    assert result["moves"][1]["classification"] == "mistake"
+    assert result["moves"][1]["best_move"] == "c7c5"
+    assert result["mistakes"] == 1
+
+
+def test_get_time_pressure_stats_uses_aggregate_tables(monkeypatch):
+    monkeypatch.setattr(
+        coach,
+        "query_weakness_summary",
+        lambda player_id, days=60: {
+            "player_id": player_id,
+            "critical_positions": 10,
+            "time_pressure_positions": 4,
+            "top_time_pressure": "under_30s",
+        },
+    )
+    monkeypatch.setattr(
+        coach,
+        "query_phase_stats",
+        lambda player_id, days=60: [
+            {"phase": "middlegame", "critical_positions": 8, "time_pressure_positions": 3}
+        ],
+    )
+
+    result = coach.get_time_pressure_stats("alice", days=600)
+
+    assert result["days"] == 365
+    assert result["time_pressure"]["share_pct"] == 40.0
+    assert result["by_phase"][0]["share_pct"] == 37.5
 
 
 def test_gemini_final_answer_uses_tool_evidence(monkeypatch):
@@ -298,5 +550,6 @@ def test_coach_system_prompt_is_vietnamese_and_action_oriented():
     assert "Không nhắc tên tool" in coach._SYSTEM_PROMPT
     assert "username hoặc game id" in coach._SYSTEM_PROMPT
     assert "Chẩn đoán" in coach._SYSTEM_PROMPT
-    assert "Bài tập" in coach._SYSTEM_PROMPT
+    assert "Bài tập tiếp theo" not in coach._SYSTEM_PROMPT
+    assert "Câu trả lời ngắn" not in coach._SYSTEM_PROMPT
     assert "không được bịa số liệu" in coach._SYSTEM_PROMPT
