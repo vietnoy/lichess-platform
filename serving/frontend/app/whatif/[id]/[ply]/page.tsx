@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Chess } from "chess.js";
 
@@ -45,6 +45,7 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
   const [phase, setPhase] = useState<"idle" | "computing" | "ready" | "running">("idle");
   const [activeStep, setActiveStep] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const whatifAbortRef = useRef<AbortController | null>(null);
 
   // Load game
   useEffect(() => {
@@ -79,6 +80,9 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
 
   async function handleAltMove(uci: string, _san: string, _nextFen: string) {
     if (!game) return;
+    whatifAbortRef.current?.abort();
+    const controller = new AbortController();
+    whatifAbortRef.current = controller;
     setPhase("computing");
     setErrorMsg(null);
     setActiveStep(0);
@@ -90,6 +94,7 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
         alt:    { uci: string; fen: string; cp: number | null; mate: number | null }[];
       }>("/whatif", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({
           base_fen: baseFen,
           actual_uci: actualMoveUci,
@@ -98,6 +103,7 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
           depth: 12,
         }),
       });
+      if (controller.signal.aborted) return;
       const actualSans = reconstructSans(baseFen, result.actual.map((s) => s.uci));
       const altSans    = reconstructSans(baseFen, result.alt.map((s) => s.uci));
       const actual: LineStep[] = result.actual.map((s, i) => ({
@@ -110,10 +116,17 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
       setAltLine({ label: "Your alternative", steps: alt });
       setPhase("ready");
     } catch (e) {
+      if (controller.signal.aborted) return;
       setErrorMsg(e instanceof Error ? e.message : String(e));
       setPhase("idle");
+    } finally {
+      if (whatifAbortRef.current === controller) whatifAbortRef.current = null;
     }
   }
+
+  useEffect(() => {
+    return () => whatifAbortRef.current?.abort();
+  }, []);
 
   // Auto-step animation through both lines once ready.
   useEffect(() => {
@@ -131,6 +144,7 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
   }, [phase, actualLine, altLine]);
 
   function reset() {
+    whatifAbortRef.current?.abort();
     setActualLine(null);
     setAltLine(null);
     setPhase("idle");
