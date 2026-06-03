@@ -14,7 +14,7 @@ default_args = {
 with DAG(
     dag_id="pipeline_maintenance",
     default_args=default_args,
-    description="Safe cleanup for stale failed Spark and StarRocks pod records",
+    description="Safe cleanup for stale failed pod records and StarRocks catalog drift",
     start_date=datetime(2026, 5, 19),
     schedule="45 * * * *",
     catchup=False,
@@ -26,6 +26,8 @@ with DAG(
         bash_command=(
             "python /git/repo/ops/pipeline_maintenance.py "
             "--cleanup-app spark-worker "
-            "--cleanup-app starrocks-fe"
+            "--cleanup-app starrocks-fe "
+            "--cleanup-app starrocks-cn "
+            "--repair-polaris-catalog"
         ),
     )
