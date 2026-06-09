@@ -54,3 +54,6 @@ CREATE INDEX IF NOT EXISTS move_eval_ondemand_player_class_idx
 CREATE INDEX IF NOT EXISTS move_eval_ondemand_dated_order_idx
   ON move_evaluations_ondemand (evaluated_at, game_id, ply, player_id)
   WHERE date IS NOT NULL;
+CREATE INDEX IF NOT EXISTS move_eval_ondemand_date_key_idx
+  ON move_evaluations_ondemand (date, game_id, ply, player_id)
+  WHERE date IS NOT NULL;

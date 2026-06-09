@@ -227,6 +227,7 @@ def test_empty_staging_skips_write_and_delete(module, monkeypatch):
     player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "choose_target_date", lambda: "2026-05-11")
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
 
@@ -237,19 +238,66 @@ def test_empty_staging_skips_write_and_delete(module, monkeypatch):
     spark.stop.assert_called_once()
 
 
-def test_read_staging_uses_bounded_ordered_jdbc_query(module, monkeypatch):
-    monkeypatch.setenv("COMPACT_ONDEMAND_CANDIDATE_ROWS", "123")
+def test_no_dated_staging_date_skips_spark_read(module, monkeypatch):
+    staging = FakeDataFrame([], name="staging")
+    player_games = FakeDataFrame([], name="player_games")
+    spark = FakeSpark(staging, player_games)
+    monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "choose_target_date", lambda: None)
+    clear_staging = MagicMock()
+    monkeypatch.setattr(module, "clear_staging", clear_staging)
+
+    assert module.run() == 0
+
+    assert spark.read.options == {}
+    clear_staging.assert_not_called()
+    spark.stop.assert_called_once()
+
+
+def test_read_staging_uses_single_date_partition_query(module):
     staging = FakeDataFrame([], name="staging")
     player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
 
-    assert module.read_staging(spark) is staging
+    assert module.read_staging(spark, "2026-05-11") is staging
 
     dbtable = spark.read.options["dbtable"]
     assert "FROM move_evaluations_ondemand" in dbtable
-    assert "WHERE date IS NOT NULL" in dbtable
+    assert "WHERE date = DATE '2026-05-11'" in dbtable
     assert "ORDER BY evaluated_at NULLS LAST, game_id, ply, player_id" in dbtable
-    assert "LIMIT 123" in dbtable
+    assert "LIMIT" not in dbtable
+
+
+def test_choose_target_date_defaults_to_newest_date(module, monkeypatch):
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.fetchone.return_value = ("2026-06-05",)
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value = cursor
+    monkeypatch.setattr(module.psycopg2, "connect", MagicMock(return_value=conn))
+
+    assert module.choose_target_date() == "2026-06-05"
+
+    sql = cursor.execute.call_args.args[0]
+    assert "WHERE date IS NOT NULL" in sql
+    assert "ORDER BY date DESC" in sql
+
+
+def test_choose_target_date_can_process_oldest_first(module, monkeypatch):
+    monkeypatch.setenv("COMPACT_ONDEMAND_DATE_ORDER", "asc")
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.fetchone.return_value = ("2026-04-16",)
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value = cursor
+    monkeypatch.setattr(module.psycopg2, "connect", MagicMock(return_value=conn))
+
+    assert module.choose_target_date() == "2026-04-16"
+
+    sql = cursor.execute.call_args.args[0]
+    assert "ORDER BY date ASC" in sql
 
 
 def test_non_empty_dated_staging_writes_without_player_games_join(module, monkeypatch):
@@ -259,6 +307,7 @@ def test_non_empty_dated_staging_writes_without_player_games_join(module, monkey
     player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "choose_target_date", lambda: "2026-05-11")
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
     enqueue_dates = MagicMock()
@@ -278,16 +327,6 @@ def test_non_empty_dated_staging_writes_without_player_games_join(module, monkey
     assert "polaris.prod.player_games" not in spark.table_calls
 
 
-def test_changed_dates_are_distinct_and_sorted(module):
-    compacted = FakeDataFrame([
-        {"game_id": "g2", "ply": 1, "player_id": "bob", "date": "2026-05-12"},
-        {"game_id": "g1", "ply": 1, "player_id": "alice", "date": "2026-05-11"},
-        {"game_id": "g1", "ply": 2, "player_id": "alice", "date": "2026-05-11"},
-    ])
-
-    assert module.changed_dates(compacted) == ["2026-05-11", "2026-05-12"]
-
-
 def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, monkeypatch):
     staging = FakeDataFrame([
         {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11"},
@@ -298,6 +337,7 @@ def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, m
     ], name="existing_evals")
     spark = FakeSpark(staging, player_games, existing_evals)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "choose_target_date", lambda: "2026-05-11")
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
     enqueue_dates = MagicMock()
@@ -334,6 +374,7 @@ def test_successful_write_deletes_postgres_rows(module, monkeypatch):
     player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "choose_target_date", lambda: "2026-05-11")
     enqueue_dates = MagicMock()
     monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", enqueue_dates)
 
@@ -365,6 +406,7 @@ def test_failed_write_does_not_delete_postgres_rows(module, monkeypatch):
     player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "choose_target_date", lambda: "2026-05-11")
     connect = MagicMock()
     monkeypatch.setattr(module.psycopg2, "connect", connect)
 
@@ -383,6 +425,7 @@ def test_null_date_staging_rows_are_not_compacted(module, monkeypatch):
     player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "choose_target_date", lambda: "2026-05-11")
     clear_staging = MagicMock()
     monkeypatch.setattr(module, "clear_staging", clear_staging)
     enqueue_dates = MagicMock()
@@ -412,6 +455,7 @@ def test_clear_staging_failure_after_successful_append_is_raised(module, monkeyp
     player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
+    monkeypatch.setattr(module, "choose_target_date", lambda: "2026-05-11")
     monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", MagicMock())
 
     cursor_error = RuntimeError("postgres delete failed")

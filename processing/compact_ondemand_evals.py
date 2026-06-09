@@ -21,8 +21,7 @@ POSTGRES_HOST      = "postgres"
 POSTGRES_PORT      = 5432
 POSTGRES_DB        = "chess_analyzer_db"
 JDBC_URL           = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-DEFAULT_STAGING_BATCH_ROWS = 100_000
-DEFAULT_STAGING_CANDIDATE_ROWS = 500_000
+DEFAULT_STAGING_DATE_ORDER = "DESC"
 CRITICAL_REBUILD_QUEUE_TABLE = "critical_position_rebuild_queue"
 
 logging.basicConfig(
@@ -33,40 +32,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def staging_batch_rows() -> int:
-    return positive_env_int("COMPACT_ONDEMAND_BATCH_ROWS", DEFAULT_STAGING_BATCH_ROWS)
+def staging_date_order() -> str:
+    raw_value = os.getenv("COMPACT_ONDEMAND_DATE_ORDER", DEFAULT_STAGING_DATE_ORDER)
+    value = raw_value.strip().upper()
+    if value in {"ASC", "DESC"}:
+        return value
+    logger.warning(
+        "invalid COMPACT_ONDEMAND_DATE_ORDER=%r; using default %s",
+        raw_value,
+        DEFAULT_STAGING_DATE_ORDER,
+    )
+    return DEFAULT_STAGING_DATE_ORDER
 
 
-def staging_candidate_rows() -> int:
-    return positive_env_int("COMPACT_ONDEMAND_CANDIDATE_ROWS", DEFAULT_STAGING_CANDIDATE_ROWS)
+def target_date_literal(date: str) -> str:
+    # Dates come from PostgreSQL DATE values. Keep a small guard because the
+    # value is interpolated into Spark's JDBC subquery.
+    if len(date) != 10 or date[4] != "-" or date[7] != "-":
+        raise ValueError(f"invalid date literal: {date!r}")
+    year, month, day = date.split("-")
+    if not (year.isdigit() and month.isdigit() and day.isdigit()):
+        raise ValueError(f"invalid date literal: {date!r}")
+    return date
 
 
-def positive_env_int(name: str, default: int) -> int:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    try:
-        value = int(raw_value)
-    except ValueError:
-        logger.warning(
-            "invalid %s=%r; using default %s",
-            name,
-            raw_value,
-            default,
-        )
-        return default
-    if value <= 0:
-        logger.warning(
-            "non-positive %s=%r; using default %s",
-            name,
-            raw_value,
-            default,
-        )
-        return default
-    return value
-
-
-def staging_batch_query(batch_rows: int) -> str:
+def staging_batch_query(target_date: str) -> str:
+    target_date = target_date_literal(target_date)
     return f"""
         (
             SELECT
@@ -83,9 +74,8 @@ def staging_batch_query(batch_rows: int) -> str:
                 classification,
                 evaluated_at
             FROM move_evaluations_ondemand
-            WHERE date IS NOT NULL
+            WHERE date = DATE '{target_date}'
             ORDER BY evaluated_at NULLS LAST, game_id, ply, player_id
-            LIMIT {batch_rows}
         ) AS move_evaluations_ondemand_batch
     """
 
@@ -187,6 +177,33 @@ def ensure_critical_rebuild_queue() -> None:
             )
 
 
+def choose_target_date() -> str | None:
+    order = staging_date_order()
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT date
+                FROM move_evaluations_ondemand
+                WHERE date IS NOT NULL
+                ORDER BY date {order}
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    target_date = str(row[0])
+    logger.info("selected analyzer staging date partition: %s (%s)", target_date, order)
+    return target_date
+
+
 def enqueue_critical_rebuild_dates(dates: list[str]) -> int:
     if not dates:
         return 0
@@ -247,14 +264,13 @@ def enqueue_critical_rebuild_dates(dates: list[str]) -> int:
             return positive_rowcount(cur.rowcount)
 
 
-def read_staging(spark: SparkSession):
-    candidate_rows = staging_candidate_rows()
-    logger.info("reading up to %s candidate rows from analyzer staging", candidate_rows)
+def read_staging(spark: SparkSession, target_date: str):
+    logger.info("reading analyzer staging date partition %s", target_date)
     return (
         spark.read
         .format("jdbc")
         .option("url", JDBC_URL)
-        .option("dbtable", staging_batch_query(candidate_rows))
+        .option("dbtable", staging_batch_query(target_date))
         .option("user", POSTGRES_USER)
         .option("password", POSTGRES_PASSWORD)
         .option("driver", "org.postgresql.Driver")
@@ -280,18 +296,6 @@ def filter_new_evaluations(spark: SparkSession, compacted, dates: list[str]):
         .dropDuplicates(["game_id", "ply", "player_id"])
     )
     return compacted.join(existing_keys, on=["game_id", "ply", "player_id"], how="left_anti")
-
-
-def changed_dates(compacted) -> list[str]:
-    return sorted(str(row.date) for row in compacted.select("date").distinct().collect())
-
-
-def choose_target_date(compacted) -> str | None:
-    dates = changed_dates(compacted)
-    if not dates:
-        return None
-    logger.info("selected analyzer date partition: %s", dates[0])
-    return dates[0]
 
 
 def date_list_sql(dates: list[str]) -> str:
@@ -358,9 +362,14 @@ def run() -> int:
     try:
         ensure_table(spark)
 
-        staging = read_staging(spark)
+        target_date = choose_target_date()
+        if not target_date:
+            logger.info("no dated analyzer staging rows to compact")
+            return 0
+
+        staging = read_staging(spark, target_date).where(f"date = DATE '{target_date}'")
         staging_count = staging.count()
-        logger.info(f"read {staging_count} rows from staging")
+        logger.info("read %s rows from staging date %s", staging_count, target_date)
         if staging_count == 0:
             return 0
 
@@ -371,26 +380,16 @@ def run() -> int:
             if compacted_count == 0:
                 return 0
 
-            candidate_dates = changed_dates(compacted)
-            logger.info("candidate analyzer partitions: %s", ", ".join(candidate_dates))
-            target_date = choose_target_date(compacted)
-            if not target_date:
-                logger.warning("no dated rows after player_games enrichment")
-                return 0
-
-            batch_rows = staging_batch_rows()
             compacted = (
                 compacted
                 .where(f"date = DATE '{target_date}'")
                 .orderBy("evaluated_at", "game_id", "ply", "player_id")
-                .limit(batch_rows)
             )
             compacted_count = compacted.count()
             logger.info(
-                "processing analyzer date partition %s with %s rows (limit=%s)",
+                "processing complete analyzer date partition %s with %s rows",
                 target_date,
                 compacted_count,
-                batch_rows,
             )
             if compacted_count == 0:
                 return 0
