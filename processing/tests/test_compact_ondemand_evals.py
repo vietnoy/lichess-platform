@@ -32,6 +32,13 @@ class FakeDataFrame:
         self.persist_called = False
         self.persist_level = None
         self.unpersist_called = False
+        self.where_condition = None
+
+    @property
+    def columns(self):
+        if not self.rows:
+            return []
+        return list(self.rows[0].keys())
 
     def count(self):
         return len(self.rows)
@@ -55,6 +62,26 @@ class FakeDataFrame:
 
     def where(self, condition):
         self.where_condition = condition
+        condition_upper = condition.upper()
+        if condition_upper == "DATE IS NOT NULL":
+            return FakeDataFrame(
+                [row for row in self.rows if row.get("date") is not None],
+                name=self.name,
+                append_error=self.append_error,
+            )
+        if condition_upper == "DATE IS NULL":
+            return FakeDataFrame(
+                [row for row in self.rows if row.get("date") is None],
+                name=self.name,
+                append_error=self.append_error,
+            )
+        if condition_upper.startswith("DATE = DATE '"):
+            target = condition.split("'")[1]
+            return FakeDataFrame(
+                [row for row in self.rows if str(row.get("date")) == target],
+                name=self.name,
+                append_error=self.append_error,
+            )
         return self
 
     def join(self, other, on, how):
@@ -82,6 +109,19 @@ class FakeDataFrame:
                 seen.add(key)
                 unique_rows.append(row)
         return FakeDataFrame(unique_rows, name=self.name, append_error=self.append_error)
+
+    def orderBy(self, *columns):
+        names = [column for column in columns if isinstance(column, str)]
+        if not names:
+            return self
+        return FakeDataFrame(
+            sorted(self.rows, key=lambda row: tuple(row.get(name) for name in names)),
+            name=self.name,
+            append_error=self.append_error,
+        )
+
+    def limit(self, count):
+        return FakeDataFrame(self.rows[:count], name=self.name, append_error=self.append_error)
 
     def cache(self):
         self.cache_called = True
@@ -137,8 +177,10 @@ class FakeSpark:
         self.sparkContext = SimpleNamespace(setLogLevel=MagicMock())
         self.sql = MagicMock(return_value=FakeDataFrame([], name="sql"))
         self.stop = MagicMock()
+        self.table_calls = []
 
     def table(self, name):
+        self.table_calls.append(name)
         if name == "polaris.prod.player_games":
             return self.player_games
         if name == "polaris.prod.move_evaluations_ondemand":
@@ -196,7 +238,7 @@ def test_empty_staging_skips_write_and_delete(module, monkeypatch):
 
 
 def test_read_staging_uses_bounded_ordered_jdbc_query(module, monkeypatch):
-    monkeypatch.setenv("COMPACT_ONDEMAND_BATCH_ROWS", "123")
+    monkeypatch.setenv("COMPACT_ONDEMAND_CANDIDATE_ROWS", "123")
     staging = FakeDataFrame([], name="staging")
     player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
@@ -205,18 +247,16 @@ def test_read_staging_uses_bounded_ordered_jdbc_query(module, monkeypatch):
 
     dbtable = spark.read.options["dbtable"]
     assert "FROM move_evaluations_ondemand" in dbtable
+    assert "WHERE date IS NOT NULL" in dbtable
     assert "ORDER BY evaluated_at NULLS LAST, game_id, ply, player_id" in dbtable
     assert "LIMIT 123" in dbtable
 
 
-def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
+def test_non_empty_dated_staging_writes_without_player_games_join(module, monkeypatch):
     staging = FakeDataFrame([
-        {"game_id": "g1", "ply": 12, "player_id": "alice", "fen": "fen1"},
+        {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11", "fen": "fen1"},
     ], name="staging")
-    player_games = FakeDataFrame([
-        {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
-        {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
-    ], name="player_games")
+    player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
@@ -235,6 +275,7 @@ def test_non_empty_staging_writes_joined_rows_with_date(module, monkeypatch):
     assert FakeDataFrame.last_write_frame.persist_called is False
     enqueue_dates.assert_called_once_with(["2026-05-11"])
     assert list(clear_staging.call_args.args[0])[0].game_id == "g1"
+    assert "polaris.prod.player_games" not in spark.table_calls
 
 
 def test_changed_dates_are_distinct_and_sorted(module):
@@ -249,11 +290,9 @@ def test_changed_dates_are_distinct_and_sorted(module):
 
 def test_existing_iceberg_rows_are_not_appended_but_staging_is_cleared(module, monkeypatch):
     staging = FakeDataFrame([
-        {"game_id": "g1", "ply": 12, "player_id": "alice"},
+        {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11"},
     ], name="staging")
-    player_games = FakeDataFrame([
-        {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
-    ], name="player_games")
+    player_games = FakeDataFrame([], name="player_games")
     existing_evals = FakeDataFrame([
         {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11"},
     ], name="existing_evals")
@@ -290,11 +329,9 @@ def test_rebuild_queue_requeues_done_dates_without_overlapping_running_dates(mod
 
 def test_successful_write_deletes_postgres_rows(module, monkeypatch):
     staging = FakeDataFrame([
-        {"game_id": "g1", "ply": 12, "player_id": "alice"},
+        {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11"},
     ], name="staging")
-    player_games = FakeDataFrame([
-        {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
-    ], name="player_games")
+    player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     enqueue_dates = MagicMock()
@@ -323,11 +360,9 @@ def test_successful_write_deletes_postgres_rows(module, monkeypatch):
 
 def test_failed_write_does_not_delete_postgres_rows(module, monkeypatch):
     staging = FakeDataFrame([
-        {"game_id": "g1", "ply": 12, "player_id": "alice"},
+        {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11"},
     ], name="staging", append_error=RuntimeError("iceberg write failed"))
-    player_games = FakeDataFrame([
-        {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
-    ], name="player_games")
+    player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     connect = MagicMock()
@@ -340,14 +375,12 @@ def test_failed_write_does_not_delete_postgres_rows(module, monkeypatch):
     spark.stop.assert_called_once()
 
 
-def test_unmatched_staging_row_stays_out_of_delete_keys(module, monkeypatch):
+def test_null_date_staging_rows_are_not_compacted(module, monkeypatch):
     staging = FakeDataFrame([
-        {"game_id": "g1", "ply": 12, "player_id": "alice", "fen": "fen1"},
-        {"game_id": "g2", "ply": 7, "player_id": "bob", "fen": "fen2"},
+        {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11", "fen": "fen1"},
+        {"game_id": "g2", "ply": 7, "player_id": "bob", "date": None, "fen": "fen2"},
     ], name="staging")
-    player_games = FakeDataFrame([
-        {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
-    ], name="player_games")
+    player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     clear_staging = MagicMock()
@@ -356,7 +389,7 @@ def test_unmatched_staging_row_stays_out_of_delete_keys(module, monkeypatch):
     monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", enqueue_dates)
 
     compacted = module.enrich_with_dates(spark, staging)
-    assert compacted.count() == 1
+    assert compacted.count() == 2
 
     assert module.run() == 1
 
@@ -374,11 +407,9 @@ def test_unmatched_staging_row_stays_out_of_delete_keys(module, monkeypatch):
 
 def test_clear_staging_failure_after_successful_append_is_raised(module, monkeypatch):
     staging = FakeDataFrame([
-        {"game_id": "g1", "ply": 12, "player_id": "alice"},
+        {"game_id": "g1", "ply": 12, "player_id": "alice", "date": "2026-05-11"},
     ], name="staging")
-    player_games = FakeDataFrame([
-        {"game_id": "g1", "player_id": "alice", "date": "2026-05-11"},
-    ], name="player_games")
+    player_games = FakeDataFrame([], name="player_games")
     spark = FakeSpark(staging, player_games)
     monkeypatch.setattr(module, "build_spark", lambda: spark)
     monkeypatch.setattr(module, "enqueue_critical_rebuild_dates", MagicMock())

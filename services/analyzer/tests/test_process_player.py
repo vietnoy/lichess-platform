@@ -54,6 +54,7 @@ def test_happy_path_one_game_two_plies(
     mock_insert.assert_called_once()
     rows_arg = mock_insert.call_args.args[1]
     assert len(rows_arg) == 2
+    assert rows_arg[0][3] == game_date
 
     mock_fetch_plies.assert_not_called()
     mock_fetch_plies_batch.assert_called_once_with(sr, games)
@@ -216,11 +217,11 @@ def test_eval_none_for_one_ply_no_crash(
     rows_arg = mock_insert.call_args.args[1]
     assert len(rows_arg) == 2
     # ply 0: cp_before is None so classification is None
-    assert rows_arg[0][6] is None   # eval_cp
-    assert rows_arg[0][9] is None   # classification
+    assert rows_arg[0][7] is None   # eval_cp
+    assert rows_arg[0][10] is None  # classification
     # ply 1: cp_before=10, cp_after=None (no evals[2]) -> classification None
-    assert rows_arg[1][6] == 10
-    assert rows_arg[1][9] is None
+    assert rows_arg[1][7] == 10
+    assert rows_arg[1][10] is None
 
 
 # ---------------------------------------------------------------------------

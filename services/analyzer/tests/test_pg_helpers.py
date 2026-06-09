@@ -181,8 +181,8 @@ def test_update_cursor_where_player_id():
 
 def test_insert_evaluations_executemany():
     rows = [
-        ("g1", 1, "alice", "fen1", "e2e4", "d2d4", 50, None, -30, "good"),
-        ("g1", 2, "alice", "fen2", "d7d5", "g1f3", -10, None, 5, "good"),
+        ("g1", 1, "alice", "2026-05-11", "fen1", "e2e4", "d2d4", 50, None, -30, "good"),
+        ("g1", 2, "alice", "2026-05-11", "fen2", "d7d5", "g1f3", -10, None, 5, "good"),
     ]
     pg, cursor = _make_pg()
 
@@ -193,6 +193,7 @@ def test_insert_evaluations_executemany():
     sql: str = call_args.args[0]
     passed_rows = call_args.args[1]
 
+    assert "date" in sql
     assert "ON CONFLICT (game_id, ply, player_id) DO NOTHING" in sql
     assert passed_rows == rows
 

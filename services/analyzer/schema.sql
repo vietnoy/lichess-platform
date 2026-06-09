@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS move_evaluations_ondemand (
   game_id              TEXT        NOT NULL,
   ply                  INT         NOT NULL,
   player_id            TEXT        NOT NULL,
+  date                 DATE,
   fen                  TEXT,
   played_move          TEXT,
   best_move            TEXT,
@@ -44,7 +45,12 @@ CREATE TABLE IF NOT EXISTS move_evaluations_ondemand (
   evaluated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (game_id, ply, player_id)
 );
+ALTER TABLE move_evaluations_ondemand
+  ADD COLUMN IF NOT EXISTS date DATE;
 -- /api/exercise/{player} hits this index: filter by player, fetch blunders.
 CREATE INDEX IF NOT EXISTS move_eval_ondemand_player_class_idx
   ON move_evaluations_ondemand (player_id, classification)
   WHERE classification IN ('blunder', 'mistake');
+CREATE INDEX IF NOT EXISTS move_eval_ondemand_dated_order_idx
+  ON move_evaluations_ondemand (evaluated_at, game_id, ply, player_id)
+  WHERE date IS NOT NULL;

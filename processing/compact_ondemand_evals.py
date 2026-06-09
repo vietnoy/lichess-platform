@@ -73,6 +73,7 @@ def staging_batch_query(batch_rows: int) -> str:
                 game_id,
                 ply,
                 player_id,
+                date,
                 fen,
                 played_move,
                 best_move,
@@ -82,6 +83,7 @@ def staging_batch_query(batch_rows: int) -> str:
                 classification,
                 evaluated_at
             FROM move_evaluations_ondemand
+            WHERE date IS NOT NULL
             ORDER BY evaluated_at NULLS LAST, game_id, ply, player_id
             LIMIT {batch_rows}
         ) AS move_evaluations_ondemand_batch
@@ -262,14 +264,8 @@ def read_staging(spark: SparkSession):
 
 
 def enrich_with_dates(spark: SparkSession, staging):
-    player_games = (
-        spark.table("polaris.prod.player_games")
-        .select("game_id", "player_id", "date")
-        .dropDuplicates(["game_id", "player_id"])
-    )
     return (
         staging
-        .join(player_games, on=["game_id", "player_id"], how="inner")
         .dropDuplicates(["game_id", "ply", "player_id"])
     )
 
@@ -291,20 +287,11 @@ def changed_dates(compacted) -> list[str]:
 
 
 def choose_target_date(compacted) -> str | None:
-    row = (
-        compacted
-        .select("date")
-        .where("date IS NOT NULL")
-        .groupBy("date")
-        .count()
-        .orderBy("date")
-        .limit(1)
-        .collect()
-    )
-    if not row:
+    dates = changed_dates(compacted)
+    if not dates:
         return None
-    logger.info("selected analyzer date partition: %s candidate_rows=%s", row[0].date, row[0]["count"])
-    return str(row[0].date)
+    logger.info("selected analyzer date partition: %s", dates[0])
+    return dates[0]
 
 
 def date_list_sql(dates: list[str]) -> str:
@@ -380,19 +367,7 @@ def run() -> int:
         compacted = enrich_with_dates(spark, staging)
         try:
             compacted_count = compacted.count()
-            logger.info(f"joined with player_games -> {compacted_count} rows after date enrichment")
-            if compacted_count < staging_count:
-                logger.warning(
-                    "compaction dropped %d staging rows (no player_games match); "
-                    "they remain in staging for the next run",
-                    staging_count - compacted_count,
-                )
-            elif compacted_count > staging_count:
-                logger.warning(
-                    "compaction expanded by %d rows before key de-duplication; "
-                    "check duplicate player_games/staging keys",
-                    compacted_count - staging_count,
-                )
+            logger.info(f"deduplicated dated staging rows -> {compacted_count} rows")
             if compacted_count == 0:
                 return 0
 

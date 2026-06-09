@@ -174,9 +174,9 @@ def insert_evaluations(pg: "Connection", rows: list[tuple]) -> None:
     with pg.cursor() as c:
         c.executemany(
             "INSERT INTO move_evaluations_ondemand"
-            " (game_id, ply, player_id, fen, played_move, best_move,"
+            " (game_id, ply, player_id, date, fen, played_move, best_move,"
             "  eval_cp, mate, eval_swing_cp, classification)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (game_id, ply, player_id) DO NOTHING",
             rows,
         )
@@ -305,6 +305,7 @@ def process_player(
                     g["game_id"],
                     p["move_number"],
                     player_id,
+                    g["date"],
                     p["fen"],
                     p["move"],
                     (evals[i] or {}).get("best_move"),
