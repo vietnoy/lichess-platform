@@ -1,5 +1,6 @@
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from datetime import datetime, timedelta
 
@@ -177,7 +178,7 @@ with DAG(
     default_args=default_args,
     description="Compact asynchronous analyzer evals and rebuild only changed date partitions",
     start_date=datetime(2026, 5, 24),
-    schedule="15 1-23/2 * * *",
+    schedule="*/30 * * * *",
     catchup=False,
     max_active_runs=1,
     tags=["chess", "processing", "analyzer", "polaris"],
@@ -218,7 +219,15 @@ starrocks_mysql -e "REFRESH EXTERNAL TABLE polaris_catalog.prod.player_insight_c
 """,
     )
 
-    compact_ondemand >> refresh_analyzer_tables
+    trigger_critical_positions = TriggerDagRunOperator(
+        task_id="trigger_critical_positions",
+        trigger_dag_id="analyzer_critical_positions",
+        trigger_run_id="after_derived__{{ run_id }}",
+        skip_when_already_exists=True,
+        wait_for_completion=False,
+    )
+
+    compact_ondemand >> refresh_analyzer_tables >> trigger_critical_positions
 
 
 # ─── DAG 2c: Analyzer critical-position partitions ───────────────────────────
@@ -227,7 +236,7 @@ with DAG(
     default_args=default_args,
     description="Date-bounded rebuild of critical positions from compacted analyzer evals",
     start_date=datetime(2026, 5, 24),
-    schedule="45 1-23/2 * * *",
+    schedule=None,
     catchup=False,
     max_active_runs=1,
     tags=["chess", "processing", "analyzer", "critical"],

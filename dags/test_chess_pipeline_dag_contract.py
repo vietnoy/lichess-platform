@@ -12,14 +12,16 @@ def test_daily_pipeline_builds_context_before_refresh():
 
 def test_analyzer_maintenance_compacts_eval_staging_without_history_rebuild():
     assert 'dag_id="analyzer_derived_maintenance"' in DAG_SOURCE
-    assert 'schedule="15 1-23/2 * * *"' in DAG_SOURCE
+    assert 'schedule="*/30 * * * *"' in DAG_SOURCE
     assert 'task_id="run_compact_ondemand_evals"' in DAG_SOURCE
     assert 'application="/git/repo/processing/compact_ondemand_evals.py"' in DAG_SOURCE
+    assert 'task_id="trigger_critical_positions"' in DAG_SOURCE
+    assert 'trigger_dag_id="analyzer_critical_positions"' in DAG_SOURCE
     maintenance_block = DAG_SOURCE.split('dag_id="analyzer_derived_maintenance"', 1)[1].split(
         'dag_id="init_catalog_starrocks"', 1
     )[0]
     assert 'task_id="rebuild_changed_analyzer_dates"' not in maintenance_block
-    assert "compact_ondemand >> refresh_analyzer_tables" in maintenance_block
+    assert "compact_ondemand >> refresh_analyzer_tables >> trigger_critical_positions" in maintenance_block
 
 
 def test_analyzer_refresh_includes_player_opening_stats():
@@ -45,7 +47,7 @@ def test_analyzer_refresh_includes_player_insight_cards():
 
 def test_analyzer_critical_positions_runs_as_separate_date_bounded_dag():
     assert 'dag_id="analyzer_critical_positions"' in DAG_SOURCE
-    assert 'schedule="45 1-23/2 * * *"' in DAG_SOURCE
+    assert "schedule=None" in DAG_SOURCE
     assert 'task_id="rebuild_critical_positions"' in DAG_SOURCE
     assert 'application="/git/repo/processing/build_critical_positions.py"' in DAG_SOURCE
     assert (
