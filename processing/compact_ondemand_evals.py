@@ -21,7 +21,8 @@ POSTGRES_HOST      = "postgres"
 POSTGRES_PORT      = 5432
 POSTGRES_DB        = "chess_analyzer_db"
 JDBC_URL           = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-DEFAULT_STAGING_BATCH_ROWS = 50_000
+DEFAULT_STAGING_BATCH_ROWS = 100_000
+DEFAULT_STAGING_CANDIDATE_ROWS = 500_000
 CRITICAL_REBUILD_QUEUE_TABLE = "critical_position_rebuild_queue"
 
 logging.basicConfig(
@@ -33,25 +34,35 @@ logger = logging.getLogger(__name__)
 
 
 def staging_batch_rows() -> int:
-    raw_value = os.getenv("COMPACT_ONDEMAND_BATCH_ROWS")
+    return positive_env_int("COMPACT_ONDEMAND_BATCH_ROWS", DEFAULT_STAGING_BATCH_ROWS)
+
+
+def staging_candidate_rows() -> int:
+    return positive_env_int("COMPACT_ONDEMAND_CANDIDATE_ROWS", DEFAULT_STAGING_CANDIDATE_ROWS)
+
+
+def positive_env_int(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
     if raw_value is None:
-        return DEFAULT_STAGING_BATCH_ROWS
+        return default
     try:
         value = int(raw_value)
     except ValueError:
         logger.warning(
-            "invalid COMPACT_ONDEMAND_BATCH_ROWS=%r; using default %s",
+            "invalid %s=%r; using default %s",
+            name,
             raw_value,
-            DEFAULT_STAGING_BATCH_ROWS,
+            default,
         )
-        return DEFAULT_STAGING_BATCH_ROWS
+        return default
     if value <= 0:
         logger.warning(
-            "non-positive COMPACT_ONDEMAND_BATCH_ROWS=%r; using default %s",
+            "non-positive %s=%r; using default %s",
+            name,
             raw_value,
-            DEFAULT_STAGING_BATCH_ROWS,
+            default,
         )
-        return DEFAULT_STAGING_BATCH_ROWS
+        return default
     return value
 
 
@@ -235,13 +246,13 @@ def enqueue_critical_rebuild_dates(dates: list[str]) -> int:
 
 
 def read_staging(spark: SparkSession):
-    batch_rows = staging_batch_rows()
-    logger.info("reading up to %s rows from analyzer staging", batch_rows)
+    candidate_rows = staging_candidate_rows()
+    logger.info("reading up to %s candidate rows from analyzer staging", candidate_rows)
     return (
         spark.read
         .format("jdbc")
         .option("url", JDBC_URL)
-        .option("dbtable", staging_batch_query(batch_rows))
+        .option("dbtable", staging_batch_query(candidate_rows))
         .option("user", POSTGRES_USER)
         .option("password", POSTGRES_PASSWORD)
         .option("driver", "org.postgresql.Driver")
@@ -277,6 +288,23 @@ def filter_new_evaluations(spark: SparkSession, compacted, dates: list[str]):
 
 def changed_dates(compacted) -> list[str]:
     return sorted(str(row.date) for row in compacted.select("date").distinct().collect())
+
+
+def choose_target_date(compacted) -> str | None:
+    row = (
+        compacted
+        .select("date")
+        .where("date IS NOT NULL")
+        .groupBy("date")
+        .count()
+        .orderBy("date")
+        .limit(1)
+        .collect()
+    )
+    if not row:
+        return None
+    logger.info("selected analyzer date partition: %s candidate_rows=%s", row[0].date, row[0]["count"])
+    return str(row[0].date)
 
 
 def date_list_sql(dates: list[str]) -> str:
@@ -368,10 +396,31 @@ def run() -> int:
             if compacted_count == 0:
                 return 0
 
-            dates = changed_dates(compacted)
-            logger.info("compacted analyzer partitions: %s", ", ".join(dates))
+            candidate_dates = changed_dates(compacted)
+            logger.info("candidate analyzer partitions: %s", ", ".join(candidate_dates))
+            target_date = choose_target_date(compacted)
+            if not target_date:
+                logger.warning("no dated rows after player_games enrichment")
+                return 0
 
-            new_compacted = filter_new_evaluations(spark, compacted, dates)
+            batch_rows = staging_batch_rows()
+            compacted = (
+                compacted
+                .where(f"date = DATE '{target_date}'")
+                .orderBy("evaluated_at", "game_id", "ply", "player_id")
+                .limit(batch_rows)
+            )
+            compacted_count = compacted.count()
+            logger.info(
+                "processing analyzer date partition %s with %s rows (limit=%s)",
+                target_date,
+                compacted_count,
+                batch_rows,
+            )
+            if compacted_count == 0:
+                return 0
+
+            new_compacted = filter_new_evaluations(spark, compacted, [target_date])
             new_count = new_compacted.count()
             logger.info(
                 "filtered %d already-compacted rows; %d new rows remain",
@@ -381,7 +430,7 @@ def run() -> int:
             if new_count > 0:
                 new_compacted.writeTo("polaris.prod.move_evaluations_ondemand").append()
                 logger.info(f"wrote {new_count} rows to iceberg")
-                enqueued_count = enqueue_critical_rebuild_dates(changed_dates(new_compacted))
+                enqueued_count = enqueue_critical_rebuild_dates([target_date])
                 logger.info("enqueued %s critical-position rebuild dates", enqueued_count)
 
             keys = compacted.select("game_id", "ply", "player_id").distinct().toLocalIterator()
