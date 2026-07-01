@@ -18,7 +18,20 @@ serving/frontend/tsconfig.tsbuildinfo
 tmp/
 .pytest_cache/
 docs/datn/report/build/
+docs/datn/report/build-*/
 docs/datn/slide/build/
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.out
+*.synctex.gz
+*.toc
+*.xdv
 
 # Playwright snapshots and ad-hoc screenshots
 .playwright-mcp/

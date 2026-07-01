@@ -53,6 +53,9 @@ data:
     CREATE INDEX IF NOT EXISTS move_eval_ondemand_player_class_idx
       ON move_evaluations_ondemand (player_id, classification)
       WHERE classification IN ('blunder', 'mistake');
+    CREATE INDEX IF NOT EXISTS move_eval_ondemand_null_date_order_idx
+      ON move_evaluations_ondemand (game_id, ply, player_id)
+      WHERE date IS NULL;
     CREATE INDEX IF NOT EXISTS move_eval_ondemand_dated_order_idx
       ON move_evaluations_ondemand (evaluated_at, game_id, ply, player_id)
       WHERE date IS NOT NULL;

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -88,6 +90,13 @@ def ensure_pg_date_column() -> None:
     with connect_pg() as conn:
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE move_evaluations_ondemand ADD COLUMN IF NOT EXISTS date DATE")
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS move_eval_ondemand_null_date_order_idx
+                ON move_evaluations_ondemand (game_id, ply, player_id)
+                WHERE date IS NULL
+                """
+            )
             cur.execute(
                 """
                 CREATE INDEX IF NOT EXISTS move_eval_ondemand_dated_order_idx
