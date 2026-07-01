@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 from dotenv import load_dotenv
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, from_json, to_date, current_timestamp
 from pyspark.sql.types import (
     BooleanType, IntegerType, LongType, StringType, StructField, StructType,
@@ -125,7 +125,7 @@ def run():
         else:
             df = df.withColumn("date", to_date(col("timestamp").cast("timestamp")))
 
-        def write_batch(batch_df, batch_id, key=topic_key):
+        def write_batch(batch_df: DataFrame, batch_id, key=topic_key):
             count = batch_df.count()
             logger.info(f"[{key}] batch={batch_id} rows={count}")
             with totals_lock:
@@ -136,10 +136,6 @@ def run():
         q = (
             df.writeStream
             .outputMode("append")
-            # _checkpoints_selfhosted_v1: prior path inherited stale offsets from the
-            # Confluent->self-hosted Kafka migration. A simple wipe wasn't
-            # enough — Spark's first run after the wipe recorded the wrong
-            # source initial offsets back. New path guarantees a clean slate.
             .option("checkpointLocation", f"s3a://{BUCKET_DEV}/_checkpoints_selfhosted_v1/{topic_key}")
             .trigger(availableNow=True)
             .foreachBatch(write_batch)

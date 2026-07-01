@@ -88,8 +88,6 @@ def run(date_str: str | None) -> None:
     spark.sparkContext.setLogLevel("WARN")
     ensure_table(spark)
 
-    # One row per game (use move_number=1 to dedupe). Iceberg parquet stats on
-    # move_number make this filter cheap even across the full table.
     source = (
         spark.table("polaris.prod.chess_move_events")
         .where(col("move_number") == 1)

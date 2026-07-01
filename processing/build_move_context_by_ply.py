@@ -80,9 +80,6 @@ def ensure_table(spark: SparkSession) -> None:
 
 
 def build_move_context_sql(date_str: str | None) -> str:
-    # chess_move_events stores date as STRING. Keep the source filter as a
-    # string predicate so Iceberg can prune the raw date partition, then cast
-    # the output to DATE for the derived table.
     date_filter = f"WHERE date = '{date_str}'" if date_str else ""
     return f"""
     SELECT

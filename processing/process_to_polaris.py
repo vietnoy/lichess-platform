@@ -3,7 +3,7 @@ import os
 
 from datetime import datetime, timedelta
 from dotenv import find_dotenv, load_dotenv
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import Window
 from pyspark.sql.functions import col, coalesce, desc_nulls_last, lit, row_number, size, split, trim, when
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
@@ -180,7 +180,7 @@ _move_schema = StructType([
 ])
 
 
-def canonical_raw_games(raw_games):
+def canonical_raw_games(raw_games: DataFrame) -> DataFrame:
     """Keep the most complete raw export per game before exploding moves."""
     moves_text = trim(coalesce(col("moves"), lit("")))
     move_count = when(moves_text == "", lit(0)).otherwise(size(split(moves_text, r"\s+")))

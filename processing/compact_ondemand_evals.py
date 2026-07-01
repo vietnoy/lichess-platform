@@ -46,8 +46,6 @@ def staging_date_order() -> str:
 
 
 def target_date_literal(date: str) -> str:
-    # Dates come from PostgreSQL DATE values. Keep a small guard because the
-    # value is interpolated into Spark's JDBC subquery.
     if len(date) != 10 or date[4] != "-" or date[7] != "-":
         raise ValueError(f"invalid date literal: {date!r}")
     year, month, day = date.split("-")

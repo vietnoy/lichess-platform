@@ -70,7 +70,7 @@ def signal_handler(sig, frame):
     logger.info("Shutdown signal received.")
     _shutdown.set()
 
-
+# set up custom signal handlers for termination and interrupt
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -93,14 +93,10 @@ def build_producer():
     return Producer(config)
 
 
-def produce(producer, topic, key, value):
+def produce(producer: Producer, topic, key, value):
     payload = json.dumps(value).encode("utf-8")
     key_bytes = key.encode("utf-8")
     with _producer_lock:
-        # If librdkafka's internal queue is full, drain delivery callbacks
-        # to free slots and retry. Total drain budget ~30s before we drop.
-        # Dropping is a data-loss event (game_end has no retry path), so it's
-        # ERROR-level. _shutdown short-circuits so SIGTERM doesn't block here.
         drain_budget_s = 30.0
         poll_step_s = 1.0
         waited = 0.0
@@ -371,7 +367,7 @@ class GameStream:
         logger.info(f"[Stream {self.stream_id}] Stopped")
 
 
-def export_worker(export_queue, producer):
+def export_worker(export_queue: queue.Queue, producer):
     batch_wait    = 10
     max_batch     = 300
 
@@ -442,7 +438,7 @@ def export_worker(export_queue, producer):
             time.sleep(5)
 
 
-def status_poller_loop(game_queue):
+def status_poller_loop(game_queue: queue.Queue):
     known_games = set()
 
     while not _shutdown.is_set():
@@ -476,7 +472,7 @@ def status_poller_loop(game_queue):
             elapsed += 1
 
 
-def game_adder_loop(game_queue, streams, export_queue, producer):
+def game_adder_loop(game_queue: queue.Queue, streams: list[GameStream], export_queue: queue.Queue, producer):
     stream_counter = len(streams)
     pending_carry  = []  # active games from rotated stream waiting to be re-added
 

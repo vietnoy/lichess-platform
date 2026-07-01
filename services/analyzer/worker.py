@@ -77,7 +77,6 @@ def eval_with_cache(pg: "Connection", fen: str) -> dict | None:
 
 
 def eval_plies_batch(pg: "Connection", plies: list[dict]) -> list[dict | None]:
-    """Evaluate plies with one cache read, parallel Stockfish misses, and one insert."""
     fens = [p["fen"] for p in plies]
     unique_fens = list(dict.fromkeys(f for f in fens if f))
 
@@ -142,7 +141,7 @@ def fetch_eligible_players(
             " LIMIT %s",
             (limit,),
         )
-        return c.fetchall()  # type: ignore[return-value]
+        return c.fetchall()
 
 
 def update_cursor(
@@ -153,8 +152,7 @@ def update_cursor(
     games_delta: int,
     throttle_hours: int,
 ) -> None:
-    # (%s || ' hours')::interval lets us bind the hour count as a parameter
-    # instead of f-string-interpolating it into the SQL.
+    
     with pg.cursor() as c:
         c.execute(
             "UPDATE analyzer_cursor"
@@ -189,8 +187,7 @@ def fetch_player_games(
     last_game_id: str | None,
     limit: int,
 ) -> list[dict]:
-    # Sentinel 1900-01-01 matches everything (lichess games postdate ~2007). The
-    # WHERE/ORDER BY both walk strictly forward in time so the cursor stored by
+    # The WHERE/ORDER BY both walk strictly forward in time so the cursor stored by
     # update_cursor (the last row of the batch = newest in batch under ASC) always
     # advances; pairing `date > cursor` with `ORDER BY date DESC` would loop.
     sentinel_date = last_date if last_date is not None else datetime.date(1900, 1, 1)
@@ -209,10 +206,6 @@ def fetch_player_games(
 
 
 def fetch_plies(sr: Any, game_id: str, date: datetime.date | None = None) -> list[dict]:
-    # chess_move_events has upstream duplicate rows per (game_id, move_number);
-    # GROUP BY deduplicates without a subquery. When the caller knows the game's
-    # date (it's in the player_games row we fetched a moment ago), passing it
-    # prunes the partition scan on a 17M-row table.
     if date is not None:
         sql = (
             "SELECT move_number, fen, whose_moved, move"
@@ -240,12 +233,7 @@ def fetch_plies_batch(
     sr: Any,
     games: list[dict],
 ) -> dict[str, list[dict]]:
-    """Fetch plies for many games in one StarRocks query.
 
-    Returns a dict keyed by game_id, value = list of ply dicts in move_number order.
-    Each game must have `game_id` and `date`; date prunes partitions while game_id
-    filters within those partitions. GROUP BY dedupes upstream duplicate move rows.
-    """
     if not games:
         return {}
 
@@ -267,7 +255,7 @@ def fetch_plies_batch(
         rows = c.fetchall()
 
     out: dict[str, list[dict]] = {gid: [] for gid in game_ids}
-    for r in sorted(rows, key=lambda row: (row["game_id"], row["move_number"])):
+    for r in rows:
         out[r["game_id"]].append(r)
     return out
 
@@ -279,11 +267,6 @@ def process_player(
     last_game_id: str | None,
     last_game_date: datetime.date | None,
 ) -> int:
-    """Process up to BATCH_GAMES new games for one player.
-
-    Commits after each game so partial progress survives a crash.
-    Returns the number of games fetched (not rows written).
-    """
     games = fetch_player_games(sr, player_id, last_game_date, last_game_id, BATCH_GAMES)
 
     if games:
@@ -318,14 +301,12 @@ def process_player(
             insert_evaluations(pg, rows)
             pg.commit()
 
-        newest = games[-1]  # ASC ordering -> newest is last
+        newest = games[-1]
         update_cursor(
             pg, player_id, newest["game_id"], newest["date"],
             games_delta=len(games), throttle_hours=THROTTLE_HOURS,
         )
     else:
-        # No new games — still throttle so we don't keep selecting this user.
-        # Preserve existing cursor position; fall back to epoch for new users.
         update_cursor(
             pg, player_id, last_game_id or "", last_game_date or datetime.date(1900, 1, 1),
             games_delta=0, throttle_hours=THROTTLE_HOURS,
@@ -361,15 +342,9 @@ def classify_move(
 
 
 def cycle(pg_pool: Any, sr_pool: Any, batch_users: int = BATCH_USERS) -> int:
-    """One pass: fetch up to batch_users eligible players and process each.
-
-    Per-player failures are caught and logged so one bad player doesn't kill the loop.
-    Returns the number of players attempted (regardless of per-player success/failure).
-    """
     main_pg = pg_pool.getconn()
     try:
         targets = fetch_eligible_players(main_pg, batch_users)
-        # Release the SELECT's transaction so per-player work starts clean.
         main_pg.commit()
     finally:
         pg_pool.putconn(main_pg)
@@ -398,8 +373,6 @@ def cycle(pg_pool: Any, sr_pool: Any, batch_users: int = BATCH_USERS) -> int:
                 raise
             log.exception("process_player failed for player=%s", player_id)
         finally:
-            # Wrap each cleanup independently so a putconn failure doesn't
-            # short-circuit sr.close() and leak the StarRocks connection.
             try:
                 pg_pool.putconn(pg)
             except Exception:
@@ -414,9 +387,6 @@ def cycle(pg_pool: Any, sr_pool: Any, batch_users: int = BATCH_USERS) -> int:
 
     return len(targets)
 
-
-# Touched after each successful cycle so a k8s liveness probe (or operator) can
-# spot a zombie worker with a dead connection that the outer try/except keeps masking.
 LIVENESS_FILE = "/tmp/analyzer-last-cycle"
 
 
@@ -429,7 +399,7 @@ def _touch_liveness() -> None:
 
 
 def main() -> None:
-    """Entry point. Connects to Postgres + StarRocks, loops cycle() forever."""
+
     import mysql.connector
     import mysql.connector.pooling
     import psycopg2
@@ -465,8 +435,7 @@ def main() -> None:
         pool_size=BATCH_USERS + 1,
         **sr_kwargs,
     )
-    # Touch liveness file at startup so the probe has something to read before
-    # the first cycle completes (a slow first cycle can take ~3-4 minutes).
+
     _touch_liveness()
     log.info("analyzer worker starting")
 
