@@ -139,8 +139,6 @@ spec:
           env:
             - name: ANALYZER_PG_DSN
               value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/chess_analyzer_db"
-            # StarRocks is passwordless in this cluster (chess-secrets value is stale).
-            # Empty string overrides the envFrom value for this container only.
             - name: STARROCKS_PASSWORD
               value: ""
           resources:
@@ -151,9 +149,6 @@ spec:
               cpu: 500m
               memory: 256Mi
           livenessProbe:
-            # _touch_liveness() writes /tmp/analyzer-last-cycle at startup and
-            # after each successful cycle. If the file is older than 5 min, the
-            # worker is wedged — restart it.
             exec:
               command:
                 - /bin/sh
