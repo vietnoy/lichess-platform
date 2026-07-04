@@ -320,6 +320,15 @@ def _move_contrast(row: dict) -> str:
     return reason
 
 
+def _narrative_is_incomplete(text: str) -> bool:
+    stripped = (text or "").strip()
+    if len(stripped) < 900:
+        return True
+    if stripped.endswith(("...", "…")):
+        return True
+    return stripped[-1] not in ".!?)`]\"'"
+
+
 def _fallback_game_narrative(
     game_id: str,
     meta: dict,
@@ -692,12 +701,14 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
         [
             "Phan tich van co co vua duoi day bang tieng Viet.",
             "Hay viet nhu mot HLV dang review van dau truc tiep voi hoc vien: tu nhien, lien mach, khong ep theo format 5 muc co dinh.",
-            "Co the dung 2-4 doan ngan va mot vai bullet neu that su can, nhung tranh tieu de may moc nhu 'Tong quan', 'Sai lam then chot', 'Bai hoc hanh dong'.",
+            "Co the viet dai hon neu can: 5-8 doan van tu nhien, uu tien giai thich ro hon la ngan gon.",
+            "Khong dung markdown heading hay tieu de may moc nhu 'Tong quan', 'Sai lam then chot', 'Bai hoc hanh dong'. Bullet chi dung neu that su can.",
             "Voi 2-3 turning point quan trong nhat, phai tra loi truc tiep: nuoc da choi lam hong dieu gi trong vi tri, best move sua hoac giu dieu gi, dao dong danh gia cho thay muc do ra sao, va lan sau hoc vien nen tu hoi cau gi truoc khi di.",
             "Khong chi lap lai played_move/best_move/eval_cp. Hay dung FEN truoc nuoc di de giai thich ly do tren ban co neu co the.",
             "Neu khong du thong tin de ket luan motif chien thuat, noi ro phan chac chan tu engine va huong dan cach kiem tra tren ban co; khong bia motif.",
             "Khong mo ta dai dong; tap trung vao vi sao vi tri dao chieu va cach hoc vien nen review lai.",
             "Neu co 'Tap trung nguoi choi', chi phan tich cac nuoc cua nguoi choi do; khong ket luan loi cua doi thu la loi cua hoc vien.",
+            "Ket thuc bang mot cau hoan chinh; khong dung lai giua cau.",
             f"Game ID: {game_id}",
             f"Trang: {meta.get('white_id')} vs {meta.get('black_id')}",
             f"Tap trung nguoi choi: {player} ({target_color})" if player and target_color else "Tap trung: ca hai ben",
@@ -717,18 +728,18 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
             "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
             prompt,
             temperature=0.4,
-            max_output_tokens=1200,
+            max_output_tokens=4096,
         )
-        if len(narrative) < 400:
+        if _narrative_is_incomplete(narrative):
             narrative = vertex_text_answer(
                 "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
                 prompt
-                + "\n\nCau tra loi truoc qua ngan. Hay viet day du hon thanh 3-5 doan ngan, co dan chung tu FEN/timeline. Moi turning point can noi ro vi sao nuoc da choi kem hon best move va hoc vien nen tu kiem tra dieu gi.",
+                + "\n\nCau tra loi truoc bi qua ngan hoac dung giua cau. Hay viet lai day du thanh 5-8 doan van tu nhien, co dan chung tu FEN/timeline va move_contrast. Moi turning point can noi ro vi sao nuoc da choi kem hon best move, best move tao threat/capture/check gi, va hoc vien nen tu kiem tra dieu gi. Phai ket thuc bang cau hoan chinh.",
                 temperature=0.25,
-                max_output_tokens=1800,
+                max_output_tokens=6144,
             )
-        if len(narrative) < 400:
-            log.warning("Vertex returned short game analysis for %s; using deterministic fallback", game_id)
+        if _narrative_is_incomplete(narrative):
+            log.warning("Vertex returned incomplete game analysis for %s; using deterministic fallback", game_id)
             narrative = _fallback_game_narrative(game_id, meta, evaluations, player, target_color)
         result = {"narrative": narrative}
     except Exception as e:
