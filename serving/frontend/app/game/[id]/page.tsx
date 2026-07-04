@@ -180,10 +180,11 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
     }));
   }, [evals]);
 
-  function pollAnalysisStatus(query: string, attempts = 0) {
+  function pollAnalysisStatus(query: string, fallback: string | null, attempts = 0) {
     if (attempts >= 30) {
       setAnalyzing(false);
       setAnalysisStatus("failed");
+      setAnalysis((current) => current ?? fallback);
       return;
     }
     analysisPollRef.current = window.setTimeout(() => {
@@ -198,20 +199,22 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
             return;
           }
           if (r.status === "failed") {
+            setAnalysis((current) => current ?? fallback);
             setAnalyzing(false);
             stopAnalysisPolling();
             return;
           }
-          pollAnalysisStatus(query, attempts + 1);
+          pollAnalysisStatus(query, fallback, attempts + 1);
         })
-        .catch((e) => {
+        .catch(() => {
           if (attempts >= 2) {
-            setAnalyzeError(e instanceof Error ? e.message : String(e));
+            setAnalysis((current) => current ?? fallback);
+            setAnalysisStatus("failed");
             setAnalyzing(false);
             stopAnalysisPolling();
             return;
           }
-          pollAnalysisStatus(query, attempts + 1);
+          pollAnalysisStatus(query, fallback, attempts + 1);
         });
     }, 3000);
   }
@@ -219,20 +222,27 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   function runAnalyze() {
     stopAnalysisPolling();
     setAnalyzing(true);
+    setAnalysis(null);
     setAnalyzeError(null);
     setAnalysisStatus("generating");
     setAnalysisSource(null);
     const query = activeFocusPlayer ? `?player=${encodeURIComponent(activeFocusPlayer)}` : "";
     api<AnalysisResponse>(`/games/${encodeURIComponent(gameId)}/analyze${query}`, { method: "POST", body: "{}" })
       .then((r) => {
-        if (r.narrative) setAnalysis(r.narrative);
+        const fallback = r.source === "fallback" ? r.narrative ?? null : null;
         setAnalysisStatus(r.status);
         setAnalysisSource(r.source ?? null);
-        if (r.status === "ready" || r.status === "failed") {
+        if (r.status === "ready" && r.narrative) {
+          setAnalysis(r.narrative);
           setAnalyzing(false);
           return;
         }
-        pollAnalysisStatus(query);
+        if (r.status === "failed") {
+          setAnalysis(fallback);
+          setAnalyzing(false);
+          return;
+        }
+        pollAnalysisStatus(query, fallback);
       })
       .catch((e) => {
         setAnalyzeError(e instanceof Error ? e.message : String(e));
@@ -444,7 +454,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
         )}
 
         <AnimatePresence>
-          {(analysis || analyzeError) && (
+          {(analysis || analyzeError || analysisStatus) && (
             <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
@@ -458,7 +468,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                     ? "AI analysis ready."
                     : analysisStatus === "failed"
                       ? "Showing fast review. AI enhancement did not finish."
-                      : "Showing fast review while AI enhancement is generating..."}
+                      : "AI analysis is generating..."}
                 </p>
               )}
               {analyzeError && <p className="text-rose-400 not-prose">{analyzeError}</p>}
