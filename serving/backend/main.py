@@ -18,6 +18,7 @@ Endpoints:
 
 import os
 import json
+import re
 import time
 import logging
 import threading
@@ -325,6 +326,13 @@ def _narrative_is_incomplete(text: str) -> bool:
     if len(stripped) < 900:
         return True
     if stripped.endswith(("...", "…")):
+        return True
+    if re.search(r"(?m)^\s*(#{1,6}\s+|\*\s+|-{1,2}\s+|\d+[.)]\s+)", stripped):
+        return True
+    if "**" in stripped:
+        return True
+    last_block = stripped.rsplit("\n\n", 1)[-1]
+    if re.search(r"(FEN trước nước đi|FEN truoc nuoc di|Turning Point|Em đã đi|Nuoc da choi|Nước đi tốt nhất|Nuoc di tot nhat)", last_block, re.IGNORECASE):
         return True
     return stripped[-1] not in ".!?)`]\"'"
 
@@ -702,7 +710,7 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
             "Phan tich van co co vua duoi day bang tieng Viet.",
             "Hay viet nhu mot HLV dang review van dau truc tiep voi hoc vien: tu nhien, lien mach, khong ep theo format 5 muc co dinh.",
             "Co the viet dai hon neu can: 5-8 doan van tu nhien, uu tien giai thich ro hon la ngan gon.",
-            "Khong dung markdown heading hay tieu de may moc nhu 'Tong quan', 'Sai lam then chot', 'Bai hoc hanh dong'. Bullet chi dung neu that su can.",
+            "Khong dung markdown, khong in dam, khong heading, khong tieu de may moc nhu 'Tong quan', 'Sai lam then chot', 'Bai hoc hanh dong'. Hay viet thanh cac doan van lien mach.",
             "Voi 2-3 turning point quan trong nhat, phai tra loi truc tiep: nuoc da choi lam hong dieu gi trong vi tri, best move sua hoac giu dieu gi, dao dong danh gia cho thay muc do ra sao, va lan sau hoc vien nen tu hoi cau gi truoc khi di.",
             "Khong chi lap lai played_move/best_move/eval_cp. Hay dung FEN truoc nuoc di de giai thich ly do tren ban co neu co the.",
             "Neu khong du thong tin de ket luan motif chien thuat, noi ro phan chac chan tu engine va huong dan cach kiem tra tren ban co; khong bia motif.",
@@ -734,7 +742,7 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
             narrative = vertex_text_answer(
                 "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
                 prompt
-                + "\n\nCau tra loi truoc bi qua ngan hoac dung giua cau. Hay viet lai day du thanh 5-8 doan van tu nhien, co dan chung tu FEN/timeline va move_contrast. Moi turning point can noi ro vi sao nuoc da choi kem hon best move, best move tao threat/capture/check gi, va hoc vien nen tu kiem tra dieu gi. Phai ket thuc bang cau hoan chinh.",
+                + "\n\nCau tra loi truoc bi qua ngan, dung giua cau, hoac dung format markdown. Hay viet lai bang van xuoi tu nhien, 5-8 doan, khong bullet, khong heading, khong in dam. Co dan chung tu FEN/timeline va move_contrast, nhung dien giai thanh loi noi cua HLV. Moi turning point can noi ro vi sao nuoc da choi kem hon best move, best move tao threat/capture/check gi, va hoc vien nen tu kiem tra dieu gi. Phai ket thuc bang cau hoan chinh.",
                 temperature=0.25,
                 max_output_tokens=6144,
             )
