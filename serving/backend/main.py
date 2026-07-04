@@ -218,6 +218,27 @@ def _filter_evaluations_for_color(evaluations: list[dict], color: str | None) ->
     return evaluations
 
 
+def _evaluation_severity(row: dict) -> int:
+    swing = row.get("eval_swing_cp_from_prev")
+    if swing is None:
+        swing = row.get("eval_swing_cp")
+    if swing is None:
+        before = row.get("prev_eval_cp")
+        after = row.get("eval_cp")
+        if before is not None and after is not None:
+            swing = abs(int(after) - int(before))
+    return abs(int(swing or 0))
+
+
+def _key_evaluations(evaluations: list[dict], limit: int = 3) -> list[dict]:
+    mistakes = [
+        r for r in evaluations
+        if (r.get("classification") or "").lower() in {"blunder", "mistake", "inaccuracy"}
+    ]
+    candidates = mistakes or evaluations
+    return sorted(candidates, key=_evaluation_severity, reverse=True)[:limit]
+
+
 def _fallback_game_narrative(
     game_id: str,
     meta: dict,
@@ -225,21 +246,7 @@ def _fallback_game_narrative(
     target_player: str | None = None,
     target_color: str | None = None,
 ) -> str:
-    mistakes = [
-        r for r in evaluations
-        if (r.get("classification") or "").lower() in {"blunder", "mistake", "inaccuracy"}
-    ]
-
-    def severity(row: dict) -> int:
-        swing = row.get("eval_swing_cp")
-        if swing is None:
-            before = row.get("prev_eval_cp")
-            after = row.get("eval_cp")
-            if before is not None and after is not None:
-                swing = abs(int(after) - int(before))
-        return abs(int(swing or 0))
-
-    key_mistakes = sorted(mistakes, key=severity, reverse=True)[:3]
+    key_mistakes = _key_evaluations(evaluations)
     first = key_mistakes[0] if key_mistakes else (evaluations[0] if evaluations else {})
     best = first.get("best_move") or "nước engine gợi ý"
     played = first.get("played_move") or "nước đã chơi"
@@ -251,9 +258,12 @@ def _fallback_game_narrative(
     speed = meta.get("speed") or "-"
 
     evidence = "\n".join(
-        f"- Ply {r.get('ply')}: {r.get('classification') or 'review'}, "
-        f"played `{r.get('played_move') or '-'}`, best `{r.get('best_move') or '-'}`, "
-        f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}."
+        f"- Ply {r.get('ply')}: tại FEN `{r.get('fen') or '-'}`, "
+        f"nước đã chơi là `{r.get('played_move') or '-'}` nhưng engine ưu tiên `{r.get('best_move') or '-'}`. "
+        f"Phân loại `{r.get('classification') or 'review'}`, eval_cp={r.get('eval_cp')}, "
+        f"swing={r.get('eval_swing_cp_from_prev')}, mate={r.get('mate')}. "
+        "Câu hỏi cần trả lời khi đặt lại bàn cờ: nước đã chơi bỏ sót threat nào, "
+        "best move đang phòng thủ hay tạo forcing move gì, và quân nào đổi trạng thái an toàn sau hai lựa chọn?"
         for r in key_mistakes
     ) or "- Chưa có nhiều sai lầm được phân loại; nên xem lại các điểm dao động eval lớn nhất trong timeline."
 
@@ -263,13 +273,13 @@ def _fallback_game_narrative(
         else ""
     )
 
-    return f"""Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Nếu nhìn như một buổi review với HLV, điểm đáng dừng lại đầu tiên là quanh ply {ply}: nước thực tế `{played}` khiến thế cờ đổi hướng, trong khi engine gợi ý `{best}`. Đây không chỉ là chuyện nhớ một best move, mà là tín hiệu cho kiểu quyết định `{classification}` cần xem lại.
+    return f"""Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Nếu nhìn như một buổi review với HLV, điểm đáng dừng lại đầu tiên là quanh ply {ply}: nước thực tế `{played}` khiến thế cờ đổi hướng, trong khi engine gợi ý `{best}`. Điều chắc chắn từ dữ liệu là đây là quyết định `{classification}` có chênh lệch rõ với lựa chọn engine; phần cần tự kiểm chứng trên bàn cờ là motif cụ thể làm vị trí đổi chiều.
 
-Một vài vị trí có bằng chứng rõ nhất:
+Một vài vị trí có bằng chứng rõ nhất, kèm câu hỏi phải tự trả lời thay vì chỉ chép best move:
 
 {evidence}
 
-Khi tự review, hãy đặt bàn cờ ở các ply này và dành khoảng 2 phút để tự tìm 2-3 nước ứng viên trước khi bật engine. Sau đó so sánh vì sao `{best}` giữ được thế chủ động tốt hơn: nó có giải quyết threat trực tiếp không, có tránh quân bị treo không, hay có tạo forcing move cụ thể không. Nếu lỗi xuất hiện nhiều ở trung cuộc, bài tập hợp lý nhất là luyện thói quen kiểm tra threat và candidate moves trước khi đi nước kế hoạch."""
+Khi tự review, hãy đặt bàn cờ ở các FEN này và dành khoảng 2 phút để tìm 2-3 nước ứng viên trước khi bật engine. Với mỗi ứng viên, trả lời trực tiếp: đối thủ đang đe dọa gì, quân nào của mình đang lỏng, nước nào ép buộc nhất, và vì sao `{best}` giải quyết được nhiều vấn đề hơn `{played}`. Nếu lỗi xuất hiện nhiều ở trung cuộc, bài tập hợp lý nhất là luyện thói quen kiểm tra threat và candidate moves trước khi đi nước kế hoạch."""
 
 
 @app.get("/api/freshness")
@@ -575,13 +585,26 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
     if not evaluations:
         raise HTTPException(404, f"No evaluations for {player or 'this side'} in game {game_id}")
 
+    key_rows = _key_evaluations(evaluations, limit=5)
+    key_lines = []
+    for r in key_rows:
+        key_lines.append(
+            f"ply {r['ply']}: class={r.get('classification') or 'n/a'}, "
+            f"played_move={r.get('played_move') or '-'}, "
+            f"best_move={r.get('best_move') or '-'}, "
+            f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}, "
+            f"eval_swing_cp_from_prev={r.get('eval_swing_cp_from_prev')}, "
+            f"fen_before={r.get('fen') or '-'}"
+        )
+
     eval_lines = []
     for r in evaluations:
         eval_lines.append(
             f"ply {r['ply']}: class={r.get('classification') or 'n/a'}, "
             f"played_move={r.get('played_move') or '-'}, "
             f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}, "
-            f"best_move={r.get('best_move') or '-'}"
+            f"best_move={r.get('best_move') or '-'}, "
+            f"eval_swing_cp_from_prev={r.get('eval_swing_cp_from_prev')}"
         )
 
     prompt = "\n".join(
@@ -589,14 +612,18 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
             "Phan tich van co co vua duoi day bang tieng Viet.",
             "Hay viet nhu mot HLV dang review van dau truc tiep voi hoc vien: tu nhien, lien mach, khong ep theo format 5 muc co dinh.",
             "Co the dung 2-4 doan ngan va mot vai bullet neu that su can, nhung tranh tieu de may moc nhu 'Tong quan', 'Sai lam then chot', 'Bai hoc hanh dong'.",
-            "Noi ro turning point, nuoc da choi, best move va dao dong danh gia khi chung giup giai thich bai hoc.",
-            "Khong mo ta dai dong; tap trung vao ly do vi tri dao chieu va cach hoc vien nen review lai.",
+            "Voi 2-3 turning point quan trong nhat, phai tra loi truc tiep: nuoc da choi lam hong dieu gi trong vi tri, best move sua hoac giu dieu gi, dao dong danh gia cho thay muc do ra sao, va lan sau hoc vien nen tu hoi cau gi truoc khi di.",
+            "Khong chi lap lai played_move/best_move/eval_cp. Hay dung FEN truoc nuoc di de giai thich ly do tren ban co neu co the.",
+            "Neu khong du thong tin de ket luan motif chien thuat, noi ro phan chac chan tu engine va huong dan cach kiem tra tren ban co; khong bia motif.",
+            "Khong mo ta dai dong; tap trung vao vi sao vi tri dao chieu va cach hoc vien nen review lai.",
             "Neu co 'Tap trung nguoi choi', chi phan tich cac nuoc cua nguoi choi do; khong ket luan loi cua doi thu la loi cua hoc vien.",
             f"Game ID: {game_id}",
             f"Trang: {meta.get('white_id')} vs {meta.get('black_id')}",
             f"Tap trung nguoi choi: {player} ({target_color})" if player and target_color else "Tap trung: ca hai ben",
             f"Khai cuoc: {meta.get('opening_eco') or '-'} {meta.get('opening_name') or ''}".strip(),
             f"Toc do: {meta.get('speed') or '-'}",
+            "Vi tri can giai thich ky:",
+            *key_lines,
             "Timeline danh gia theo ply:",
             *eval_lines,
         ]
@@ -615,7 +642,7 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
             narrative = vertex_text_answer(
                 "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
                 prompt
-                + "\n\nCau tra loi truoc qua ngan. Hay viet day du hon thanh 3-5 doan ngan, co dan chung tu timeline, khong dung lai giua cau.",
+                + "\n\nCau tra loi truoc qua ngan. Hay viet day du hon thanh 3-5 doan ngan, co dan chung tu FEN/timeline. Moi turning point can noi ro vi sao nuoc da choi kem hon best move va hoc vien nen tu kiem tra dieu gi.",
                 temperature=0.25,
                 max_output_tokens=1800,
             )
