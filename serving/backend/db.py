@@ -231,6 +231,27 @@ def _date_range_filter(column: str, start_date: str | None, end_date: str | None
     return "", ()
 
 
+def _latest_player_date(username: str, table: str) -> str | None:
+    rows = _run(
+        f"""
+        SELECT MAX(date) AS date
+        FROM {table}
+        WHERE player_id = %s
+        """,
+        (username,),
+    )
+    return _to_iso_date((rows[0] if rows else {}).get("date"))
+
+
+def _player_window_bounds(username: str, table: str, days: int) -> tuple[str | None, str | None]:
+    latest_date = _latest_player_date(username, table)
+    if not latest_date:
+        return None, None
+    end = _parse_iso_date(latest_date)
+    start = end - dt.timedelta(days=days - 1)
+    return start.isoformat(), end.isoformat()
+
+
 def query_platform_overview(days: int | None = 30, date: str | None = None, all_time: bool = False) -> dict:
     key = ("platform_overview", int(days or 0), date, bool(all_time))
     return _cached(key, _PLATFORM_TTL, lambda: _query_platform_overview_uncached(days=days, date=date, all_time=all_time))
@@ -480,11 +501,12 @@ def _query_player_profile_uncached(
         end_date = None
     else:
         window_days = clamp_int(days or 60, 1, 365)
-        filters.append("date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)")
-        params.append(window_days)
+        start_date, end_date = _player_window_bounds(username, PLAYER_GAMES, window_days)
+        if not start_date or not end_date:
+            return None
+        filters.append("date BETWEEN DATE %s AND DATE %s")
+        params.extend([start_date, end_date])
         range_label = f"{window_days}d"
-        start_date = None
-        end_date = None
 
     games = _run(
         f"""
@@ -805,6 +827,8 @@ def clamp_int(value: int, minimum: int, maximum: int) -> int:
 
 
 def _player_aggregate_date_filter(
+    username: str,
+    table: str,
     days: int = 60,
     date: str | None = None,
     all_time: bool = False,
@@ -815,7 +839,23 @@ def _player_aggregate_date_filter(
     if all_time:
         return "", (), 0
     clamped_days = clamp_int(days, 1, 365)
-    return "AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)", (clamped_days,), clamped_days
+    start_date, end_date = _player_window_bounds(username, table, clamped_days)
+    if not start_date or not end_date:
+        return "AND 1 = 0", (), clamped_days
+    return "AND date BETWEEN DATE %s AND DATE %s", (start_date, end_date), clamped_days
+
+
+def _effective_player_aggregate_days(
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> int:
+    if date:
+        _parse_iso_date(date)
+        return 1
+    if all_time:
+        return 0
+    return clamp_int(days, 1, 365)
 
 
 def query_weakness_summary(
@@ -824,21 +864,28 @@ def query_weakness_summary(
     date: str | None = None,
     all_time: bool = False,
 ) -> dict:
-    date_filter, date_params, effective_days = _player_aggregate_date_filter(days, date, all_time)
+    effective_days = _effective_player_aggregate_days(days, date, all_time)
     key = ("weakness_summary", username, effective_days, date, bool(all_time))
     return _cached(
         key,
         _PLAYER_AGG_TTL,
-        lambda: _query_weakness_summary_uncached(username, effective_days, date_filter, date_params),
+        lambda: _query_weakness_summary_uncached(username, days, date, all_time),
     )
 
 
 def _query_weakness_summary_uncached(
     username: str,
-    effective_days: int,
-    date_filter: str,
-    date_params: tuple,
+    days: int,
+    date: str | None,
+    all_time: bool,
 ) -> dict:
+    date_filter, date_params, effective_days = _player_aggregate_date_filter(
+        username,
+        PLAYER_WEAKNESS_SUMMARY,
+        days,
+        date,
+        all_time,
+    )
     rows = _run(
         f"""
         SELECT
@@ -940,22 +987,30 @@ def query_opening_stats(
     date: str | None = None,
     all_time: bool = False,
 ) -> list[dict]:
-    date_filter, date_params, effective_days = _player_aggregate_date_filter(days, date, all_time)
+    effective_days = _effective_player_aggregate_days(days, date, all_time)
     top_n = clamp_int(top_n, 1, 20)
     key = ("opening_stats", username, effective_days, top_n, date, bool(all_time))
     return _cached(
         key,
         _PLAYER_AGG_TTL,
-        lambda: _query_opening_stats_uncached(username, top_n, date_filter, date_params),
+        lambda: _query_opening_stats_uncached(username, days, top_n, date, all_time),
     )
 
 
 def _query_opening_stats_uncached(
     username: str,
+    days: int,
     top_n: int,
-    date_filter: str,
-    date_params: tuple,
+    date: str | None,
+    all_time: bool,
 ) -> list[dict]:
+    date_filter, date_params, _ = _player_aggregate_date_filter(
+        username,
+        PLAYER_OPENING_STATS,
+        days,
+        date,
+        all_time,
+    )
     return _run(
         f"""
         SELECT
@@ -990,16 +1045,28 @@ def query_phase_stats(
     date: str | None = None,
     all_time: bool = False,
 ) -> list[dict]:
-    date_filter, date_params, effective_days = _player_aggregate_date_filter(days, date, all_time)
+    effective_days = _effective_player_aggregate_days(days, date, all_time)
     key = ("phase_stats", username, effective_days, date, bool(all_time))
     return _cached(
         key,
         _PLAYER_AGG_TTL,
-        lambda: _query_phase_stats_uncached(username, date_filter, date_params),
+        lambda: _query_phase_stats_uncached(username, days, date, all_time),
     )
 
 
-def _query_phase_stats_uncached(username: str, date_filter: str, date_params: tuple) -> list[dict]:
+def _query_phase_stats_uncached(
+    username: str,
+    days: int,
+    date: str | None,
+    all_time: bool,
+) -> list[dict]:
+    date_filter, date_params, _ = _player_aggregate_date_filter(
+        username,
+        PLAYER_PHASE_STATS,
+        days,
+        date,
+        all_time,
+    )
     return _run(
         f"""
         SELECT
@@ -1040,7 +1107,13 @@ def query_player_insights(
     date: str | None = None,
     all_time: bool = False,
 ) -> dict:
-    _, _, effective_days = _player_aggregate_date_filter(days, date, all_time)
+    if date:
+        _parse_iso_date(date)
+        effective_days = 1
+    elif all_time:
+        effective_days = 0
+    else:
+        effective_days = clamp_int(days, 1, 365)
     key = ("player_insights", username, effective_days, date, bool(all_time))
     return _cached(
         key,

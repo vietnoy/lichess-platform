@@ -22,19 +22,21 @@ def _game(**overrides):
 
 
 def test_query_player_profile_avoids_raw_move_event_scan():
-    with patch("serving.backend.db._run", return_value=[_game()]) as run:
+    with patch("serving.backend.db._run", side_effect=[[{"date": "2026-05-25"}], [_game()]]) as run:
         profile = db._query_player_profile_uncached("alice", days=60)
 
     assert profile["totals"]["games"] == 1
     assert profile["clock_by_phase"] == []
     assert profile["range"]["label"] == "60d"
+    assert profile["range"]["start_date"] == "2026-05-25"
+    assert profile["range"]["end_date"] == "2026-05-25"
     assert profile["rating_history"] == [{"date": "2026-05-25", "avg_rating": 1800, "games": 1}]
-    assert run.call_count == 1
-    sql, params = run.call_args.args
+    assert run.call_count == 2
+    sql, params = run.call_args_list[1].args
     assert db.PLAYER_GAMES in sql
     assert db.TABLE not in sql
-    assert "date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)" in sql
-    assert params == ("alice", 60)
+    assert "date BETWEEN DATE %s AND DATE %s" in sql
+    assert params == ("alice", "2026-03-27", "2026-05-25")
 
 
 def test_query_player_profile_can_filter_custom_date():

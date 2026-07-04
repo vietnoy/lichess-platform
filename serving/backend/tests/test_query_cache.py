@@ -28,6 +28,8 @@ def test_player_aggregate_cache_is_keyed_by_arguments(monkeypatch):
 
     def fake_run(sql, params=()):
         calls.append(params)
+        if "MAX(date)" in sql:
+            return [{"date": "2026-05-26"}]
         return [{"player_id": params[0], "critical_positions": 1}]
 
     monkeypatch.setattr(db, "_run", fake_run)
@@ -36,4 +38,9 @@ def test_player_aggregate_cache_is_keyed_by_arguments(monkeypatch):
     assert db.query_weakness_summary("benirks", days=60)["player_id"] == "benirks"
     assert db.query_weakness_summary("benirks", days=14)["player_id"] == "benirks"
 
-    assert calls == [("benirks", 60), ("benirks", 14)]
+    assert calls == [
+        ("benirks",),
+        ("benirks", "2026-03-28", "2026-05-26"),
+        ("benirks",),
+        ("benirks", "2026-05-13", "2026-05-26"),
+    ]

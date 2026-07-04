@@ -5,6 +5,7 @@ from serving.backend import coach
 
 
 def test_query_weakness_summary_aggregates_daily_summary_with_bound_params():
+    db._query_cache.clear()
     rows = [{
         "player_id": "alice",
         "days": 60,
@@ -19,14 +20,15 @@ def test_query_weakness_summary_aggregates_daily_summary_with_bound_params():
         "top_time_pressure": "normal",
         "top_classification": "mistake",
     }]
-    with patch("serving.backend.db._run", return_value=rows) as run:
+    with patch("serving.backend.db._run", side_effect=[[{"date": "2026-05-26"}], rows]) as run:
         result = db.query_weakness_summary("alice", days=600)
 
-    sql, params = run.call_args.args
+    sql, params = run.call_args_list[1].args
     assert db.PLAYER_WEAKNESS_SUMMARY in sql
     assert "%s" in sql
     assert "player_id = %s" in sql
-    assert params == ("alice", 365)
+    assert "date BETWEEN DATE %s AND DATE %s" in sql
+    assert params == ("alice", "2025-05-27", "2026-05-26")
     assert result == rows[0]
 
 
@@ -85,6 +87,7 @@ def test_query_blunder_examples_rejects_unknown_filter_values():
 
 
 def test_query_opening_stats_uses_derived_table_and_clamps_inputs():
+    db._query_cache.clear()
     rows = [{
         "opening_eco": "B01",
         "opening_name": "Scandinavian Defense",
@@ -99,22 +102,23 @@ def test_query_opening_stats_uses_derived_table_and_clamps_inputs():
         "mistakes": 4,
         "avg_eval_swing_cp": 184.0,
     }]
-    with patch("serving.backend.db._run", return_value=rows) as run:
+    with patch("serving.backend.db._run", side_effect=[[{"date": "2026-05-26"}], rows]) as run:
         result = db.query_opening_stats("alice", days=600, top_n=100)
 
-    sql, params = run.call_args.args
+    sql, params = run.call_args_list[1].args
     assert db.PLAYER_OPENING_STATS in sql
     assert db.PLAYER_GAMES not in sql
     assert "player_id = %s" in sql
-    assert "date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)" in sql
+    assert "date BETWEEN DATE %s AND DATE %s" in sql
     assert "HAVING SUM(games) >= 2" in sql
     assert "HAVING games >= 2" not in sql
     assert "ORDER BY blunders DESC, mistakes DESC, critical_positions DESC, games DESC" in sql
-    assert params == ("alice", 365, 20)
+    assert params == ("alice", "2025-05-27", "2026-05-26", 20)
     assert result == rows
 
 
 def test_query_phase_stats_uses_derived_table_and_clamps_days():
+    db._query_cache.clear()
     rows = [{
         "phase": "middlegame",
         "games_with_positions": 8,
@@ -125,15 +129,15 @@ def test_query_phase_stats_uses_derived_table_and_clamps_days():
         "time_pressure_positions": 4,
         "avg_eval_swing_cp": 151.2,
     }]
-    with patch("serving.backend.db._run", return_value=rows) as run:
+    with patch("serving.backend.db._run", side_effect=[[{"date": "2026-05-26"}], rows]) as run:
         result = db.query_phase_stats("alice", days=600)
 
-    sql, params = run.call_args.args
+    sql, params = run.call_args_list[1].args
     assert db.PLAYER_PHASE_STATS in sql
     assert "player_id = %s" in sql
-    assert "date >= DATE_SUB(CURRENT_DATE(), INTERVAL %s DAY)" in sql
+    assert "date BETWEEN DATE %s AND DATE %s" in sql
     assert "ORDER BY critical_positions DESC, blunders DESC" in sql
-    assert params == ("alice", 365)
+    assert params == ("alice", "2025-05-27", "2026-05-26")
     assert result == rows
 
 
