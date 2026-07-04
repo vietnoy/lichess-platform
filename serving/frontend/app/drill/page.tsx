@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import Header from "@/components/Header";
 import Board from "@/components/Board";
@@ -28,9 +30,14 @@ interface Exercise {
 
 type Outcome =
   | { kind: "pending" }
-  | { kind: "correct"; san: string; matchedBest: boolean }
-  | { kind: "wrong"; san: string; userEval: EvalResult; engineDelta: number | null }
+  | { kind: "correct"; uci: string; san: string; matchedBest: boolean }
+  | { kind: "wrong"; uci: string; san: string; userEval: EvalResult; engineDelta: number | null }
   | { kind: "timeout" };
+
+interface DrillExplanation {
+  narrative: string;
+  source: "gemini" | "fallback";
+}
 
 const HINT_TIERS = [
   "Look at every undefended piece on the board, including yours.",
@@ -48,9 +55,12 @@ export default function DrillPage() {
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [outcome, setOutcome] = useState<Outcome>({ kind: "pending" });
   const [hintsShown, setHintsShown] = useState(0);
+  const [explanation, setExplanation] = useState<DrillExplanation | null>(null);
+  const [explanationLoading, setExplanationLoading] = useState(false);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Generation counter fences out late results from concurrent loadNext calls.
   const genRef = useRef(0);
+  const explanationRef = useRef(0);
 
   useEffect(() => () => { if (tickRef.current) clearInterval(tickRef.current); }, []);
 
@@ -61,6 +71,8 @@ export default function DrillPage() {
     setLoading(true);
     setOutcome({ kind: "pending" });
     setHintsShown(0);
+    setExplanation(null);
+    setExplanationLoading(false);
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
     try {
       const ex = await api<Exercise>(`/exercise/${encodeURIComponent(name)}`);
@@ -102,7 +114,7 @@ export default function DrillPage() {
 
     // Best move from analyzer is in UCI form; if it matches → correct (and stronger than what they actually played).
     if (exercise.best_move && uci === exercise.best_move) {
-      setOutcome({ kind: "correct", san, matchedBest: true });
+      setOutcome({ kind: "correct", uci, san, matchedBest: true });
       return;
     }
 
@@ -114,10 +126,10 @@ export default function DrillPage() {
       const blunderScore = sign * (exercise.eval_cp ?? 0);
       const delta = userScore - blunderScore;
       // Better than what was played in the real game by ≥ 50cp counts as a "save".
-      if (delta >= 50) setOutcome({ kind: "correct", san, matchedBest: false });
-      else setOutcome({ kind: "wrong", san, userEval, engineDelta: delta });
+      if (delta >= 50) setOutcome({ kind: "correct", uci, san, matchedBest: false });
+      else setOutcome({ kind: "wrong", uci, san, userEval, engineDelta: delta });
     } catch {
-      setOutcome({ kind: "wrong", san, userEval: { cp: null, mate: null, best_move: null }, engineDelta: null });
+      setOutcome({ kind: "wrong", uci, san, userEval: { cp: null, mate: null, best_move: null }, engineDelta: null });
     }
   }
 
@@ -134,6 +146,50 @@ export default function DrillPage() {
   }, [loading, error, exercise, outcome, secondsLeft]);
 
   const showSolutionArrow = outcome.kind !== "pending" && exercise?.best_move;
+
+  useEffect(() => {
+    if (!exercise || outcome.kind === "pending") return;
+    const myGen = ++explanationRef.current;
+    setExplanation(null);
+    setExplanationLoading(true);
+
+    const attempted = outcome.kind === "correct" || outcome.kind === "wrong"
+      ? { attempted_move: outcome.uci, attempted_san: outcome.san }
+      : { attempted_move: null, attempted_san: null };
+
+    api<DrillExplanation>("/drill/explain", {
+      method: "POST",
+      body: JSON.stringify({
+        game_id: exercise.game_id,
+        ply: exercise.ply,
+        fen_before: exercise.fen_before,
+        played_move: exercise.played_move,
+        best_move: exercise.best_move,
+        classification: exercise.classification,
+        side_to_move: exercise.side_to_move,
+        eval_cp: exercise.eval_cp,
+        eval_swing_cp: exercise.eval_swing_cp,
+        opening_name: exercise.opening_name,
+        opening_eco: exercise.opening_eco,
+        outcome: outcome.kind,
+        ...attempted,
+      }),
+    })
+      .then((result) => {
+        if (explanationRef.current === myGen) setExplanation(result);
+      })
+      .catch(() => {
+        if (explanationRef.current === myGen) {
+          setExplanation({
+            source: "fallback",
+            narrative: "- **Cách review:** đặt lại vị trí này, tìm 2-3 nước ứng viên, rồi so sánh nước nào tạo check, bắt quân hoặc tempo rõ nhất.\n- **Bài học:** trước khi đi nước kế hoạch, hãy kiểm tra threat trực tiếp và quân đang bị treo.",
+          });
+        }
+      })
+      .finally(() => {
+        if (explanationRef.current === myGen) setExplanationLoading(false);
+      });
+  }, [exercise, outcome]);
 
   return (
     <>
@@ -169,8 +225,8 @@ export default function DrillPage() {
         )}
 
         {exercise && (
-          <div className="grid grid-cols-1 md:grid-cols-[auto_1fr] gap-6">
-            <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(320px,520px)_minmax(0,1fr)] gap-6 items-start">
+            <div className="w-full max-w-[520px] mx-auto md:mx-0 space-y-3">
               <Board
                 fen={exercise.fen_before}
                 orientation={exercise.side_to_move}
@@ -260,6 +316,21 @@ export default function DrillPage() {
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {outcome.kind !== "pending" && (
+                <Card title={explanation?.source === "gemini" ? "AI review" : "Review"}>
+                  {explanationLoading && (
+                    <p className="text-sm text-muted">AI đang giải thích vì sao nước này quan trọng...</p>
+                  )}
+                  {!explanationLoading && explanation && (
+                    <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-1 prose-strong:text-text prose-code:text-accent prose-code:before:content-none prose-code:after:content-none text-sm text-muted">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {explanation.narrative}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                </Card>
+              )}
 
               {outcome.kind !== "pending" && (
                 <button

@@ -203,6 +203,23 @@ _ANALYZE_TTL_S = 24 * 60 * 60
 _ANALYZE_JOB_TTL_S = 10 * 60
 
 
+class ExerciseExplainRequest(BaseModel):
+    game_id: str
+    ply: int
+    fen_before: str
+    played_move: str | None = None
+    best_move: str | None = None
+    attempted_move: str | None = None
+    attempted_san: str | None = None
+    classification: str | None = None
+    side_to_move: str | None = None
+    eval_cp: int | None = None
+    eval_swing_cp: int | None = None
+    opening_name: str | None = None
+    opening_eco: str | None = None
+    outcome: str | None = None
+
+
 def _player_color(meta: dict, player: str | None) -> str | None:
     if not player:
         return None
@@ -321,6 +338,108 @@ def _move_contrast(row: dict) -> str:
     else:
         reason += " Vì vậy điểm cần tự kiểm là threat trực tiếp, quân đang bị treo và nước ép buộc trước khi chọn nước kế hoạch."
     return reason
+
+
+def _move_san(fen: str | None, uci: str | None) -> str:
+    if not fen or not uci:
+        return uci or "-"
+    try:
+        board = chess.Board(fen)
+        move = chess.Move.from_uci(uci)
+        if move not in board.legal_moves:
+            return uci
+        return board.san(move)
+    except Exception:
+        return uci
+
+
+def _fallback_exercise_explanation(req: ExerciseExplainRequest) -> str:
+    best = req.best_move or "-"
+    played = req.played_move or "-"
+    attempted = req.attempted_move or None
+    row = {
+        "fen": req.fen_before,
+        "played_move": played,
+        "best_move": best,
+    }
+    contrast = _move_contrast(row)
+    side = "Trắng" if req.side_to_move == "white" else "Đen" if req.side_to_move == "black" else "Bên đi"
+    swing = (
+        f"Dao động khoảng {abs(req.eval_swing_cp) / 100:.1f} tốt, đủ lớn để coi đây là điểm phải dừng lại."
+        if req.eval_swing_cp is not None
+        else "Dữ liệu engine đánh dấu đây là một vị trí đáng review."
+    )
+
+    attempted_line = ""
+    if attempted:
+        attempted_desc = _describe_candidate_move(req.fen_before, attempted)
+        attempted_line = (
+            f"\n- **Nước bạn vừa thử:** `{req.attempted_san or _move_san(req.fen_before, attempted)}` "
+            f"({attempted}) có ý tưởng: {attempted_desc['summary']}. So với best move, hãy kiểm tra xem nước này có tạo check, bắt quân, hoặc buộc đối thủ phản ứng ngay không."
+        )
+
+    return (
+        f"- **Bối cảnh:** {side} đi trong vị trí từ ván `{req.game_id}` quanh ply {req.ply}. "
+        f"Nước trong ván là `{_move_san(req.fen_before, played)}` ({played}), còn engine ưu tiên `{_move_san(req.fen_before, best)}` ({best}). {swing}\n"
+        f"- **Vì sao nên cân nhắc best move:** {contrast}\n"
+        f"- **Cách tự kiểm:** trước khi đi, tìm ít nhất 2 nước ứng viên và hỏi: có nước chiếu không, có quân nào đang bị treo không, nước nào tạo tempo bắt buộc, và nước nào xử lý threat trực tiếp của đối thủ."
+        f"{attempted_line}"
+    )
+
+
+def _exercise_explanation_prompt(req: ExerciseExplainRequest, fallback: str) -> str:
+    best_desc = _describe_candidate_move(req.fen_before, req.best_move)
+    played_desc = _describe_candidate_move(req.fen_before, req.played_move)
+    attempted_desc = _describe_candidate_move(req.fen_before, req.attempted_move)
+    return "\n".join(
+        [
+            "Giai thich mot bai drill co vua bang tieng Viet.",
+            "Viet nhu HLV dang review nhanh sau khi nguoi choi da lam bai: tu nhien, de doc, khong xung ho anh/em, dung 'ban'.",
+            "Tra loi bang 3-5 bullet point ngan. Khong hien raw FEN. Khong bia motif neu khong chac; neu khong chac hay noi 'diem can tu kiem'.",
+            "Phai tra loi truc tiep: vi sao nuoc engine nen duoc can nhac, nuoc trong van/nuoc user thu khac o dau, va lan sau nen tu hoi cau gi.",
+            f"Game: {req.game_id}, ply: {req.ply}",
+            f"Opening: {req.opening_eco or '-'} {req.opening_name or ''}".strip(),
+            f"Side to move: {req.side_to_move or '-'}",
+            f"Classification: {req.classification or '-'}",
+            f"Eval cp sau nuoc trong van: {req.eval_cp}",
+            f"Eval swing cp: {req.eval_swing_cp}",
+            f"Played move: {req.played_move or '-'} / SAN {_move_san(req.fen_before, req.played_move)} / {played_desc['summary']}",
+            f"Best move: {req.best_move or '-'} / SAN {_move_san(req.fen_before, req.best_move)} / {best_desc['summary']}",
+            f"User attempted move: {req.attempted_move or '-'} / SAN {req.attempted_san or _move_san(req.fen_before, req.attempted_move)} / {attempted_desc['summary']}",
+            f"Outcome: {req.outcome or '-'}",
+            "Fallback facts neu can dua vao:",
+            fallback,
+        ]
+    )
+
+
+def _exercise_explanation_is_incomplete(text: str) -> bool:
+    stripped = (text or "").strip()
+    if len(stripped) < 120:
+        return True
+    if stripped.endswith(("...", "…")):
+        return True
+    return stripped[-1] not in ".!?)`]\"'"
+
+
+def _generate_exercise_explanation(req: ExerciseExplainRequest) -> dict:
+    fallback = _fallback_exercise_explanation(req)
+    try:
+        from coach import vertex_text_answer
+
+        narrative = vertex_text_answer(
+            "Ban la HLV co vua. Giai thich ngan gon bang bullet point tieng Viet, tu nhien, khong xung ho anh/em.",
+            _exercise_explanation_prompt(req, fallback),
+            temperature=0.35,
+            max_output_tokens=1536,
+            timeout=20,
+        )
+        if _exercise_explanation_is_incomplete(narrative):
+            return {"narrative": fallback, "source": "fallback"}
+        return {"narrative": narrative, "source": "gemini"}
+    except Exception as exc:
+        log.warning("exercise explanation fallback used for %s ply %s: %s", req.game_id, req.ply, exc)
+        return {"narrative": fallback, "source": "fallback"}
 
 
 def _narrative_is_incomplete(text: str) -> bool:
@@ -754,6 +873,15 @@ def get_exercise(username: str):
     if exercise is None:
         raise HTTPException(404, f"No exercises available for '{username}'")
     return exercise
+
+
+@app.post("/api/drill/explain")
+def post_exercise_explain(req: ExerciseExplainRequest):
+    if not req.fen_before:
+        raise HTTPException(400, "fen_before is required")
+    if not req.played_move and not req.best_move and not req.attempted_move:
+        raise HTTPException(400, "at least one move is required")
+    return _generate_exercise_explanation(req)
 
 
 @app.post("/api/games/{game_id}/analyze")

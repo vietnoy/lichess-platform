@@ -95,7 +95,7 @@ export default function Board({ fen, orientation = "white", lastMove, bestMove, 
   }, [fen, orientation, lastMove?.[0], lastMove?.[1], bestMove, movable]);
 
   return (
-    <div className="aspect-square w-full max-w-[520px]">
+    <div className="aspect-square w-full max-w-[520px] min-w-0 shrink-0 overflow-hidden">
       <div ref={ref} className="w-full h-full" />
     </div>
   );
