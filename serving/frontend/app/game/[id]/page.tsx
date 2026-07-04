@@ -37,6 +37,10 @@ const CLASS_COLOR: Record<string, string> = {
   good: "#10b981",
 };
 
+const DEMO_GAME_FOCUS: Record<string, string> = {
+  "6KQfynAb": "spoiltbrat12",
+};
+
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 // The API returns `fen` as the *pre-move* position. To render the board after
@@ -82,7 +86,7 @@ function classifySwing(playerSide: "white" | "black", actualCp: number | null, u
 export default function GameExplorerPage({ params }: { params: { id: string } }) {
   const gameId = decodeURIComponent(params.id);
   const searchParams = useSearchParams();
-  const focusPlayer = searchParams.get("player")?.trim() || "";
+  const focusPlayer = searchParams.get("player")?.trim() || DEMO_GAME_FOCUS[gameId] || "";
 
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -407,8 +411,29 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
             </div>
 
             <aside className="bg-surface border border-border rounded-md p-3 max-h-[520px] overflow-y-auto self-start">
-              <h3 className="text-xs uppercase tracking-wider text-muted mb-2">Moves</h3>
-              <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 text-sm font-mono">
+              <div className="mb-3 space-y-1">
+                <h3 className="text-xs uppercase tracking-wider text-muted">Moves</h3>
+                {focusPlayer && focusColor ? (
+                  <div className="text-xs text-muted">
+                    Đang đánh dấu nước của <span className="font-medium text-accent">{focusPlayer}</span>
+                    {" "}ở cột <span className="font-medium text-text">{focusColor === "white" ? "Trắng" : "Đen"}</span>.
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted">Không chọn player focus, timeline đang hiển thị cả hai bên.</div>
+                )}
+              </div>
+              <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 gap-y-1 text-sm font-mono">
+                <span />
+                <span className={`px-1.5 pb-1 text-xs uppercase tracking-wide ${
+                  focusColor === "white" ? "text-accent font-semibold" : "text-muted"
+                }`}>
+                  White{focusColor === "white" ? ` ★ ${focusPlayer}` : ""}
+                </span>
+                <span className={`px-1.5 pb-1 text-xs uppercase tracking-wide ${
+                  focusColor === "black" ? "text-accent font-semibold" : "text-muted"
+                }`}>
+                  Black{focusColor === "black" ? ` ★ ${focusPlayer}` : ""}
+                </span>
                 {Array.from({ length: Math.ceil(moves.length / 2) }).map((_, i) => {
                   const w = moves[i * 2];
                   const b = moves[i * 2 + 1];
@@ -419,11 +444,11 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                   const wIsFocus = focusColor === "white";
                   const bIsFocus = focusColor === "black";
                   const moveClass = (movePly: number, isFocus: boolean) =>
-                    `text-left px-1.5 rounded ${
+                    `relative text-left px-1.5 rounded ${
                       ply === movePly
                         ? "bg-accent/15 text-accent"
                         : isFocus
-                        ? "bg-accent/5 ring-1 ring-accent/25 hover:bg-accent/10"
+                        ? "bg-accent/10 ring-1 ring-accent/40 hover:bg-accent/15"
                         : "hover:bg-border/40"
                     }`;
                   return (
@@ -436,6 +461,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                           className={moveClass(w.ply, wIsFocus)}
                           style={wColor && ply !== w.ply ? { color: wColor } : undefined}
                         >
+                          {wIsFocus && <span className="mr-1 text-accent">★</span>}
                           {w.san}
                         </button>
                       ) : <span />}
@@ -446,6 +472,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                           className={moveClass(b.ply, bIsFocus)}
                           style={bColor && ply !== b.ply ? { color: bColor } : undefined}
                         >
+                          {bIsFocus && <span className="mr-1 text-accent">★</span>}
                           {b.san}
                         </button>
                       ) : <span />}
