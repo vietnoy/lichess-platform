@@ -88,6 +88,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   const searchParams = useSearchParams();
   const requestedFocusPlayer = searchParams.get("player")?.trim() || DEMO_GAME_FOCUS[gameId] || "";
   const [reviewMode, setReviewMode] = useState<"both" | "focus">(requestedFocusPlayer ? "focus" : "both");
+  const [selectedFocusPlayer, setSelectedFocusPlayer] = useState(requestedFocusPlayer);
 
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +110,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
 
   useEffect(() => {
     setReviewMode(requestedFocusPlayer ? "focus" : "both");
+    setSelectedFocusPlayer(requestedFocusPlayer);
   }, [requestedFocusPlayer, gameId]);
 
   // Load game on mount.
@@ -250,7 +252,14 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   }
 
   const meta = game?.metadata;
-  const activeFocusPlayer = reviewMode === "focus" ? requestedFocusPlayer : "";
+  const focusChoices = useMemo(() => {
+    if (!meta) return [];
+    return [
+      { color: "white" as const, player: meta.white_id ?? "White" },
+      { color: "black" as const, player: meta.black_id ?? "Black" },
+    ].filter((choice) => choice.player);
+  }, [meta]);
+  const activeFocusPlayer = reviewMode === "focus" ? selectedFocusPlayer : "";
   const focusColor = useMemo<"white" | "black" | null>(() => {
     if (!meta || !activeFocusPlayer) return null;
     const player = activeFocusPlayer.toLowerCase();
@@ -295,18 +304,24 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                 >
                   Cả hai bên
                 </button>
-                {requestedFocusPlayer && (
+                {focusChoices.map((choice) => (
                   <button
+                    key={`${choice.color}-${choice.player}`}
                     onClick={() => {
+                      setSelectedFocusPlayer(choice.player);
                       setReviewMode("focus");
                       setAnalysis(null);
                       setAnalyzeError(null);
                     }}
-                    className={`px-3 py-1.5 border-l border-border ${reviewMode === "focus" ? "bg-accent text-bg" : "bg-surface hover:bg-border/40"}`}
+                    className={`px-3 py-1.5 border-l border-border ${
+                      reviewMode === "focus" && selectedFocusPlayer === choice.player
+                        ? "bg-accent text-bg"
+                        : "bg-surface hover:bg-border/40"
+                    }`}
                   >
-                    {requestedFocusPlayer}
+                    {choice.player}
                   </button>
-                )}
+                ))}
               </div>
               {evalsAvailable === "yes" && (
                 <button
