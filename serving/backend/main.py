@@ -197,8 +197,10 @@ _freshness_lock = threading.Lock()
 _FRESHNESS_TTL_S = 300
 
 _analyze_cache: dict[str, tuple[float, dict]] = {}
+_analyze_jobs: dict[str, tuple[float, str]] = {}
 _analyze_lock = threading.Lock()
 _ANALYZE_TTL_S = 24 * 60 * 60
+_ANALYZE_JOB_TTL_S = 10 * 60
 
 
 def _player_color(meta: dict, player: str | None) -> str | None:
@@ -378,6 +380,102 @@ Các điểm nên review trước:
 {evidence}
 
 Khi tự review, hãy đặt bàn cờ lại ở các nước này và dành khoảng 2 phút để tìm 2-3 nước ứng viên trước khi bật engine. Với mỗi ứng viên, hãy tự hỏi: đối thủ đang đe dọa gì, quân nào của mình đang lỏng, có nước chiếu/bắt quân/tạo tempo nào không, và vì sao `{best}` giải quyết được nhiều vấn đề hơn `{played}`."""
+
+
+def _game_analysis_payload(game_id: str, player: str | None) -> dict:
+    all_evaluations = query_game_evaluations(game_id)
+    if not all_evaluations:
+        raise HTTPException(404, "No evaluations for this game yet (analyzer DAG may not have run for its date).")
+
+    game_rows = query_game(game_id)
+    if not game_rows:
+        raise HTTPException(404, f"Game {game_id} not found")
+    meta = game_rows[0]
+    target_color = _player_color(meta, player)
+    evaluations = _filter_evaluations_for_color(all_evaluations, target_color)
+    if player and not target_color:
+        raise HTTPException(404, f"Player '{player}' is not in game {game_id}")
+    if not evaluations:
+        raise HTTPException(404, f"No evaluations for {player or 'this side'} in game {game_id}")
+
+    key_rows = _key_evaluations(evaluations, limit=5)
+    key_lines = []
+    for r in key_rows:
+        key_lines.append(
+            f"ply {r['ply']}: class={r.get('classification') or 'n/a'}, "
+            f"played_move={r.get('played_move') or '-'}, "
+            f"best_move={r.get('best_move') or '-'}, "
+            f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}, "
+            f"eval_swing_cp_from_prev={r.get('eval_swing_cp_from_prev')}, "
+            f"fen_before={r.get('fen') or '-'}, "
+            f"move_contrast={_move_contrast(r)}"
+        )
+
+    eval_lines = []
+    for r in evaluations:
+        eval_lines.append(
+            f"ply {r['ply']}: class={r.get('classification') or 'n/a'}, "
+            f"played_move={r.get('played_move') or '-'}, "
+            f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}, "
+            f"best_move={r.get('best_move') or '-'}, "
+            f"eval_swing_cp_from_prev={r.get('eval_swing_cp_from_prev')}"
+        )
+
+    prompt = "\n".join(
+        [
+            "Phan tich van co co vua duoi day bang tieng Viet.",
+            "Hay viet nhu mot HLV dang review van dau truc tiep voi nguoi choi: tu nhien, lien mach, khong ep theo format 5 muc co dinh.",
+            "Khong xung ho anh/em, khong goi nguoi choi la 'em' hay 'hoc vien' trong cau tra loi. Hay dung 'ban' hoac ten player.",
+            "Hay tra loi bang bullet point de de doc: mo dau 1 cau ngan, sau do 3-5 bullet ro rang, moi bullet 2-4 cau.",
+            "Moi bullet nen co nhan ngan nhu 'Nuoc X', 'Vi sao sai', 'Best move', 'Bai hoc'. Co the dung markdown bullet, nhung dung qua nhieu heading lon.",
+            "Voi 2-3 turning point quan trong nhat, phai tra loi truc tiep: nuoc da choi lam hong dieu gi trong vi tri, best move sua hoac giu dieu gi, dao dong danh gia cho thay muc do ra sao, va lan sau nguoi choi nen tu hoi cau gi truoc khi di.",
+            "Khong chi lap lai played_move/best_move/eval_cp. Hay dung FEN truoc nuoc di de giai thich ly do tren ban co neu co the.",
+            "Neu khong du thong tin de ket luan motif chien thuat, noi ro phan chac chan tu engine va huong dan cach kiem tra tren ban co; khong bia motif.",
+            "Khong mo ta dai dong; tap trung vao vi sao vi tri dao chieu va cach nguoi choi nen review lai. Tranh hien thi raw FEN/eval_cp/swing/mate trong cau tra loi cuoi tru khi that su can.",
+            "Neu co 'Tap trung nguoi choi', chi phan tich cac nuoc cua nguoi choi do; khong ket luan loi cua doi thu la loi cua nguoi choi.",
+            "Ket thuc bang mot cau hoan chinh; khong dung lai giua cau.",
+            f"Game ID: {game_id}",
+            f"Trang: {meta.get('white_id')} vs {meta.get('black_id')}",
+            f"Tap trung nguoi choi: {player} ({target_color})" if player and target_color else "Tap trung: ca hai ben",
+            f"Khai cuoc: {meta.get('opening_eco') or '-'} {meta.get('opening_name') or ''}".strip(),
+            f"Toc do: {meta.get('speed') or '-'}",
+            "Vi tri can giai thich ky:",
+            *key_lines,
+            "Timeline danh gia theo ply:",
+            *eval_lines,
+        ]
+    )
+
+    return {
+        "prompt": prompt,
+        "fallback": _fallback_game_narrative(game_id, meta, evaluations, player, target_color),
+    }
+
+
+def _generate_game_analysis_background(cache_key: str, game_id: str, prompt: str) -> None:
+    try:
+        from coach import vertex_text_answer
+
+        narrative = vertex_text_answer(
+            "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi nguoi choi. Khong xung ho anh/em; dung 'ban' hoac ten player. Uu tien turning point va bai hoc thuc chien.",
+            prompt,
+            temperature=0.4,
+            max_output_tokens=6144,
+            timeout=75,
+        )
+        if _narrative_is_incomplete(narrative):
+            log.warning("Vertex returned incomplete game analysis for %s; leaving fallback active", game_id)
+            with _analyze_lock:
+                _analyze_jobs[cache_key] = (time.monotonic(), "failed")
+            return
+        result = {"narrative": narrative, "status": "ready", "source": "gemini"}
+        with _analyze_lock:
+            _analyze_cache[cache_key] = (time.monotonic(), result)
+            _analyze_jobs.pop(cache_key, None)
+    except Exception as e:
+        log.warning("Vertex background game analysis failed for %s: %s", game_id, e)
+        with _analyze_lock:
+            _analyze_jobs[cache_key] = (time.monotonic(), "failed")
 
 
 @app.get("/api/freshness")
@@ -660,99 +758,47 @@ def get_exercise(username: str):
 
 @app.post("/api/games/{game_id}/analyze")
 def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
-    """Use Vertex Gemini to write a turning-point narrative based on the eval timeline."""
+    """Return an immediate fallback and generate the Gemini narrative in the background."""
     now = time.monotonic()
     cache_key = f"{game_id}:{(player or '').lower()}"
     with _analyze_lock:
         cached = _analyze_cache.get(cache_key)
         if cached and now - cached[0] < _ANALYZE_TTL_S:
             return cached[1]
+        job = _analyze_jobs.get(cache_key)
+        job_active = bool(job and job[1] == "generating" and now - job[0] < _ANALYZE_JOB_TTL_S)
 
-    all_evaluations = query_game_evaluations(game_id)
-    if not all_evaluations:
-        raise HTTPException(404, "No evaluations for this game yet (analyzer DAG may not have run for its date).")
+    payload = _game_analysis_payload(game_id, player)
+    if not job_active:
+        with _analyze_lock:
+            _analyze_jobs[cache_key] = (time.monotonic(), "generating")
+        threading.Thread(
+            target=_generate_game_analysis_background,
+            args=(cache_key, game_id, payload["prompt"]),
+            daemon=True,
+        ).start()
 
-    game_rows = query_game(game_id)
-    if not game_rows:
-        raise HTTPException(404, f"Game {game_id} not found")
-    meta = game_rows[0]
-    target_color = _player_color(meta, player)
-    evaluations = _filter_evaluations_for_color(all_evaluations, target_color)
-    if player and not target_color:
-        raise HTTPException(404, f"Player '{player}' is not in game {game_id}")
-    if not evaluations:
-        raise HTTPException(404, f"No evaluations for {player or 'this side'} in game {game_id}")
+    return {
+        "narrative": payload["fallback"],
+        "status": "generating" if not job_active else "pending",
+        "source": "fallback",
+    }
 
-    key_rows = _key_evaluations(evaluations, limit=5)
-    key_lines = []
-    for r in key_rows:
-        key_lines.append(
-            f"ply {r['ply']}: class={r.get('classification') or 'n/a'}, "
-            f"played_move={r.get('played_move') or '-'}, "
-            f"best_move={r.get('best_move') or '-'}, "
-            f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}, "
-            f"eval_swing_cp_from_prev={r.get('eval_swing_cp_from_prev')}, "
-            f"fen_before={r.get('fen') or '-'}, "
-            f"move_contrast={_move_contrast(r)}"
-        )
 
-    eval_lines = []
-    for r in evaluations:
-        eval_lines.append(
-            f"ply {r['ply']}: class={r.get('classification') or 'n/a'}, "
-            f"played_move={r.get('played_move') or '-'}, "
-            f"eval_cp={r.get('eval_cp')}, mate={r.get('mate')}, "
-            f"best_move={r.get('best_move') or '-'}, "
-            f"eval_swing_cp_from_prev={r.get('eval_swing_cp_from_prev')}"
-        )
-
-    prompt = "\n".join(
-        [
-            "Phan tich van co co vua duoi day bang tieng Viet.",
-            "Hay viet nhu mot HLV dang review van dau truc tiep voi nguoi choi: tu nhien, lien mach, khong ep theo format 5 muc co dinh.",
-            "Khong xung ho anh/em, khong goi nguoi choi la 'em' hay 'hoc vien' trong cau tra loi. Hay dung 'ban' hoac ten player.",
-            "Hay tra loi bang bullet point de de doc: mo dau 1 cau ngan, sau do 3-5 bullet ro rang, moi bullet 2-4 cau.",
-            "Moi bullet nen co nhan ngan nhu 'Nuoc X', 'Vi sao sai', 'Best move', 'Bai hoc'. Co the dung markdown bullet, nhung dung qua nhieu heading lon.",
-            "Voi 2-3 turning point quan trong nhat, phai tra loi truc tiep: nuoc da choi lam hong dieu gi trong vi tri, best move sua hoac giu dieu gi, dao dong danh gia cho thay muc do ra sao, va lan sau nguoi choi nen tu hoi cau gi truoc khi di.",
-            "Khong chi lap lai played_move/best_move/eval_cp. Hay dung FEN truoc nuoc di de giai thich ly do tren ban co neu co the.",
-            "Neu khong du thong tin de ket luan motif chien thuat, noi ro phan chac chan tu engine va huong dan cach kiem tra tren ban co; khong bia motif.",
-            "Khong mo ta dai dong; tap trung vao vi sao vi tri dao chieu va cach nguoi choi nen review lai. Tranh hien thi raw FEN/eval_cp/swing/mate trong cau tra loi cuoi tru khi that su can.",
-            "Neu co 'Tap trung nguoi choi', chi phan tich cac nuoc cua nguoi choi do; khong ket luan loi cua doi thu la loi cua nguoi choi.",
-            "Ket thuc bang mot cau hoan chinh; khong dung lai giua cau.",
-            f"Game ID: {game_id}",
-            f"Trang: {meta.get('white_id')} vs {meta.get('black_id')}",
-            f"Tap trung nguoi choi: {player} ({target_color})" if player and target_color else "Tap trung: ca hai ben",
-            f"Khai cuoc: {meta.get('opening_eco') or '-'} {meta.get('opening_name') or ''}".strip(),
-            f"Toc do: {meta.get('speed') or '-'}",
-            "Vi tri can giai thich ky:",
-            *key_lines,
-            "Timeline danh gia theo ply:",
-            *eval_lines,
-        ]
-    )
-
-    try:
-        from coach import vertex_text_answer
-
-        narrative = vertex_text_answer(
-            "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi nguoi choi. Khong xung ho anh/em; dung 'ban' hoac ten player. Uu tien turning point va bai hoc thuc chien.",
-            prompt,
-            temperature=0.4,
-            max_output_tokens=6144,
-            timeout=18,
-        )
-        if _narrative_is_incomplete(narrative):
-            log.warning("Vertex returned incomplete or formatted game analysis for %s; using deterministic fallback", game_id)
-            narrative = _fallback_game_narrative(game_id, meta, evaluations, player, target_color)
-    except Exception as e:
-        log.warning("Vertex game analysis failed for %s; using deterministic fallback: %s", game_id, e)
-        narrative = _fallback_game_narrative(game_id, meta, evaluations, player, target_color)
-
-    result = {"narrative": narrative}
-
+@app.get("/api/games/{game_id}/analyze/status")
+def get_game_analyze_status(game_id: str, player: str | None = Query(default=None)):
+    now = time.monotonic()
+    cache_key = f"{game_id}:{(player or '').lower()}"
     with _analyze_lock:
-        _analyze_cache[cache_key] = (now, result)
-    return result
+        cached = _analyze_cache.get(cache_key)
+        if cached and now - cached[0] < _ANALYZE_TTL_S:
+            return cached[1]
+        job = _analyze_jobs.get(cache_key)
+        if job and job[1] == "generating" and now - job[0] < _ANALYZE_JOB_TTL_S:
+            return {"status": "generating"}
+        if job and job[1] == "failed" and now - job[0] < _ANALYZE_JOB_TTL_S:
+            return {"status": "failed"}
+    return {"status": "idle"}
 
 
 # ─── coach ────────────────────────────────────────────────────────────────────

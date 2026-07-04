@@ -30,6 +30,12 @@ interface MoveEval {
   classification: "blunder" | "mistake" | "inaccuracy" | "good" | string;
 }
 
+type AnalysisResponse = {
+  narrative?: string;
+  status: "ready" | "generating" | "pending" | "failed" | "idle";
+  source?: "gemini" | "fallback";
+};
+
 const CLASS_COLOR: Record<string, string> = {
   blunder: "#f43f5e",
   mistake: "#f59e0b",
@@ -106,11 +112,24 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   // AI narrative analysis state.
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisResponse["status"] | null>(null);
+  const [analysisSource, setAnalysisSource] = useState<AnalysisResponse["source"] | null>(null);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const analysisPollRef = useRef<number | null>(null);
+
+  function stopAnalysisPolling() {
+    if (analysisPollRef.current !== null) {
+      window.clearTimeout(analysisPollRef.current);
+      analysisPollRef.current = null;
+    }
+  }
 
   useEffect(() => {
     setReviewMode(requestedFocusPlayer ? "focus" : "both");
     setSelectedFocusPlayer(requestedFocusPlayer);
+    stopAnalysisPolling();
+    setAnalysisStatus(null);
+    setAnalysisSource(null);
   }, [requestedFocusPlayer, gameId]);
 
   // Load game on mount.
@@ -161,14 +180,66 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
     }));
   }, [evals]);
 
+  function pollAnalysisStatus(query: string, attempts = 0) {
+    if (attempts >= 30) {
+      setAnalyzing(false);
+      setAnalysisStatus("failed");
+      return;
+    }
+    analysisPollRef.current = window.setTimeout(() => {
+      api<AnalysisResponse>(`/games/${encodeURIComponent(gameId)}/analyze/status${query}`)
+        .then((r) => {
+          setAnalysisStatus(r.status);
+          setAnalysisSource(r.source ?? null);
+          if (r.status === "ready" && r.narrative) {
+            setAnalysis(r.narrative);
+            setAnalyzing(false);
+            stopAnalysisPolling();
+            return;
+          }
+          if (r.status === "failed") {
+            setAnalyzing(false);
+            stopAnalysisPolling();
+            return;
+          }
+          pollAnalysisStatus(query, attempts + 1);
+        })
+        .catch((e) => {
+          if (attempts >= 2) {
+            setAnalyzeError(e instanceof Error ? e.message : String(e));
+            setAnalyzing(false);
+            stopAnalysisPolling();
+            return;
+          }
+          pollAnalysisStatus(query, attempts + 1);
+        });
+    }, 3000);
+  }
+
   function runAnalyze() {
+    stopAnalysisPolling();
     setAnalyzing(true);
     setAnalyzeError(null);
+    setAnalysisStatus("generating");
+    setAnalysisSource(null);
     const query = activeFocusPlayer ? `?player=${encodeURIComponent(activeFocusPlayer)}` : "";
-    api<{ narrative: string }>(`/games/${encodeURIComponent(gameId)}/analyze${query}`, { method: "POST", body: "{}" })
-      .then((r) => setAnalysis(r.narrative))
-      .catch((e) => setAnalyzeError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setAnalyzing(false));
+    api<AnalysisResponse>(`/games/${encodeURIComponent(gameId)}/analyze${query}`, { method: "POST", body: "{}" })
+      .then((r) => {
+        if (r.narrative) setAnalysis(r.narrative);
+        setAnalysisStatus(r.status);
+        setAnalysisSource(r.source ?? null);
+        if (r.status === "ready" || r.status === "failed") {
+          setAnalyzing(false);
+          return;
+        }
+        pollAnalysisStatus(query);
+      })
+      .catch((e) => {
+        setAnalyzeError(e instanceof Error ? e.message : String(e));
+        setAnalysisStatus(null);
+        setAnalysisSource(null);
+        setAnalyzing(false);
+      });
   }
 
   const moves = game?.moves ?? [];
@@ -209,7 +280,10 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   }, [game, ply, fen, playMode]);
 
   useEffect(() => {
-    return () => userEvalAbortRef.current?.abort();
+    return () => {
+      userEvalAbortRef.current?.abort();
+      stopAnalysisPolling();
+    };
   }, []);
 
   function jumpTo(p: number) {
@@ -296,9 +370,12 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
               <div className="flex rounded-md border border-border overflow-hidden text-sm">
                 <button
                   onClick={() => {
+                    stopAnalysisPolling();
                     setReviewMode("both");
                     setAnalysis(null);
                     setAnalyzeError(null);
+                    setAnalysisStatus(null);
+                    setAnalysisSource(null);
                   }}
                   className={`px-3 py-1.5 ${reviewMode === "both" ? "bg-accent text-bg" : "bg-surface hover:bg-border/40"}`}
                 >
@@ -308,10 +385,13 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                   <button
                     key={`${choice.color}-${choice.player}`}
                     onClick={() => {
+                      stopAnalysisPolling();
                       setSelectedFocusPlayer(choice.player);
                       setReviewMode("focus");
                       setAnalysis(null);
                       setAnalyzeError(null);
+                      setAnalysisStatus(null);
+                      setAnalysisSource(null);
                     }}
                     className={`px-3 py-1.5 border-l border-border ${
                       reviewMode === "focus" && selectedFocusPlayer === choice.player
@@ -329,7 +409,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                   disabled={analyzing}
                   className="ml-auto bg-accent text-bg font-medium px-3 py-1.5 rounded-md text-sm hover:opacity-90 disabled:opacity-40"
                 >
-                  {analyzing ? "Analyzing…" : analysis ? "Re-analyze with AI" : "Analyze with AI"}
+                  {analyzing ? "Generating AI…" : analysis ? "Re-analyze with AI" : "Analyze with AI"}
                 </button>
               )}
             </>
@@ -372,6 +452,15 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
               transition={{ duration: 0.2 }}
               className="bg-surface border border-border rounded-md p-4 mb-4 prose prose-sm max-w-none prose-p:my-2 prose-ol:my-2 prose-ul:my-2 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1.5"
             >
+              {analysisStatus && !analyzeError && (
+                <p className="not-prose text-xs text-muted mb-3">
+                  {analysisStatus === "ready" && analysisSource === "gemini"
+                    ? "AI analysis ready."
+                    : analysisStatus === "failed"
+                      ? "Showing fast review. AI enhancement did not finish."
+                      : "Showing fast review while AI enhancement is generating..."}
+                </p>
+              )}
               {analyzeError && <p className="text-rose-400 not-prose">{analyzeError}</p>}
               {analysis && <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis}</ReactMarkdown>}
             </motion.div>
