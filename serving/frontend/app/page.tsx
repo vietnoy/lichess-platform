@@ -8,9 +8,12 @@ import { BarChart3, BrainCircuit, Database, Dumbbell, Search, UserRound } from "
 import Header from "@/components/Header";
 import StatusPill from "@/components/StatusPill";
 
+const DEMO_PLAYER = "spoiltbrat12";
+const DEMO_GAME_ID = "6KQfynAb";
+
 const DEMO_LINKS = [
   {
-    href: "/player/benirks",
+    href: `/player/${DEMO_PLAYER}`,
     title: "Chẩn đoán người chơi",
     description: "Hồ sơ, điểm yếu, khai cuộc và bài tập từ lịch sử thật.",
     icon: UserRound,
@@ -85,7 +88,7 @@ export default function Home() {
                     key={item.href}
                     href={item.href}
                     className={`border border-border bg-surface rounded-md p-4 hover:border-accent ${
-                      item.href === "/player/benirks" ? "sm:col-span-2" : ""
+                      item.href === `/player/${DEMO_PLAYER}` ? "sm:col-span-2" : ""
                     }`}
                   >
                     <div className="flex items-center gap-2">
@@ -130,10 +133,10 @@ export default function Home() {
                 Demo nhanh:{" "}
                 <button
                   type="button"
-                  onClick={() => router.push("/player/benirks")}
+                  onClick={() => router.push(`/player/${DEMO_PLAYER}`)}
                   className="text-accent hover:underline"
                 >
-                  benirks
+                  {DEMO_PLAYER}
                 </button>
               </p>
             </form>
@@ -154,7 +157,7 @@ export default function Home() {
                 <input
                   value={gameId}
                   onChange={(e) => setGameId(e.target.value)}
-                  placeholder="Game ID, ví dụ 8IzoF2q3"
+                  placeholder={`Game ID, ví dụ ${DEMO_GAME_ID}`}
                   className="flex-1 min-w-0 bg-bg border border-border rounded-md px-3 py-2 outline-none focus:border-accent"
                 />
                 <button
@@ -165,7 +168,15 @@ export default function Home() {
                 </button>
               </div>
               <p className="text-xs text-muted">
-                Mở trực tiếp timeline, evaluation và What If cho từng nước đi.
+                Demo nhanh:{" "}
+                <button
+                  type="button"
+                  onClick={() => router.push(`/game/${DEMO_GAME_ID}`)}
+                  className="text-accent hover:underline"
+                >
+                  {DEMO_GAME_ID}
+                </button>
+                {" "}· mở timeline, evaluation và What If cho từng nước đi.
               </p>
             </form>
           </section>
