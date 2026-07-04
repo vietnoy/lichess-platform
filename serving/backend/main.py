@@ -708,14 +708,15 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
     prompt = "\n".join(
         [
             "Phan tich van co co vua duoi day bang tieng Viet.",
-            "Hay viet nhu mot HLV dang review van dau truc tiep voi hoc vien: tu nhien, lien mach, khong ep theo format 5 muc co dinh.",
+            "Hay viet nhu mot HLV dang review van dau truc tiep voi nguoi choi: tu nhien, lien mach, khong ep theo format 5 muc co dinh.",
+            "Khong xung ho anh/em, khong goi nguoi choi la 'em' hay 'hoc vien' trong cau tra loi. Hay dung 'ban' hoac ten player.",
             "Co the viet dai hon neu can: 5-8 doan van tu nhien, uu tien giai thich ro hon la ngan gon.",
             "Khong dung markdown, khong in dam, khong heading, khong tieu de may moc nhu 'Tong quan', 'Sai lam then chot', 'Bai hoc hanh dong'. Hay viet thanh cac doan van lien mach.",
-            "Voi 2-3 turning point quan trong nhat, phai tra loi truc tiep: nuoc da choi lam hong dieu gi trong vi tri, best move sua hoac giu dieu gi, dao dong danh gia cho thay muc do ra sao, va lan sau hoc vien nen tu hoi cau gi truoc khi di.",
+            "Voi 2-3 turning point quan trong nhat, phai tra loi truc tiep: nuoc da choi lam hong dieu gi trong vi tri, best move sua hoac giu dieu gi, dao dong danh gia cho thay muc do ra sao, va lan sau nguoi choi nen tu hoi cau gi truoc khi di.",
             "Khong chi lap lai played_move/best_move/eval_cp. Hay dung FEN truoc nuoc di de giai thich ly do tren ban co neu co the.",
             "Neu khong du thong tin de ket luan motif chien thuat, noi ro phan chac chan tu engine va huong dan cach kiem tra tren ban co; khong bia motif.",
-            "Khong mo ta dai dong; tap trung vao vi sao vi tri dao chieu va cach hoc vien nen review lai.",
-            "Neu co 'Tap trung nguoi choi', chi phan tich cac nuoc cua nguoi choi do; khong ket luan loi cua doi thu la loi cua hoc vien.",
+            "Khong mo ta dai dong; tap trung vao vi sao vi tri dao chieu va cach nguoi choi nen review lai.",
+            "Neu co 'Tap trung nguoi choi', chi phan tich cac nuoc cua nguoi choi do; khong ket luan loi cua doi thu la loi cua nguoi choi.",
             "Ket thuc bang mot cau hoan chinh; khong dung lai giua cau.",
             f"Game ID: {game_id}",
             f"Trang: {meta.get('white_id')} vs {meta.get('black_id')}",
@@ -733,7 +734,7 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
         from coach import vertex_text_answer
 
         narrative = vertex_text_answer(
-            "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
+            "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi nguoi choi. Khong xung ho anh/em; dung 'ban' hoac ten player. Uu tien turning point va bai hoc thuc chien.",
             prompt,
             temperature=0.4,
             max_output_tokens=6144,
