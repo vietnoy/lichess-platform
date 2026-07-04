@@ -218,7 +218,14 @@ def _vertex_final_answer(messages: list[dict]) -> str:
     return _vertex_generate_content(_final_answer_payload(messages), timeout=45)
 
 
-def vertex_text_answer(system_prompt: str, user_prompt: str, *, temperature: float = 0.35, max_output_tokens: int = 1200) -> str:
+def vertex_text_answer(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    temperature: float = 0.35,
+    max_output_tokens: int = 1200,
+    timeout: int = 45,
+) -> str:
     """Generate a plain text answer through the same Vertex Gemini model."""
     return _vertex_generate_content(
         {
@@ -229,7 +236,7 @@ def vertex_text_answer(system_prompt: str, user_prompt: str, *, temperature: flo
                 "maxOutputTokens": max_output_tokens,
             },
         },
-        timeout=45,
+        timeout=timeout,
     )
 
 

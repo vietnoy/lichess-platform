@@ -738,6 +738,7 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
             prompt,
             temperature=0.4,
             max_output_tokens=6144,
+            timeout=18,
         )
         if _narrative_is_incomplete(narrative):
             log.warning("Vertex returned incomplete or formatted game analysis for %s; using deterministic fallback", game_id)
