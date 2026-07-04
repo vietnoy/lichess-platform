@@ -736,22 +736,16 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
             "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
             prompt,
             temperature=0.4,
-            max_output_tokens=4096,
+            max_output_tokens=6144,
         )
         if _narrative_is_incomplete(narrative):
-            narrative = vertex_text_answer(
-                "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
-                prompt
-                + "\n\nCau tra loi truoc bi qua ngan, dung giua cau, hoac dung format markdown. Hay viet lai bang van xuoi tu nhien, 5-8 doan, khong bullet, khong heading, khong in dam. Co dan chung tu FEN/timeline va move_contrast, nhung dien giai thanh loi noi cua HLV. Moi turning point can noi ro vi sao nuoc da choi kem hon best move, best move tao threat/capture/check gi, va hoc vien nen tu kiem tra dieu gi. Phai ket thuc bang cau hoan chinh.",
-                temperature=0.25,
-                max_output_tokens=6144,
-            )
-        if _narrative_is_incomplete(narrative):
-            log.warning("Vertex returned incomplete game analysis for %s; using deterministic fallback", game_id)
+            log.warning("Vertex returned incomplete or formatted game analysis for %s; using deterministic fallback", game_id)
             narrative = _fallback_game_narrative(game_id, meta, evaluations, player, target_color)
-        result = {"narrative": narrative}
     except Exception as e:
-        raise HTTPException(503, str(e))
+        log.warning("Vertex game analysis failed for %s; using deterministic fallback: %s", game_id, e)
+        narrative = _fallback_game_narrative(game_id, meta, evaluations, player, target_color)
+
+    result = {"narrative": narrative}
 
     with _analyze_lock:
         _analyze_cache[cache_key] = (now, result)
