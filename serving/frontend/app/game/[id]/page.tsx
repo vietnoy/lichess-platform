@@ -68,31 +68,11 @@ function fenAfter(moves: Game["moves"], ply: number): string {
   return g.fen();
 }
 
-type Verdict = {
-  tone: "ok" | "warn" | "error";
-  title: string;
-  detail: string;
-};
-
-function classifySwing(playerSide: "white" | "black", actualCp: number | null, userCp: number | null): Verdict {
-  if (actualCp === null || userCp === null) {
-    return { tone: "warn", title: "Engine offline", detail: "Could not evaluate." };
-  }
-  // Normalize so positive = good for player.
-  const sign = playerSide === "white" ? 1 : -1;
-  const aBefore = sign * actualCp;
-  const aUser   = sign * userCp;
-  const delta   = aUser - aBefore;
-  if (delta >= 30)   return { tone: "ok",    title: "Stronger than the game",    detail: `Your move improves the position by ${(delta / 100).toFixed(1)} pawns.` };
-  if (delta >= -20)  return { tone: "ok",    title: "Equivalent",                 detail: `Within engine noise of the game move.` };
-  if (delta >= -100) return { tone: "warn",  title: "Slightly worse",             detail: `Loses about ${Math.abs(delta / 100).toFixed(1)} pawns vs the game move.` };
-  return { tone: "error", title: "Significantly worse", detail: `Loses about ${Math.abs(delta / 100).toFixed(1)} pawns. Engine prefers a different idea.` };
-}
-
 export default function GameExplorerPage({ params }: { params: { id: string } }) {
   const gameId = decodeURIComponent(params.id);
   const searchParams = useSearchParams();
   const requestedFocusPlayer = searchParams.get("player")?.trim() || DEMO_GAME_FOCUS[gameId] || "";
+  const requestedPly = Math.max(0, Number.parseInt(searchParams.get("ply") ?? "0", 10) || 0);
   const [reviewMode, setReviewMode] = useState<"both" | "focus">(requestedFocusPlayer ? "focus" : "both");
   const [selectedFocusPlayer, setSelectedFocusPlayer] = useState(requestedFocusPlayer);
 
@@ -101,10 +81,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   const [ply, setPly] = useState(0);                // 0 = starting position, n = after move n
   const [evalNow, setEvalNow] = useState<EvalResult | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
-  const [playMode, setPlayMode] = useState(false);
-  const [userTry, setUserTry] = useState<{ san: string; verdict: Verdict; userEval: EvalResult; bestMove: string | null } | null>(null);
   const evalCache = useRef<Map<number, EvalResult>>(new Map());
-  const userEvalAbortRef = useRef<AbortController | null>(null);
 
   // Per-ply Stockfish evaluation timeline (from move_evaluations, populated by the daily DAG).
   const [evals, setEvals] = useState<MoveEval[]>([]);
@@ -131,6 +108,11 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
     setAnalysisStatus(null);
     setAnalysisSource(null);
   }, [requestedFocusPlayer, gameId]);
+
+  useEffect(() => {
+    if (!game) return;
+    setPly(Math.max(0, Math.min(game.moves.length, requestedPly)));
+  }, [game, requestedPly]);
 
   // Load game on mount.
   useEffect(() => {
@@ -260,12 +242,9 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
     if (!uci || uci.length < 4) return undefined;
     return [uci.slice(0, 2) as Key, uci.slice(2, 4) as Key];
   }, [moves, ply]);
-  const sideToMove: "white" | "black" = fen.split(" ")[1] === "w" ? "white" : "black";
-
   // Evaluate current position (cached).
   useEffect(() => {
     if (!game) return;
-    if (playMode) return; // freeze eval while user is trying their own line
     const cached = evalCache.current.get(ply);
     if (cached) { setEvalNow(cached); return; }
     const controller = new AbortController();
@@ -287,52 +266,16 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
       alive = false;
       controller.abort();
     };
-  }, [game, ply, fen, playMode]);
+  }, [game, ply, fen]);
 
   useEffect(() => {
     return () => {
-      userEvalAbortRef.current?.abort();
       stopAnalysisPolling();
     };
   }, []);
 
   function jumpTo(p: number) {
-    setUserTry(null);
     setPly(Math.max(0, Math.min(moves.length, p)));
-  }
-
-  async function handleUserMove(uci: string, san: string, nextFen: string) {
-    if (!game) return;
-    userEvalAbortRef.current?.abort();
-    const controller = new AbortController();
-    userEvalAbortRef.current = controller;
-    const baseEval = evalCache.current.get(ply) ?? evalNow;
-    setEvalLoading(true);
-    try {
-      const userEval = await api<EvalResult>("/eval", {
-        method: "POST",
-        signal: controller.signal,
-        body: JSON.stringify({ fen: nextFen }),
-      });
-      if (controller.signal.aborted) return;
-      const verdict = classifySwing(
-        sideToMove,
-        baseEval?.cp ?? null,
-        userEval.cp ?? null,
-      );
-      setUserTry({ san, verdict, userEval, bestMove: baseEval?.best_move ?? null });
-    } catch {
-      if (controller.signal.aborted) return;
-      setUserTry({
-        san,
-        verdict: { tone: "warn", title: "Engine offline", detail: "Could not evaluate your move." },
-        userEval: { cp: null, mate: null, best_move: null },
-        bestMove: null,
-      });
-    } finally {
-      if (userEvalAbortRef.current === controller) userEvalAbortRef.current = null;
-      if (!controller.signal.aborted) setEvalLoading(false);
-    }
   }
 
   const meta = game?.metadata;
@@ -370,7 +313,6 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                 <StatusPill tone="ok">{evals.length} positions analyzed</StatusPill>
               )}
               {evalLoading && <StatusPill tone="loading">Evaluating</StatusPill>}
-              {playMode && <StatusPill tone="warn">Play-from-here mode</StatusPill>}
               {activeFocusPlayer && focusColor && (
                 <StatusPill tone="ok">Review focus · {activeFocusPlayer} ({focusColor})</StatusPill>
               )}
@@ -485,9 +427,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                 <Board
                   fen={fen}
                   lastMove={lastMove}
-                  bestMove={!playMode && ply > 0 ? evalNow?.best_move ?? undefined : undefined}
-                  movable={playMode}
-                  onUserMove={playMode ? handleUserMove : undefined}
+                  bestMove={ply > 0 ? evalNow?.best_move ?? undefined : undefined}
                 />
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex gap-2">
@@ -508,18 +448,9 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                   </div>
                   <span className="text-xs text-muted">Move {ply} / {moves.length}</span>
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => { setPlayMode((v) => !v); setUserTry(null); }}
-                      title={playMode ? "Stop trying alternative moves and resume game review" : "Try your own move from this position. The engine will tell you if it's better or worse than what was played."}
-                      className={`px-3 py-1.5 rounded-md text-sm border ${
-                        playMode ? "border-accent text-accent" : "border-border hover:border-accent"
-                      }`}
-                    >
-                      {playMode ? "Exit play mode" : "Play from here"}
-                    </button>
                     {ply > 0 && ply < moves.length && (
                       <Link
-                        href={`/whatif/${encodeURIComponent(gameId)}/${ply}`}
+                        href={`/whatif/${encodeURIComponent(gameId)}/${ply}${activeFocusPlayer ? `?player=${encodeURIComponent(activeFocusPlayer)}` : ""}`}
                         className="px-3 py-1.5 rounded-md text-sm border border-border hover:border-accent"
                       >
                         What if?
@@ -527,30 +458,6 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                     )}
                   </div>
                 </div>
-
-                <AnimatePresence>
-                  {userTry && (
-                    <motion.div
-                      key={userTry.san}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -6 }}
-                      transition={{ duration: 0.2 }}
-                      className="bg-surface border border-border rounded-md p-4 space-y-1"
-                    >
-                      <div className="flex items-center gap-2">
-                        <StatusPill tone={userTry.verdict.tone}>{userTry.verdict.title}</StatusPill>
-                        <span className="text-xs text-muted font-mono">You played {userTry.san}</span>
-                      </div>
-                      <p className="text-sm text-muted">{userTry.verdict.detail}</p>
-                      {userTry.bestMove && (
-                        <p className="text-xs text-muted">
-                          Engine top choice from this position: <span className="font-mono text-text">{userTry.bestMove}</span>
-                        </p>
-                      )}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
             </div>
 

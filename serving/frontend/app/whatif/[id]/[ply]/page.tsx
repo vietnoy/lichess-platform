@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Chess } from "chess.js";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import Header from "@/components/Header";
 import Board from "@/components/Board";
@@ -36,7 +38,9 @@ function winProbability(cp: number | null, mate: number | null, side: "white" | 
 
 export default function WhatIfPage({ params }: { params: { id: string; ply: string } }) {
   const gameId = decodeURIComponent(params.id);
-  const targetPly = parseInt(params.ply, 10);
+  const targetPly = Math.max(0, Number.parseInt(params.ply, 10) || 0);
+  const searchParams = useSearchParams();
+  const playerParam = searchParams.get("player")?.trim() || "";
 
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +50,14 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
   const [activeStep, setActiveStep] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const whatifAbortRef = useRef<AbortController | null>(null);
+  const playbackRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function stopPlayback() {
+    if (playbackRef.current) {
+      clearInterval(playbackRef.current);
+      playbackRef.current = null;
+    }
+  }
 
   // Load game
   useEffect(() => {
@@ -65,6 +77,8 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
     return game.moves[targetPly - 1]?.fen ?? STARTING_FEN;
   }, [game, targetPly]);
   const sideToMove: "white" | "black" = baseFen.split(" ")[1] === "w" ? "white" : "black";
+  const actualMoveUci = game?.moves[targetPly - 1]?.san ?? null;
+  const returnHref = `/game/${encodeURIComponent(gameId)}?ply=${targetPly}${playerParam ? `&player=${encodeURIComponent(playerParam)}` : ""}`;
 
   // Backend computes both lines in a single call. Reconstruct SAN client-side from the UCI list it returns.
   function reconstructSans(startFen: string, ucis: string[]): { uci: string; san: string }[] {
@@ -87,7 +101,6 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
     setErrorMsg(null);
     setActiveStep(0);
     try {
-      const actualMoveUci = game.moves[targetPly - 1]?.san;
       if (!actualMoveUci) throw new Error("No actual move at this ply");
       const result = await api<{
         actual: { uci: string; fen: string; cp: number | null; mate: number | null }[];
@@ -125,31 +138,42 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
   }
 
   useEffect(() => {
-    return () => whatifAbortRef.current?.abort();
+    return () => {
+      whatifAbortRef.current?.abort();
+      stopPlayback();
+    };
   }, []);
 
   // Auto-step animation through both lines once ready.
   useEffect(() => {
     if (phase !== "ready" || !actualLine || !altLine) return;
-    const max = Math.max(actualLine.steps.length, altLine.steps.length);
+    stopPlayback();
+    const maxIdx = Math.max(actualLine.steps.length, altLine.steps.length) - 1;
     setPhase("running");
     setActiveStep(0);
+    if (maxIdx <= 0) return;
     let i = 0;
-    const id = setInterval(() => {
-      i += 1;
+    playbackRef.current = setInterval(() => {
+      i = Math.min(i + 1, maxIdx);
       setActiveStep(i);
-      if (i >= max) clearInterval(id);
+      if (i >= maxIdx) stopPlayback();
     }, 800);
-    return () => clearInterval(id);
+    return stopPlayback;
   }, [phase, actualLine, altLine]);
 
   function reset() {
     whatifAbortRef.current?.abort();
+    stopPlayback();
     setActualLine(null);
     setAltLine(null);
     setPhase("idle");
     setErrorMsg(null);
     setActiveStep(0);
+  }
+
+  function selectStep(idx: number) {
+    stopPlayback();
+    setActiveStep(idx);
   }
 
   const status = useMemo(() => {
@@ -158,7 +182,7 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
     if (!game) return { tone: "loading" as const, label: "Loading game" };
     if (phase === "computing") return { tone: "loading" as const, label: "Engine computing both lines" };
     if (phase === "ready" || phase === "running") return { tone: "ok" as const, label: "Lines ready" };
-    return { tone: "idle" as const, label: `Pick an alternative move at ply ${targetPly}` };
+    return { tone: "idle" as const, label: `Choose an alternative at move ${targetPly}` };
   }, [error, errorMsg, game, phase, targetPly]);
 
   const actualStep = actualLine?.steps[Math.min(activeStep, actualLine.steps.length - 1)];
@@ -171,10 +195,16 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
 
   return (
     <>
-      <Header subtitle={`What If · ${gameId} · move ${targetPly}`} />
+      <Header subtitle={`What if · ${gameId} · move ${targetPly}`} />
       <main className="max-w-6xl mx-auto px-6 py-6 space-y-4">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <StatusPill tone={status.tone}>{status.label}</StatusPill>
+          <Link
+            href={returnHref}
+            className="text-xs px-3 py-1 rounded-md border border-border hover:border-accent text-muted hover:text-text"
+          >
+            Back to game
+          </Link>
           {phase !== "idle" && (
             <button
               onClick={reset}
@@ -185,16 +215,25 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
           )}
         </div>
 
-        {phase === "idle" && (
-          <p className="text-sm text-muted max-w-prose">
-            Make a move on the right board to set the alternative line. Both lines play forward {FORWARD_PLIES} plies using the engine's best continuation.
+        <section className="bg-surface border border-border rounded-md p-4 space-y-2">
+          <h1 className="text-sm font-medium">So sánh nước thật với phương án khác</h1>
+          <p className="text-sm text-muted leading-relaxed">
+            Vị trí này là ngay trước nước <span className="font-mono text-text">{targetPly}</span>
+            {actualMoveUci ? (
+              <>. Trong ván thật, nước được chơi là <span className="font-mono text-accent">{actualMoveUci}</span>.</>
+            ) : "."}
+            {" "}Kéo một nước khác trên bàn bên phải; hệ thống sẽ cho engine đi tiếp {FORWARD_PLIES} ply cho cả hai nhánh để so sánh.
           </p>
-        )}
+          <div className="grid gap-2 text-xs text-muted sm:grid-cols-2">
+            <div><span className="font-medium text-rose-400">Bên trái:</span> nhánh thật từ ván gốc.</div>
+            <div><span className="font-medium text-emerald-400">Bên phải:</span> phương án bạn muốn thử từ cùng vị trí.</div>
+          </div>
+        </section>
 
         {game && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <BoardPanel
-              title="Game line"
+              title="Ván thật"
               fen={actualFen}
               wp={actualWp}
               step={actualStep}
@@ -203,9 +242,12 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
               tint="rose"
               movable={false}
               hasData={!!actualLine}
+              startingSide={sideToMove}
+              firstMoveLabel="Nước thật"
+              onSelectStep={selectStep}
             />
             <BoardPanel
-              title="Your alternative"
+              title="Phương án bạn thử"
               fen={altFen}
               wp={altWp}
               step={altStep}
@@ -215,6 +257,9 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
               movable={phase === "idle"}
               onUserMove={phase === "idle" ? handleAltMove : undefined}
               hasData={!!altLine}
+              startingSide={sideToMove}
+              firstMoveLabel="Nước bạn thử"
+              onSelectStep={selectStep}
             />
           </div>
         )}
@@ -224,7 +269,7 @@ export default function WhatIfPage({ params }: { params: { id: string; ply: stri
 }
 
 function BoardPanel({
-  title, fen, wp, step, steps, activeIdx, tint, movable, onUserMove, hasData,
+  title, fen, wp, step, steps, activeIdx, tint, movable, onUserMove, hasData, startingSide, firstMoveLabel, onSelectStep,
 }: {
   title: string;
   fen: string;
@@ -236,14 +281,21 @@ function BoardPanel({
   movable: boolean;
   onUserMove?: (uci: string, san: string, nextFen: string) => void;
   hasData: boolean;
+  startingSide: "white" | "black";
+  firstMoveLabel: string;
+  onSelectStep: (idx: number) => void;
 }) {
   const wpPct = Math.round(wp * 100);
+  const sideAt = (idx: number) => {
+    const whiteToMove = startingSide === "white";
+    return (idx % 2 === 0) === whiteToMove ? "Trắng" : "Đen";
+  };
   return (
     <section className="bg-surface border border-border rounded-md p-4 space-y-3">
       <header className="flex items-center justify-between">
         <h3 className={`text-xs uppercase tracking-wider ${tint === "rose" ? "text-rose-400" : "text-emerald-400"}`}>{title}</h3>
         <span className="text-xs text-muted font-mono tabular-nums">
-          {hasData ? `Win prob: ${wpPct}%` : "Awaiting input"}
+          {hasData ? `Win prob: ${wpPct}%` : movable ? "Drag a move here" : "Waiting for alternative"}
         </span>
       </header>
       <Board fen={fen} movable={movable} onUserMove={onUserMove} />
@@ -260,20 +312,33 @@ function BoardPanel({
           />
         </motion.div>
       )}
-      <ol className="text-xs font-mono space-y-1">
-        {steps.length === 0 && <li className="text-muted">—</li>}
+      <div className="space-y-1">
+        <p className="text-xs text-muted">
+          {hasData
+            ? "Các nước dưới đây là một nhánh engine đi tiếp, gồm cả nước của hai bên."
+            : movable
+              ? "Kéo một nước trên bàn này để tạo nhánh so sánh."
+              : "Nhánh thật sẽ hiện sau khi bạn chọn phương án bên phải."}
+        </p>
+        <ol className="text-xs font-mono space-y-1">
+          {steps.length === 0 && <li className="text-muted">—</li>}
         {steps.map((s, i) => (
           <li
             key={i}
-            className={`flex items-center justify-between px-1 py-0.5 rounded ${
+            onClick={() => onSelectStep(i)}
+            title={`Xem thế sau ${s.uci}`}
+            className={`grid grid-cols-[4.5rem_3.5rem_1fr_auto] items-center gap-2 px-1 py-0.5 rounded cursor-pointer ${
               i === activeIdx ? "bg-accent/15 text-accent" : "text-muted"
             }`}
           >
-            <span>{i + 1}. {s.san}</span>
+            <span>{i === 0 ? firstMoveLabel : "Engine"}</span>
+            <span>{sideAt(i)}</span>
+            <span className="text-text">{s.uci}</span>
             <span className="tabular-nums">{s.mate !== null ? `M${Math.abs(s.mate)}` : s.cp !== null ? `${(s.cp / 100).toFixed(1)}` : "—"}</span>
           </li>
         ))}
-      </ol>
+        </ol>
+      </div>
     </section>
   );
 }

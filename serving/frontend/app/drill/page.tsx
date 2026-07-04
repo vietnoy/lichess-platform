@@ -154,8 +154,12 @@ export default function DrillPage() {
     setExplanationLoading(true);
 
     const attempted = outcome.kind === "correct" || outcome.kind === "wrong"
-      ? { attempted_move: outcome.uci, attempted_san: outcome.san }
-      : { attempted_move: null, attempted_san: null };
+      ? {
+          attempted_move: outcome.uci,
+          attempted_san: outcome.san,
+          engine_delta_cp: outcome.kind === "wrong" ? outcome.engineDelta : null,
+        }
+      : { attempted_move: null, attempted_san: null, engine_delta_cp: null };
 
     api<DrillExplanation>("/drill/explain", {
       method: "POST",

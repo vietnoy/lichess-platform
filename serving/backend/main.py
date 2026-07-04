@@ -218,6 +218,7 @@ class ExerciseExplainRequest(BaseModel):
     opening_name: str | None = None
     opening_eco: str | None = None
     outcome: str | None = None
+    engine_delta_cp: int | None = None
 
 
 def _player_color(meta: dict, player: str | None) -> str | None:
@@ -282,13 +283,12 @@ def _describe_candidate_move(fen: str | None, uci: str | None) -> dict:
         captured = board.piece_at(move.to_square)
         if board.is_en_passant(move):
             captured = chess.Piece(chess.PAWN, not board.turn)
-        san = board.san(move)
         board.push(move)
     except Exception:
         return {"summary": "không đọc được FEN/nước đi để giải thích chi tiết", "forcing": False}
 
     piece_name = _PIECE_NAMES.get(piece.piece_type, "quân") if piece else "quân"
-    parts = [f"{piece_name} đi {san}"]
+    parts = [f"{piece_name} đi `{uci}`"]
     if captured:
         parts.append(f"bắt { _PIECE_NAMES.get(captured.piece_type, 'quân') }")
     if board.is_check():
@@ -357,12 +357,8 @@ def _fallback_exercise_explanation(req: ExerciseExplainRequest) -> str:
     best = req.best_move or "-"
     played = req.played_move or "-"
     attempted = req.attempted_move or None
-    row = {
-        "fen": req.fen_before,
-        "played_move": played,
-        "best_move": best,
-    }
-    contrast = _move_contrast(row)
+    played_desc = _describe_candidate_move(req.fen_before, played)
+    best_desc = _describe_candidate_move(req.fen_before, best)
     side = "Trắng" if req.side_to_move == "white" else "Đen" if req.side_to_move == "black" else "Bên đi"
     swing = (
         f"Dao động khoảng {abs(req.eval_swing_cp) / 100:.1f} tốt, đủ lớn để coi đây là điểm phải dừng lại."
@@ -373,17 +369,23 @@ def _fallback_exercise_explanation(req: ExerciseExplainRequest) -> str:
     attempted_line = ""
     if attempted:
         attempted_desc = _describe_candidate_move(req.fen_before, attempted)
+        delta = (
+            f" Engine đo nước này kém nước trong ván khoảng {abs(req.engine_delta_cp) / 100:.1f} tốt, nên đây chưa phải hướng cứu vị trí."
+            if req.engine_delta_cp is not None and req.engine_delta_cp < 0
+            else " Nếu nước này cải thiện được so với ván thật, vẫn cần so tiếp với best move để biết còn bỏ lỡ gì."
+        )
         attempted_line = (
-            f"\n- **Nước bạn vừa thử:** `{req.attempted_san or _move_san(req.fen_before, attempted)}` "
-            f"({attempted}) có ý tưởng: {attempted_desc['summary']}. So với best move, hãy kiểm tra xem nước này có tạo check, bắt quân, hoặc buộc đối thủ phản ứng ngay không."
+            f"\n- **Nước bạn vừa thử:** `{attempted}` có ý tưởng: {attempted_desc['summary']}."
+            f"{delta} Điểm cần so với `{best}` là: nước của bạn có xử lý threat ngay không, có cải thiện quân đang bị lỏng không, và có buộc đối thủ phải phản ứng cụ thể không."
         )
 
     return (
         f"- **Bối cảnh:** {side} đi trong vị trí từ ván `{req.game_id}` quanh ply {req.ply}. "
-        f"Nước trong ván là `{_move_san(req.fen_before, played)}` ({played}), còn engine ưu tiên `{_move_san(req.fen_before, best)}` ({best}). {swing}\n"
-        f"- **Vì sao nên cân nhắc best move:** {contrast}\n"
+        f"Nước trong ván thật là `{played}`, còn engine ưu tiên `{best}`. {swing}\n"
+        f"- **Nước engine chọn:** `{best}`: {best_desc['summary']}. Đây là mốc để so sánh vì engine đánh giá nó giữ thế cờ tốt hơn trong vị trí này.\n"
+        f"- **Nước trong ván thật:** `{played}`: {played_desc['summary']}. Nhắc lại nước này chỉ để làm bối cảnh lịch sử của bài drill, không phải là gợi ý nên đi lại.\n"
+        f"{attempted_line}\n"
         f"- **Cách tự kiểm:** trước khi đi, tìm ít nhất 2 nước ứng viên và hỏi: có nước chiếu không, có quân nào đang bị treo không, nước nào tạo tempo bắt buộc, và nước nào xử lý threat trực tiếp của đối thủ."
-        f"{attempted_line}"
     )
 
 
@@ -397,15 +399,19 @@ def _exercise_explanation_prompt(req: ExerciseExplainRequest, fallback: str) -> 
             "Viet nhu HLV dang review nhanh sau khi nguoi choi da lam bai: tu nhien, de doc, khong xung ho anh/em, dung 'ban'.",
             "Tra loi bang 3-5 bullet point ngan. Khong hien raw FEN. Khong bia motif neu khong chac; neu khong chac hay noi 'diem can tu kiem'.",
             "Phai tra loi truc tiep: vi sao nuoc engine nen duoc can nhac, nuoc trong van/nuoc user thu khac o dau, va lan sau nen tu hoi cau gi.",
+            "Neu co User attempted move, danh it nhat 40% cau tra loi de noi ve nuoc ban vua thu: y tuong cua no, no giai quyet duoc gi, no chua giai quyet duoc gi, va can so voi best move o diem nao.",
+            "Played move chi la nuoc trong van that de lam boi canh. Khong dat played move vao bullet 'best move', khong lam nguoi doc tuong played move la goi y nen di.",
+            "Tat ca nuoc di trong cau tra loi cuoi phai dung UCI trong backticks, vi du `b1d2`, `f2f3`, `d5d6`. Khong doi sang SAN nhu Nd2, f3, d6 hoac dxc6.",
             f"Game: {req.game_id}, ply: {req.ply}",
             f"Opening: {req.opening_eco or '-'} {req.opening_name or ''}".strip(),
             f"Side to move: {req.side_to_move or '-'}",
             f"Classification: {req.classification or '-'}",
             f"Eval cp sau nuoc trong van: {req.eval_cp}",
             f"Eval swing cp: {req.eval_swing_cp}",
-            f"Played move: {req.played_move or '-'} / SAN {_move_san(req.fen_before, req.played_move)} / {played_desc['summary']}",
-            f"Best move: {req.best_move or '-'} / SAN {_move_san(req.fen_before, req.best_move)} / {best_desc['summary']}",
-            f"User attempted move: {req.attempted_move or '-'} / SAN {req.attempted_san or _move_san(req.fen_before, req.attempted_move)} / {attempted_desc['summary']}",
+            f"User attempted move delta vs real game cp: {req.engine_delta_cp}",
+            f"Played move UCI: {req.played_move or '-'} / {played_desc['summary']}",
+            f"Best move UCI: {req.best_move or '-'} / {best_desc['summary']}",
+            f"User attempted move UCI: {req.attempted_move or '-'} / {attempted_desc['summary']}",
             f"Outcome: {req.outcome or '-'}",
             "Fallback facts neu can dua vao:",
             fallback,
