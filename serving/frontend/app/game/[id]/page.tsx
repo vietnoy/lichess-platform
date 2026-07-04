@@ -86,7 +86,8 @@ function classifySwing(playerSide: "white" | "black", actualCp: number | null, u
 export default function GameExplorerPage({ params }: { params: { id: string } }) {
   const gameId = decodeURIComponent(params.id);
   const searchParams = useSearchParams();
-  const focusPlayer = searchParams.get("player")?.trim() || DEMO_GAME_FOCUS[gameId] || "";
+  const requestedFocusPlayer = searchParams.get("player")?.trim() || DEMO_GAME_FOCUS[gameId] || "";
+  const [reviewMode, setReviewMode] = useState<"both" | "focus">(requestedFocusPlayer ? "focus" : "both");
 
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +106,10 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setReviewMode(requestedFocusPlayer ? "focus" : "both");
+  }, [requestedFocusPlayer, gameId]);
 
   // Load game on mount.
   useEffect(() => {
@@ -157,7 +162,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   function runAnalyze() {
     setAnalyzing(true);
     setAnalyzeError(null);
-    const query = focusPlayer ? `?player=${encodeURIComponent(focusPlayer)}` : "";
+    const query = activeFocusPlayer ? `?player=${encodeURIComponent(activeFocusPlayer)}` : "";
     api<{ narrative: string }>(`/games/${encodeURIComponent(gameId)}/analyze${query}`, { method: "POST", body: "{}" })
       .then((r) => setAnalysis(r.narrative))
       .catch((e) => setAnalyzeError(e instanceof Error ? e.message : String(e)))
@@ -245,13 +250,14 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   }
 
   const meta = game?.metadata;
+  const activeFocusPlayer = reviewMode === "focus" ? requestedFocusPlayer : "";
   const focusColor = useMemo<"white" | "black" | null>(() => {
-    if (!meta || !focusPlayer) return null;
-    const player = focusPlayer.toLowerCase();
+    if (!meta || !activeFocusPlayer) return null;
+    const player = activeFocusPlayer.toLowerCase();
     if ((meta.white_id ?? "").toLowerCase() === player) return "white";
     if ((meta.black_id ?? "").toLowerCase() === player) return "black";
     return null;
-  }, [meta, focusPlayer]);
+  }, [meta, activeFocusPlayer]);
   const subtitle = meta
     ? `${meta.white_id} (${meta.white_rating}) vs ${meta.black_id} (${meta.black_rating}) · ${meta.opening_name ?? "—"}`
     : "Loading…";
@@ -272,12 +278,36 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
               )}
               {evalLoading && <StatusPill tone="loading">Evaluating</StatusPill>}
               {playMode && <StatusPill tone="warn">Play-from-here mode</StatusPill>}
-              {focusPlayer && focusColor && (
-                <StatusPill tone="ok">Review focus · {focusPlayer} ({focusColor})</StatusPill>
+              {activeFocusPlayer && focusColor && (
+                <StatusPill tone="ok">Review focus · {activeFocusPlayer} ({focusColor})</StatusPill>
               )}
-              {focusPlayer && !focusColor && (
+              {activeFocusPlayer && !focusColor && (
                 <StatusPill tone="warn">Player not in this game</StatusPill>
               )}
+              <div className="flex rounded-md border border-border overflow-hidden text-sm">
+                <button
+                  onClick={() => {
+                    setReviewMode("both");
+                    setAnalysis(null);
+                    setAnalyzeError(null);
+                  }}
+                  className={`px-3 py-1.5 ${reviewMode === "both" ? "bg-accent text-bg" : "bg-surface hover:bg-border/40"}`}
+                >
+                  Cả hai bên
+                </button>
+                {requestedFocusPlayer && (
+                  <button
+                    onClick={() => {
+                      setReviewMode("focus");
+                      setAnalysis(null);
+                      setAnalyzeError(null);
+                    }}
+                    className={`px-3 py-1.5 border-l border-border ${reviewMode === "focus" ? "bg-accent text-bg" : "bg-surface hover:bg-border/40"}`}
+                  >
+                    {requestedFocusPlayer}
+                  </button>
+                )}
+              </div>
               {evalsAvailable === "yes" && (
                 <button
                   onClick={runAnalyze}
@@ -413,9 +443,9 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
             <aside className="bg-surface border border-border rounded-md p-3 max-h-[520px] overflow-y-auto self-start">
               <div className="mb-3 space-y-1">
                 <h3 className="text-xs uppercase tracking-wider text-muted">Moves</h3>
-                {focusPlayer && focusColor ? (
+                {activeFocusPlayer && focusColor ? (
                   <div className="text-xs text-muted">
-                    Đang đánh dấu nước của <span className="font-medium text-accent">{focusPlayer}</span>
+                    Đang đánh dấu nước của <span className="font-medium text-accent">{activeFocusPlayer}</span>
                     {" "}ở cột <span className="font-medium text-text">{focusColor === "white" ? "Trắng" : "Đen"}</span>.
                   </div>
                 ) : (
@@ -427,12 +457,12 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                 <span className={`px-1.5 pb-1 text-xs uppercase tracking-wide ${
                   focusColor === "white" ? "text-accent font-semibold" : "text-muted"
                 }`}>
-                  White{focusColor === "white" ? ` ★ ${focusPlayer}` : ""}
+                  White{focusColor === "white" ? ` ★ ${activeFocusPlayer}` : ""}
                 </span>
                 <span className={`px-1.5 pb-1 text-xs uppercase tracking-wide ${
                   focusColor === "black" ? "text-accent font-semibold" : "text-muted"
                 }`}>
-                  Black{focusColor === "black" ? ` ★ ${focusPlayer}` : ""}
+                  Black{focusColor === "black" ? ` ★ ${activeFocusPlayer}` : ""}
                 </span>
                 {Array.from({ length: Math.ceil(moves.length / 2) }).map((_, i) => {
                   const w = moves[i * 2];
@@ -457,7 +487,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                       {w ? (
                         <button
                           onClick={() => jumpTo(w.ply)}
-                          title={`${wIsFocus ? `${focusPlayer} · ` : ""}${wEval ? `${wEval.classification}${wEval.eval_cp != null ? ` · eval ${(wEval.eval_cp/100).toFixed(2)}` : ""}` : "white move"}`}
+                          title={`${wIsFocus ? `${activeFocusPlayer} · ` : ""}${wEval ? `${wEval.classification}${wEval.eval_cp != null ? ` · eval ${(wEval.eval_cp/100).toFixed(2)}` : ""}` : "white move"}`}
                           className={moveClass(w.ply, wIsFocus)}
                           style={wColor && ply !== w.ply ? { color: wColor } : undefined}
                         >
@@ -468,7 +498,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                       {b ? (
                         <button
                           onClick={() => jumpTo(b.ply)}
-                          title={`${bIsFocus ? `${focusPlayer} · ` : ""}${bEval ? `${bEval.classification}${bEval.eval_cp != null ? ` · eval ${(bEval.eval_cp/100).toFixed(2)}` : ""}` : "black move"}`}
+                          title={`${bIsFocus ? `${activeFocusPlayer} · ` : ""}${bEval ? `${bEval.classification}${bEval.eval_cp != null ? ` · eval ${(bEval.eval_cp/100).toFixed(2)}` : ""}` : "black move"}`}
                           className={moveClass(b.ply, bIsFocus)}
                           style={bColor && ply !== b.ply ? { color: bColor } : undefined}
                         >

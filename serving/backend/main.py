@@ -263,20 +263,13 @@ def _fallback_game_narrative(
         else ""
     )
 
-    return f"""### 1) Tổng quan
-Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Dựa trên timeline Stockfish, phần đáng học nhất là các vị trí mà nước đi thực tế lệch khỏi best move và làm đánh giá đổi hướng.
+    return f"""Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Nếu nhìn như một buổi review với HLV, điểm đáng dừng lại đầu tiên là quanh ply {ply}: nước thực tế `{played}` khiến thế cờ đổi hướng, trong khi engine gợi ý `{best}`. Đây không chỉ là chuyện nhớ một best move, mà là tín hiệu cho kiểu quyết định `{classification}` cần xem lại.
 
-### 2) Bước ngoặt quan trọng
-Bước ngoặt nổi bật nằm quanh ply {ply}: nước đã chơi là `{played}`, trong khi engine gợi ý `{best}`. Đây là vị trí nên dừng lại đầu tiên khi review vì nó đại diện cho kiểu lỗi `{classification}` trong ván.
+Một vài vị trí có bằng chứng rõ nhất:
 
-### 3) Sai lầm then chốt
 {evidence}
 
-### 4) Cơ hội bỏ lỡ
-Ở các vị trí trên, bài học không chỉ là nhớ best move, mà là hiểu candidate move nào giữ được thế chủ động. Khi review, hãy tự tìm 2-3 nước ứng viên trước khi bật engine, rồi so sánh vì sao `{best}` giải quyết được threat hoặc cải thiện quân tốt hơn.
-
-### 5) Bài học hành động
-Lấy các ply được liệt kê làm drill: đặt bàn cờ ở đúng FEN, tính trong 2 phút, ghi nước chọn và lý do. Nếu lỗi lặp lại ở trung cuộc, ưu tiên luyện tactical safety: kiểm tra quân bị treo, threat trực tiếp, và forcing moves trước khi đi nước kế hoạch."""
+Khi tự review, hãy đặt bàn cờ ở các ply này và dành khoảng 2 phút để tự tìm 2-3 nước ứng viên trước khi bật engine. Sau đó so sánh vì sao `{best}` giữ được thế chủ động tốt hơn: nó có giải quyết threat trực tiếp không, có tránh quân bị treo không, hay có tạo forcing move cụ thể không. Nếu lỗi xuất hiện nhiều ở trung cuộc, bài tập hợp lý nhất là luyện thói quen kiểm tra threat và candidate moves trước khi đi nước kế hoạch."""
 
 
 @app.get("/api/freshness")
@@ -594,9 +587,10 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
     prompt = "\n".join(
         [
             "Phan tich van co co vua duoi day bang tieng Viet.",
-            "Hay viet markdown voi dung 5 muc: 1) Tong quan, 2) Buoc ngoat quan trong, 3) Sai lam then chot, 4) Co hoi bo lo, 5) Bai hoc hanh dong.",
-            "Giong van nhu mot HLV: truc dien, cu the, neu ro nuoc di va dao dong danh gia khi can.",
-            "Khong mo ta dai dong; tap trung vao cac turning point va ly do vi sao vi tri dao chieu.",
+            "Hay viet nhu mot HLV dang review van dau truc tiep voi hoc vien: tu nhien, lien mach, khong ep theo format 5 muc co dinh.",
+            "Co the dung 2-4 doan ngan va mot vai bullet neu that su can, nhung tranh tieu de may moc nhu 'Tong quan', 'Sai lam then chot', 'Bai hoc hanh dong'.",
+            "Noi ro turning point, nuoc da choi, best move va dao dong danh gia khi chung giup giai thich bai hoc.",
+            "Khong mo ta dai dong; tap trung vao ly do vi tri dao chieu va cach hoc vien nen review lai.",
             "Neu co 'Tap trung nguoi choi', chi phan tich cac nuoc cua nguoi choi do; khong ket luan loi cua doi thu la loi cua hoc vien.",
             f"Game ID: {game_id}",
             f"Trang: {meta.get('white_id')} vs {meta.get('black_id')}",
@@ -612,16 +606,16 @@ def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
         from coach import vertex_text_answer
 
         narrative = vertex_text_answer(
-            "Ban la HLV co vua. Tra loi bang tieng Viet, markdown gon gang, uu tien turning point va bai hoc thuc chien.",
+            "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
             prompt,
             temperature=0.4,
             max_output_tokens=1200,
         )
         if len(narrative) < 400:
             narrative = vertex_text_answer(
-                "Ban la HLV co vua. Tra loi bang tieng Viet, markdown gon gang, uu tien turning point va bai hoc thuc chien.",
+                "Ban la HLV co vua. Tra loi bang tieng Viet tu nhien, nhu dang review van dau voi hoc vien, uu tien turning point va bai hoc thuc chien.",
                 prompt
-                + "\n\nCau tra loi truoc qua ngan. Bat buoc viet day du ca 5 muc, moi muc 2-4 cau, khong dung lai giua cau.",
+                + "\n\nCau tra loi truoc qua ngan. Hay viet day du hon thanh 3-5 doan ngan, co dan chung tu timeline, khong dung lai giua cau.",
                 temperature=0.25,
                 max_output_tokens=1800,
             )

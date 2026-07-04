@@ -607,7 +607,7 @@ export default function PlayerPage({ params }: { params: { name: string } }) {
                     {profile.recent_games.map((g) => (
                       <tr
                         key={g.game_id}
-                        onClick={() => router.push(`/game/${encodeURIComponent(g.game_id)}`)}
+                        onClick={() => router.push(`/game/${encodeURIComponent(g.game_id)}?player=${encodeURIComponent(username)}`)}
                         className="border-t border-border hover:bg-border/30 cursor-pointer transition-colors"
                         style={{ transitionDuration: "180ms" }}
                       >
