@@ -199,7 +199,32 @@ _analyze_lock = threading.Lock()
 _ANALYZE_TTL_S = 24 * 60 * 60
 
 
-def _fallback_game_narrative(game_id: str, meta: dict, evaluations: list[dict]) -> str:
+def _player_color(meta: dict, player: str | None) -> str | None:
+    if not player:
+        return None
+    player_lc = player.lower()
+    if (meta.get("white_id") or "").lower() == player_lc:
+        return "white"
+    if (meta.get("black_id") or "").lower() == player_lc:
+        return "black"
+    return None
+
+
+def _filter_evaluations_for_color(evaluations: list[dict], color: str | None) -> list[dict]:
+    if color == "white":
+        return [r for r in evaluations if int(r.get("ply") or 0) % 2 == 1]
+    if color == "black":
+        return [r for r in evaluations if int(r.get("ply") or 0) % 2 == 0]
+    return evaluations
+
+
+def _fallback_game_narrative(
+    game_id: str,
+    meta: dict,
+    evaluations: list[dict],
+    target_player: str | None = None,
+    target_color: str | None = None,
+) -> str:
     mistakes = [
         r for r in evaluations
         if (r.get("classification") or "").lower() in {"blunder", "mistake", "inaccuracy"}
@@ -232,8 +257,14 @@ def _fallback_game_narrative(game_id: str, meta: dict, evaluations: list[dict]) 
         for r in key_mistakes
     ) or "- Chưa có nhiều sai lầm được phân loại; nên xem lại các điểm dao động eval lớn nhất trong timeline."
 
+    focus = (
+        f" Phân tích này chỉ tập trung vào nước của `{target_player}` ({target_color})."
+        if target_player and target_color
+        else ""
+    )
+
     return f"""### 1) Tổng quan
-Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}. Dựa trên timeline Stockfish, phần đáng học nhất là các vị trí mà nước đi thực tế lệch khỏi best move và làm đánh giá đổi hướng.
+Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Dựa trên timeline Stockfish, phần đáng học nhất là các vị trí mà nước đi thực tế lệch khỏi best move và làm đánh giá đổi hướng.
 
 ### 2) Bước ngoặt quan trọng
 Bước ngoặt nổi bật nằm quanh ply {ply}: nước đã chơi là `{played}`, trong khi engine gợi ý `{best}`. Đây là vị trí nên dừng lại đầu tiên khi review vì nó đại diện cho kiểu lỗi `{classification}` trong ván.
@@ -527,22 +558,29 @@ def get_exercise(username: str):
 
 
 @app.post("/api/games/{game_id}/analyze")
-def post_game_analyze(game_id: str):
+def post_game_analyze(game_id: str, player: str | None = Query(default=None)):
     """Use Vertex Gemini to write a turning-point narrative based on the eval timeline."""
     now = time.monotonic()
+    cache_key = f"{game_id}:{(player or '').lower()}"
     with _analyze_lock:
-        cached = _analyze_cache.get(game_id)
+        cached = _analyze_cache.get(cache_key)
         if cached and now - cached[0] < _ANALYZE_TTL_S:
             return cached[1]
 
-    evaluations = query_game_evaluations(game_id)
-    if not evaluations:
+    all_evaluations = query_game_evaluations(game_id)
+    if not all_evaluations:
         raise HTTPException(404, "No evaluations for this game yet (analyzer DAG may not have run for its date).")
 
     game_rows = query_game(game_id)
     if not game_rows:
         raise HTTPException(404, f"Game {game_id} not found")
     meta = game_rows[0]
+    target_color = _player_color(meta, player)
+    evaluations = _filter_evaluations_for_color(all_evaluations, target_color)
+    if player and not target_color:
+        raise HTTPException(404, f"Player '{player}' is not in game {game_id}")
+    if not evaluations:
+        raise HTTPException(404, f"No evaluations for {player or 'this side'} in game {game_id}")
 
     eval_lines = []
     for r in evaluations:
@@ -559,8 +597,10 @@ def post_game_analyze(game_id: str):
             "Hay viet markdown voi dung 5 muc: 1) Tong quan, 2) Buoc ngoat quan trong, 3) Sai lam then chot, 4) Co hoi bo lo, 5) Bai hoc hanh dong.",
             "Giong van nhu mot HLV: truc dien, cu the, neu ro nuoc di va dao dong danh gia khi can.",
             "Khong mo ta dai dong; tap trung vao cac turning point va ly do vi sao vi tri dao chieu.",
+            "Neu co 'Tap trung nguoi choi', chi phan tich cac nuoc cua nguoi choi do; khong ket luan loi cua doi thu la loi cua hoc vien.",
             f"Game ID: {game_id}",
             f"Trang: {meta.get('white_id')} vs {meta.get('black_id')}",
+            f"Tap trung nguoi choi: {player} ({target_color})" if player and target_color else "Tap trung: ca hai ben",
             f"Khai cuoc: {meta.get('opening_eco') or '-'} {meta.get('opening_name') or ''}".strip(),
             f"Toc do: {meta.get('speed') or '-'}",
             "Timeline danh gia theo ply:",
@@ -587,13 +627,13 @@ def post_game_analyze(game_id: str):
             )
         if len(narrative) < 400:
             log.warning("Vertex returned short game analysis for %s; using deterministic fallback", game_id)
-            narrative = _fallback_game_narrative(game_id, meta, evaluations)
+            narrative = _fallback_game_narrative(game_id, meta, evaluations, player, target_color)
         result = {"narrative": narrative}
     except Exception as e:
         raise HTTPException(503, str(e))
 
     with _analyze_lock:
-        _analyze_cache[game_id] = (now, result)
+        _analyze_cache[cache_key] = (now, result)
     return result
 
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -80,6 +81,8 @@ function classifySwing(playerSide: "white" | "black", actualCp: number | null, u
 
 export default function GameExplorerPage({ params }: { params: { id: string } }) {
   const gameId = decodeURIComponent(params.id);
+  const searchParams = useSearchParams();
+  const focusPlayer = searchParams.get("player")?.trim() || "";
 
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -150,7 +153,8 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   function runAnalyze() {
     setAnalyzing(true);
     setAnalyzeError(null);
-    api<{ narrative: string }>(`/games/${encodeURIComponent(gameId)}/analyze`, { method: "POST", body: "{}" })
+    const query = focusPlayer ? `?player=${encodeURIComponent(focusPlayer)}` : "";
+    api<{ narrative: string }>(`/games/${encodeURIComponent(gameId)}/analyze${query}`, { method: "POST", body: "{}" })
       .then((r) => setAnalysis(r.narrative))
       .catch((e) => setAnalyzeError(e instanceof Error ? e.message : String(e)))
       .finally(() => setAnalyzing(false));
@@ -237,6 +241,13 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   }
 
   const meta = game?.metadata;
+  const focusColor = useMemo<"white" | "black" | null>(() => {
+    if (!meta || !focusPlayer) return null;
+    const player = focusPlayer.toLowerCase();
+    if ((meta.white_id ?? "").toLowerCase() === player) return "white";
+    if ((meta.black_id ?? "").toLowerCase() === player) return "black";
+    return null;
+  }, [meta, focusPlayer]);
   const subtitle = meta
     ? `${meta.white_id} (${meta.white_rating}) vs ${meta.black_id} (${meta.black_rating}) · ${meta.opening_name ?? "—"}`
     : "Loading…";
@@ -257,6 +268,12 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
               )}
               {evalLoading && <StatusPill tone="loading">Evaluating</StatusPill>}
               {playMode && <StatusPill tone="warn">Play-from-here mode</StatusPill>}
+              {focusPlayer && focusColor && (
+                <StatusPill tone="ok">Review focus · {focusPlayer} ({focusColor})</StatusPill>
+              )}
+              {focusPlayer && !focusColor && (
+                <StatusPill tone="warn">Player not in this game</StatusPill>
+              )}
               {evalsAvailable === "yes" && (
                 <button
                   onClick={runAnalyze}
@@ -399,14 +416,24 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                   const bEval = b ? evalsByPly.get(b.ply) : undefined;
                   const wColor = wEval && wEval.classification !== "good" ? CLASS_COLOR[wEval.classification] : undefined;
                   const bColor = bEval && bEval.classification !== "good" ? CLASS_COLOR[bEval.classification] : undefined;
+                  const wIsFocus = focusColor === "white";
+                  const bIsFocus = focusColor === "black";
+                  const moveClass = (movePly: number, isFocus: boolean) =>
+                    `text-left px-1.5 rounded ${
+                      ply === movePly
+                        ? "bg-accent/15 text-accent"
+                        : isFocus
+                        ? "bg-accent/5 ring-1 ring-accent/25 hover:bg-accent/10"
+                        : "hover:bg-border/40"
+                    }`;
                   return (
                     <div key={i} className="contents">
                       <span className="text-muted">{i + 1}.</span>
                       {w ? (
                         <button
                           onClick={() => jumpTo(w.ply)}
-                          title={wEval ? `${wEval.classification}${wEval.eval_cp != null ? ` · eval ${(wEval.eval_cp/100).toFixed(2)}` : ""}` : undefined}
-                          className={`text-left px-1.5 rounded ${ply === w.ply ? "bg-accent/15 text-accent" : "hover:bg-border/40"}`}
+                          title={`${wIsFocus ? `${focusPlayer} · ` : ""}${wEval ? `${wEval.classification}${wEval.eval_cp != null ? ` · eval ${(wEval.eval_cp/100).toFixed(2)}` : ""}` : "white move"}`}
+                          className={moveClass(w.ply, wIsFocus)}
                           style={wColor && ply !== w.ply ? { color: wColor } : undefined}
                         >
                           {w.san}
@@ -415,7 +442,9 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                       {b ? (
                         <button
                           onClick={() => jumpTo(b.ply)}
-                          className={`text-left px-1.5 rounded ${ply === b.ply ? "bg-accent/15 text-accent" : "hover:bg-border/40"}`}
+                          title={`${bIsFocus ? `${focusPlayer} · ` : ""}${bEval ? `${bEval.classification}${bEval.eval_cp != null ? ` · eval ${(bEval.eval_cp/100).toFixed(2)}` : ""}` : "black move"}`}
+                          className={moveClass(b.ply, bIsFocus)}
+                          style={bColor && ply !== b.ply ? { color: bColor } : undefined}
                         >
                           {b.san}
                         </button>

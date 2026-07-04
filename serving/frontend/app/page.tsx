@@ -171,7 +171,7 @@ export default function Home() {
                 Demo nhanh:{" "}
                 <button
                   type="button"
-                  onClick={() => router.push(`/game/${DEMO_GAME_ID}`)}
+                  onClick={() => router.push(`/game/${DEMO_GAME_ID}?player=${DEMO_PLAYER}`)}
                   className="text-accent hover:underline"
                 >
                   {DEMO_GAME_ID}
