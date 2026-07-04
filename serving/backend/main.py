@@ -351,14 +351,19 @@ def _fallback_game_narrative(
     black = meta.get("black_id") or "Black"
     speed = meta.get("speed") or "-"
 
-    evidence = "\n".join(
-        f"- Ply {r.get('ply')}: tại FEN `{r.get('fen') or '-'}`, "
-        f"nước đã chơi là `{r.get('played_move') or '-'}` nhưng engine ưu tiên `{r.get('best_move') or '-'}`. "
-        f"Phân loại `{r.get('classification') or 'review'}`, eval_cp={r.get('eval_cp')}, "
-        f"swing={r.get('eval_swing_cp_from_prev')}, mate={r.get('mate')}. "
-        f"Lý do thực dụng: {_move_contrast(r)}"
-        for r in key_mistakes
-    ) or "- Chưa có nhiều sai lầm được phân loại; nên xem lại các điểm dao động eval lớn nhất trong timeline."
+    evidence_parts = []
+    for r in key_mistakes:
+        row_ply = int(r.get("ply") or 0)
+        move_number = (row_ply + 1) // 2 if row_ply else "-"
+        row_classification = r.get("classification") or "điểm cần xem lại"
+        row_played = r.get("played_move") or "-"
+        row_best = r.get("best_move") or "-"
+        evidence_parts.append(
+            f"- **Nước {move_number}:** bạn chơi `{row_played}`, nhưng engine ưu tiên `{row_best}`. "
+            f"Đây là `{row_classification}` vì lựa chọn trong ván làm thế cờ đổi hướng rõ. "
+            f"{_move_contrast(r)}"
+        )
+    evidence = "\n".join(evidence_parts) or "- Chưa có nhiều sai lầm được phân loại; nên xem lại các điểm dao động lớn nhất trên timeline."
 
     focus = (
         f" Phân tích này chỉ tập trung vào nước của `{target_player}` ({target_color})."
@@ -366,13 +371,13 @@ def _fallback_game_narrative(
         else ""
     )
 
-    return f"""Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Nếu nhìn như một buổi review với HLV, điểm đáng dừng lại đầu tiên là quanh ply {ply}: nước thực tế `{played}` khiến thế cờ đổi hướng, trong khi engine gợi ý `{best}`. Điều chắc chắn từ dữ liệu là đây là quyết định `{classification}` có chênh lệch rõ với lựa chọn engine, và các chi tiết dưới đây cho thấy khác biệt thực dụng giữa hai lựa chọn.
+    return f"""Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Điểm đáng dừng lại đầu tiên là quanh ply {ply}: nước thực tế `{played}` khiến thế cờ đổi hướng, trong khi engine gợi ý `{best}`. Đây là quyết định `{classification}` có chênh lệch rõ với lựa chọn engine.
 
-Một vài vị trí có bằng chứng rõ nhất, kèm lý do cụ thể thay vì chỉ chép best move:
+Các điểm nên review trước:
 
 {evidence}
 
-Khi tự review, hãy đặt bàn cờ ở các FEN này và dành khoảng 2 phút để tìm 2-3 nước ứng viên trước khi bật engine. Với mỗi ứng viên, trả lời trực tiếp: đối thủ đang đe dọa gì, quân nào của mình đang lỏng, nước nào ép buộc nhất, và vì sao `{best}` giải quyết được nhiều vấn đề hơn `{played}`. Nếu lỗi xuất hiện nhiều ở trung cuộc, bài tập hợp lý nhất là luyện thói quen kiểm tra threat, capture, check và candidate moves trước khi đi nước kế hoạch."""
+Khi tự review, hãy đặt bàn cờ lại ở các nước này và dành khoảng 2 phút để tìm 2-3 nước ứng viên trước khi bật engine. Với mỗi ứng viên, hãy tự hỏi: đối thủ đang đe dọa gì, quân nào của mình đang lỏng, có nước chiếu/bắt quân/tạo tempo nào không, và vì sao `{best}` giải quyết được nhiều vấn đề hơn `{played}`."""
 
 
 @app.get("/api/freshness")
