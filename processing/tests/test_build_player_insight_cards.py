@@ -25,20 +25,26 @@ class FakeDataFrame:
     def count(self):
         return len(self.rows)
 
+    def collect(self):
+        return self.rows
+
     def writeTo(self, target):
         self.write_target = target
         return FakeWriter(self)
 
 
 class FakeSpark:
-    def __init__(self, output):
+    def __init__(self, output, latest_source_date="2026-06-05"):
         self.output = output
+        self.latest_source_date = latest_source_date
         self.sql_calls = []
         self.sparkContext = SimpleNamespace(setLogLevel=MagicMock())
         self.stop = MagicMock()
 
     def sql(self, query):
         self.sql_calls.append(query)
+        if "latest_source_date" in query:
+            return FakeDataFrame([{"latest_source_date": self.latest_source_date}])
         if "WITH windows AS" in query:
             return self.output
         return FakeDataFrame([])
@@ -95,6 +101,16 @@ def test_build_sql_uses_existing_aggregate_tables(module):
     assert "to_json(named_struct" in sql
 
 
+def test_latest_source_date_uses_aggregate_dependencies(module):
+    sql = module.latest_source_date_sql()
+
+    assert "polaris.prod.player_weakness_summary" in sql
+    assert "polaris.prod.player_phase_stats" in sql
+    assert "polaris.prod.player_opening_stats" in sql
+    assert "polaris.prod.player_games" in sql
+    assert "MIN(max_date)" in sql
+
+
 def test_run_overwrites_as_of_partition_when_rows_exist(module, monkeypatch):
     output = FakeDataFrame([{"player_id": "alice", "as_of_date": "2026-06-02"}])
     spark = FakeSpark(output)
@@ -105,6 +121,29 @@ def test_run_overwrites_as_of_partition_when_rows_exist(module, monkeypatch):
     assert output.write_target == "polaris.prod.player_insight_cards"
     assert output.overwrite_partitions_called is True
     assert spark.stop.called is True
+
+
+def test_run_caps_requested_date_to_latest_source_date(module, monkeypatch):
+    output = FakeDataFrame([{"player_id": "alice", "as_of_date": "2026-06-05"}])
+    spark = FakeSpark(output, latest_source_date="2026-06-05")
+    monkeypatch.setattr(module, "build_spark", lambda: spark)
+
+    assert module.run("2026-06-18") == 1
+
+    build_sql = next(query for query in spark.sql_calls if "WITH windows AS" in query)
+    assert "DATE '2026-06-05'" in build_sql
+    assert "DATE '2026-06-18'" not in build_sql
+
+
+def test_run_without_date_uses_latest_source_date(module, monkeypatch):
+    output = FakeDataFrame([{"player_id": "alice", "as_of_date": "2026-06-05"}])
+    spark = FakeSpark(output, latest_source_date="2026-06-05")
+    monkeypatch.setattr(module, "build_spark", lambda: spark)
+
+    assert module.run(None) == 1
+
+    build_sql = next(query for query in spark.sql_calls if "WITH windows AS" in query)
+    assert "DATE '2026-06-05'" in build_sql
 
 
 def test_run_clears_empty_as_of_partition(module, monkeypatch):

@@ -323,7 +323,7 @@ with DAG(
         conn_id="spark_default",
         packages=_iceberg_packages,
         conf=_process_conf,
-        application_args=["{{ ds }}"],
+        application_args=["--latest-source"],
         verbose=True,
     )
 

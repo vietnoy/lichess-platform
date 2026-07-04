@@ -4,7 +4,6 @@ import logging
 import os
 import sys
 
-from datetime import datetime, timedelta
 from dotenv import find_dotenv, load_dotenv
 from pyspark.sql import SparkSession
 
@@ -79,6 +78,55 @@ def ensure_table(spark: SparkSession) -> None:
         PARTITIONED BY (as_of_date)
         """
     )
+
+
+def latest_source_date_sql() -> str:
+    return """
+    SELECT CAST(MIN(max_date) AS STRING) AS latest_source_date
+    FROM (
+        SELECT MAX(date) AS max_date FROM polaris.prod.player_weakness_summary
+        UNION ALL
+        SELECT MAX(date) AS max_date FROM polaris.prod.player_phase_stats
+        UNION ALL
+        SELECT MAX(date) AS max_date FROM polaris.prod.player_opening_stats
+        UNION ALL
+        SELECT MAX(date) AS max_date FROM polaris.prod.player_games
+    ) source_dates
+    """
+
+
+def latest_source_date(spark: SparkSession) -> str | None:
+    rows = spark.sql(latest_source_date_sql()).collect()
+    if not rows:
+        return None
+
+    value = rows[0]["latest_source_date"]
+    return str(value) if value else None
+
+
+def resolve_as_of_date(requested_date: str | None, source_date: str | None) -> str | None:
+    if not source_date:
+        return None
+
+    if not requested_date or requested_date == "--latest-source":
+        return source_date
+
+    if requested_date > source_date:
+        logger.warning(
+            "Requested player_insight_cards as_of_date=%s is newer than source data date=%s; using source date",
+            requested_date,
+            source_date,
+        )
+        return source_date
+
+    return requested_date
+
+
+def delete_future_partitions(spark: SparkSession, source_date: str) -> None:
+    spark.sql(
+        f"DELETE FROM polaris.prod.player_insight_cards WHERE as_of_date > DATE '{source_date}'"
+    )
+    logger.info("Cleared player_insight_cards partitions newer than source date=%s", source_date)
 
 
 def build_player_insight_cards_sql(as_of_date: str) -> str:
@@ -328,13 +376,18 @@ def build_player_insight_cards_sql(as_of_date: str) -> str:
 
 
 def run(as_of_date: str | None) -> int:
-    if not as_of_date:
-        as_of_date = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
     try:
         ensure_table(spark)
+        source_date = latest_source_date(spark)
+        resolved_as_of_date = resolve_as_of_date(as_of_date, source_date)
+        if not resolved_as_of_date:
+            logger.warning("No source data found for player_insight_cards; skipping build")
+            return 0
+
+        delete_future_partitions(spark, source_date)
+        as_of_date = resolved_as_of_date
         logger.info("Building player_insight_cards for as_of_date=%s", as_of_date)
         output = spark.sql(build_player_insight_cards_sql(as_of_date))
         row_count = output.count()

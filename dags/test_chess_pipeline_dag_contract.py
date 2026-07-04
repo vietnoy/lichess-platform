@@ -77,7 +77,7 @@ def test_analyzer_summary_maintenance_rebuilds_all_summaries_nightly():
     assert 'task_id="rebuild_player_phase_stats"' in DAG_SOURCE
     assert 'task_id="rebuild_player_insight_cards"' in DAG_SOURCE
     assert 'application="/git/repo/processing/build_player_insight_cards.py"' in DAG_SOURCE
-    assert 'application_args=["--all"]' in DAG_SOURCE
+    assert 'application_args=["--latest-source"]' in DAG_SOURCE
     assert "analyzer_summary_maintenance pending=${pending}" not in DAG_SOURCE
     assert "rebuild_changed_analyzer_dates.py --max-dates 1" not in DAG_SOURCE
     assert (
