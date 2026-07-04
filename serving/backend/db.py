@@ -431,28 +431,44 @@ def query_game_evaluations(game_id: str) -> list[dict]:
 
     return _run(
         f"""
-        SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev, classification
-        FROM (
-          SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev, classification,
+        WITH ranked AS (
+          SELECT ply, fen, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev, classification,
                  ROW_NUMBER() OVER (PARTITION BY ply ORDER BY source_priority) AS rn
           FROM (
-            SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp AS eval_swing_cp_from_prev,
+            SELECT ply, fen, played_move, best_move, eval_cp, mate, eval_swing_cp AS eval_swing_cp_from_prev,
                    classification, 1 AS source_priority
             FROM {EVAL_TABLE_ONDEMAND}
             WHERE game_id = %s
               AND date = DATE %s
             UNION ALL
-            SELECT ply, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev,
+            SELECT ply, NULL AS fen, played_move, best_move, eval_cp, mate, eval_swing_cp_from_prev,
                    classification, 2 AS source_priority
             FROM {EVAL_TABLE}
             WHERE game_id = %s
               AND date = DATE %s
           ) src
-        ) ranked
-        WHERE rn = 1
-        ORDER BY ply
+        ),
+        move_fens AS (
+          SELECT move_number AS ply, MAX(fen) AS fen
+          FROM {TABLE}
+          WHERE game_id = %s
+            AND date = %s
+          GROUP BY move_number
+        )
+        SELECT ranked.ply,
+               COALESCE(ranked.fen, move_fens.fen) AS fen,
+               ranked.played_move,
+               ranked.best_move,
+               ranked.eval_cp,
+               ranked.mate,
+               ranked.eval_swing_cp_from_prev,
+               ranked.classification
+        FROM ranked
+        LEFT JOIN move_fens ON move_fens.ply = ranked.ply
+        WHERE ranked.rn = 1
+        ORDER BY ranked.ply
         """,
-        (game_id, game_date, game_id, game_date),
+        (game_id, game_date, game_id, game_date, game_id, game_date),
     )
 
 
