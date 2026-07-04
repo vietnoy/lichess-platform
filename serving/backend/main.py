@@ -325,12 +325,12 @@ def _move_contrast(row: dict) -> str:
 
 def _narrative_is_incomplete(text: str) -> bool:
     stripped = (text or "").strip()
-    if len(stripped) < 900:
+    if len(stripped) < 500:
         return True
     if stripped.endswith(("...", "…")):
         return True
     last_block = stripped.rsplit("\n\n", 1)[-1]
-    if re.search(r"(FEN trước nước đi|FEN truoc nuoc di|Turning Point)", last_block, re.IGNORECASE):
+    if re.search(r"(FEN trước nước đi|FEN truoc nuoc di)", last_block, re.IGNORECASE):
         return True
     return stripped[-1] not in ".!?)`]\"'"
 
