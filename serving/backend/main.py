@@ -353,9 +353,9 @@ def _fallback_game_narrative(
         else ""
     )
 
-    return f"""Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Nếu nhìn như một buổi review với HLV, điểm đáng dừng lại đầu tiên là quanh ply {ply}: nước thực tế `{played}` khiến thế cờ đổi hướng, trong khi engine gợi ý `{best}`. Điều chắc chắn từ dữ liệu là đây là quyết định `{classification}` có chênh lệch rõ với lựa chọn engine; phần cần tự kiểm chứng trên bàn cờ là motif cụ thể làm vị trí đổi chiều.
+    return f"""Ván `{game_id}` là ván {speed} giữa `{white}` và `{black}`, khai cuộc {opening}.{focus} Nếu nhìn như một buổi review với HLV, điểm đáng dừng lại đầu tiên là quanh ply {ply}: nước thực tế `{played}` khiến thế cờ đổi hướng, trong khi engine gợi ý `{best}`. Điều chắc chắn từ dữ liệu là đây là quyết định `{classification}` có chênh lệch rõ với lựa chọn engine, và các chi tiết dưới đây cho thấy khác biệt thực dụng giữa hai lựa chọn.
 
-Một vài vị trí có bằng chứng rõ nhất, kèm câu hỏi phải tự trả lời thay vì chỉ chép best move:
+Một vài vị trí có bằng chứng rõ nhất, kèm lý do cụ thể thay vì chỉ chép best move:
 
 {evidence}
 
