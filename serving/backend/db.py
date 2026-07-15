@@ -667,7 +667,19 @@ def _query_player_profile_uncached(
     }
 
 
-def query_player_patterns(username: str) -> dict | None:
+def query_player_patterns(
+    username: str,
+    days: int = 60,
+    date: str | None = None,
+    all_time: bool = False,
+) -> dict | None:
+    date_filter, date_params, _ = _player_aggregate_date_filter(
+        username,
+        CRITICAL_POSITIONS,
+        days,
+        date,
+        all_time,
+    )
     rows = _run(
         f"""
         SELECT
@@ -681,9 +693,9 @@ def query_player_patterns(username: str) -> dict | None:
             date
         FROM {CRITICAL_POSITIONS}
         WHERE player_id = %s
-          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+          {date_filter}
         """,
-        (username,),
+        (username,) + date_params,
     )
     if not rows:
         return None

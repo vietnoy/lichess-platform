@@ -1,6 +1,25 @@
 from unittest.mock import patch
 
 
+def test_patterns_endpoint_forwards_date_range_options(client):
+    expected = {"username": "alice", "totals": {"games_analyzed": 3}}
+    with patch("main.query_player_patterns", return_value=expected) as query:
+        response = client.get("/api/players/alice/patterns?days=30")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+    query.assert_called_once_with("alice", days=30, date=None, all_time=False)
+
+
+def test_patterns_endpoint_forwards_all_time_filter(client):
+    expected = {"username": "alice", "totals": {"games_analyzed": 3}}
+    with patch("main.query_player_patterns", return_value=expected) as query:
+        response = client.get("/api/players/alice/patterns?all_time=true")
+
+    assert response.status_code == 200
+    query.assert_called_once_with("alice", days=60, date=None, all_time=True)
+
+
 def test_weakness_summary_endpoint_uses_aggregate_query(client):
     expected = {
         "player_id": "alice",

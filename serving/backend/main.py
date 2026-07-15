@@ -814,8 +814,13 @@ def get_player_profile(
 
 
 @app.get("/api/players/{username}/patterns")
-def get_player_patterns(username: str):
-    patterns = query_player_patterns(username)
+def get_player_patterns(
+    username: str,
+    days: int = Query(default=60, ge=1, le=365),
+    date: str | None = None,
+    all_time: bool = False,
+):
+    patterns = query_player_patterns(username, days=days, date=date, all_time=all_time)
     if patterns is None:
         raise HTTPException(404, f"No analyzed games for player '{username}' yet.")
     return patterns

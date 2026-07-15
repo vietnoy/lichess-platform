@@ -26,6 +26,14 @@ interface Patterns {
   worst_games: WorstGameRow[];
 }
 
+type RangeMode = "14" | "30" | "60" | "all" | "custom";
+
+function patternsQuery(rangeMode: RangeMode, customDate: string): string | null {
+  if (rangeMode === "all") return "all_time=true";
+  if (rangeMode === "custom") return customDate ? `date=${encodeURIComponent(customDate)}` : null;
+  return `days=${rangeMode}`;
+}
+
 const TT = { background: "rgb(255 255 255)", border: "1px solid rgb(220 220 228)", borderRadius: 6, fontSize: 12, color: "rgb(18 18 22)" };
 
 function Card({ title, children, className = "" }: { title: string; children: React.ReactNode; className?: string }) {
@@ -57,13 +65,18 @@ export default function PatternsPage({ params }: { params: { name: string } }) {
   const [data, setData] = useState<Patterns | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [is404, setIs404] = useState(false);
+  const [rangeMode, setRangeMode] = useState<RangeMode>("60");
+  const [customDate, setCustomDate] = useState("");
 
   useEffect(() => {
+    const query = patternsQuery(rangeMode, customDate);
+    if (!query) return;
     const controller = new AbortController();
     let alive = true;
+    setData(null);
     setError(null);
     setIs404(false);
-    api<Patterns>(`/players/${encodeURIComponent(username)}/patterns`, { signal: controller.signal })
+    api<Patterns>(`/players/${encodeURIComponent(username)}/patterns?${query}`, { signal: controller.signal })
       .then((p) => { if (alive) setData(p); })
       .catch((e) => {
         if (!alive) return;
@@ -77,7 +90,7 @@ export default function PatternsPage({ params }: { params: { name: string } }) {
       alive = false;
       controller.abort();
     };
-  }, [username]);
+  }, [username, rangeMode, customDate]);
 
   return (
     <>
@@ -98,6 +111,43 @@ export default function PatternsPage({ params }: { params: { name: string } }) {
           >
             ← back to dashboard
           </Link>
+        </div>
+
+        <div className="flex flex-col md:flex-row md:items-center gap-3 border border-border bg-surface rounded-md p-3">
+          <div className="text-sm text-muted min-w-[9rem]">Khoảng dữ liệu</div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              ["14", "14 ngày"],
+              ["30", "30 ngày"],
+              ["60", "60 ngày"],
+              ["all", "All time"],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setRangeMode(value as RangeMode)}
+                className={`h-9 px-3 rounded-md border text-sm transition ${
+                  rangeMode === value
+                    ? "border-accent bg-accent text-white"
+                    : "border-border bg-background hover:bg-border/40"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-sm text-muted md:ml-auto">
+            Một ngày
+            <input
+              type="date"
+              value={customDate}
+              onChange={(event) => {
+                setCustomDate(event.target.value);
+                if (event.target.value) setRangeMode("custom");
+              }}
+              className="h-9 rounded-md border border-border bg-background px-3 text-text"
+            />
+          </label>
         </div>
 
         {data && (
